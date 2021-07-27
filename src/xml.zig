@@ -10,49 +10,19 @@ pub const Tokenizer = struct {
         bof,
         eof,
         
-        element: Element,
-        processing_instruction: ProcessingInstruction,
-        char_data: CharData,
-        comment: Comment,
-        
-        pub const Element = union(enum) {
-            begin_open: Index,        // `<`
-            begin_close: Index,       // `</`
-            end: Index,               // `>`
-            end_empty: Index,         // `/>`
-            
-            namespace: Range,
-            identifier: Range,
-            eql: Index, // '='
-            
-            string_begin: Index, // effectively matches `"` or `'`.
-            string_end: Index, // effectively matches `"` or `'`.
-            entity_reference: Range, // first index matches '&', penultimate index matches ';'.
-        };
-        
-        pub const ProcessingInstruction = union(enum) {
-            beg: Index, // first index of `<?`
-            end: Index, // first index of `?>`
-            
-            target: Range,
-            instructions: Range,
-        };
-        
-        pub const CharData = union(enum) {
-            beg: Index, // first index of `<![CDATA[`
-            end: Index, // first index of `]]>`
-        };
-        
-        pub const Comment = union(enum) {
-            beg: Index, // first index of `<!--`
-            end: Index, // first index of `-->`
-        };
+        element_start: Index,
+        element_name: Range,
+        attribute_name: Range,
+        attribute_value: Range,
+        text: Range,
+        char_data: Range,
+        element_end: Index,
         
         pub const Index = struct { index: usize };
         pub const Range = struct { beg: usize, end: usize };
     };
     
-    pub fn getNext(self: *Tokenizer) Token {
+    pub fn next(self: *Tokenizer) Token {
         var result: Token = .invalid;
         
         while (self.index < self.buffer.len) {
@@ -83,7 +53,11 @@ pub const Tokenizer = struct {
     
     pub const ParseState = union(enum) {
         start,
-        angle_bracket_left,
+        angle_bracket_left: AngleBracketLeft,
+        
+        pub const AngleBracketLeft = union(enum) {
+            first_encounter,
+        };
     };
     
 };

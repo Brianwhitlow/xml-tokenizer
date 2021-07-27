@@ -8,6 +8,4 @@ pub fn main() !void {
     const allocator_main = &allocator_general_purpose.allocator;
     _ = allocator_main;
     
-    
-    
 }
