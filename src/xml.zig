@@ -10,67 +10,63 @@ pub const Tokenizer = struct {
         bof,
         eof,
         
-        element_start: Index,
-        element_name: Range,
-        attribute_name: Range,
-        attribute_value: Range,
-        text: Range,
-        char_data: Range,
-        element_end: Index,
+        element_begin: ElementOpen,
+        element_close: ElementClose,
+        text: Text,
+        comment: Comment,
+        processing_instructions: ProcessingInstructions,
         
-        pub const Index = struct { index: usize };
+        pub const ElementOpen = union(enum) {
+            identifier: Identifier,
+            attribute: Attribute,
+            
+            pub const Identifier = struct {
+                namespace: Range,
+                range: Range,
+            };
+            
+            pub const Attribute = struct {
+                identifier: Range,
+                value: Range,
+            };
+            
+        };
+        
+        pub const ElementClose = union(enum) {
+            identifier: Range,
+        };
+        
+        pub const Text = union(enum) {
+            plain: Range,
+            char_data: Range,
+        };
+        
+        pub const Comment = Range;
+        
+        pub const ProcessingInstructions = union(enum) {
+            target: Range,
+            instructions: Range,
+        };
+        
         pub const Range = struct { beg: usize, end: usize };
+        pub const Index = struct { index: usize };
     };
     
     pub fn next(self: *Tokenizer) Token {
-        var result: Token = .invalid;
+        var out = Token .invalid;
         
         while (self.index < self.buffer.len) {
-            const current_char = self.buffer[self.index];
             switch (self.parse_state) {
                 .start
-                => switch (current_char) {
-                    ' ', '\t', '\n', '\r',
-                    => self.index += 1,
-                    
-                    '<',
-                    => {
-                        self.index += 1;
-                        self.parse_state = .angle_bracket_left;
-                    },
-                    
-                    else
-                    => unreachable,
-                },
-                
-                .angle_bracket_left
                 => unreachable,
             }
         }
         
-        return result;
+        return out;
     }
     
     pub const ParseState = union(enum) {
         start,
-        angle_bracket_left: AngleBracketLeft,
-        
-        pub const AngleBracketLeft = union(enum) {
-            first_encounter,
-        };
     };
     
 };
-
-test "Declare" {
-    var tokenizer = Tokenizer{
-        .buffer =
-        \\<?xml version="1.0" encoding="UTF-8"?>
-        \\<content >
-        \\    <inner att="val"/>
-        \\</content>
-    };
-    
-    var current = tokenizer.getNext();
-    
-}
