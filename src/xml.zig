@@ -6,9 +6,11 @@ pub const Tokenizer = struct {
     parse_state: ParseState = .start,
     
     pub const Token = union(enum) {
-        invalid,
+        invalid: Index,
         bof,
         eof,
+        
+        
         
         element_begin: ElementOpen,
         element_close: ElementClose,
@@ -32,7 +34,7 @@ pub const Tokenizer = struct {
             
         };
         
-        pub const ElementClose = union(enum) {
+        pub const ElementClose = struct {
             identifier: Range,
         };
         
@@ -53,20 +55,80 @@ pub const Tokenizer = struct {
     };
     
     pub fn next(self: *Tokenizer) Token {
-        var out = Token .invalid;
+        var result: Token = .{ .invalid = .{ .index = self.index } };
         
         while (self.index < self.buffer.len) {
+            const current_char = self.buffer[self.index];
             switch (self.parse_state) {
                 .start
-                => unreachable,
+                => switch (current_char) {
+                    '<',
+                    => {
+                        self.parse_state = .tag_open;
+                        self.index += 1;
+                    },
+                    
+                    ' ', '\t', '\n', '\r',
+                    => {
+                        self.index += 1;
+                    },
+                    
+                    else
+                    => {
+                        result = .{ .invalid = .{ .index = self.index } };
+                        break;
+                    },
+                },
+                
+                .tag_open
+                => |tag_open| switch (current_char) {
+                    '?',
+                    => unreachable,
+                    
+                    '!',
+                    => unreachable,
+                    
+                    '/',
+                    => unreachable,
+                    
+                    ':', // Making one exception here to what the W3C Recommendation says, since it seems like the convention is to not accept it as the first character.
+                    => unreachable,
+                    
+                    else
+                    => {
+                        self.parse_state = .{ .tag_element_open = .check_valid_start_char };
+                    },
+                    
+                },
+                
+                .tag_element_open
+                => |*tag_element_open| switch (tag_element_open.*) {
+                    .check_valid_start_char
+                    => unreachable,
+                },
+                
             }
         }
         
-        return out;
+        return result;
     }
     
     pub const ParseState = union(enum) {
         start,
+        tag_open,
+        tag_element_open: enum {
+            check_valid_start_char,
+        },
     };
     
 };
+
+test "T1" {
+    var tokenizer = Tokenizer{
+        .buffer = 
+        \\<?xml version="1.0" encoding="UTF-8"?>
+    };
+    
+    var current = tokenizer.next();
+    _ = current;
+}
