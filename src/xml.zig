@@ -1,3 +1,13 @@
+pub const Index = struct { index: usize };
+pub const Range = struct {
+    beg: usize,
+    end: usize,
+    
+    pub fn slice(self: Range, buffer: []const u8) []const u8 {
+        return buffer[self.beg..self.end];
+    }
+};
+
 pub const Token = union(enum) {
     invalid: Index,
     bof,
@@ -5,13 +15,15 @@ pub const Token = union(enum) {
     
     element_open_name: ElementName,
     attribute: Attribute,
-    element_close,
+    element_close_inline,
     element_close_name: ElementName,
     
     comment: Range,
     
     pi_target: Range,
     pi_contents: Range,
+    
+    doctype_decl: Range,
     
     text: Text,
     
@@ -31,16 +43,6 @@ pub const Token = union(enum) {
         empty_whitespace: Range,
     };
     
-    pub const Index = struct { index: usize };
-    pub const Range = struct {
-        beg: usize,
-        end: usize,
-        
-        pub fn slice(self: Range, buffer: []const u8) []const u8 {
-            return buffer[self.beg..self.end];
-        }
-    };
-    
 };
 
 pub const Tokenizer = struct {
@@ -50,15 +52,22 @@ pub const Tokenizer = struct {
     
     pub const ParseState = union(enum) {
         start,
+        start_no_prologue,
     };
     
     pub fn next(self: *Tokenizer) Token {
-        
         while (self.index < self.buffer.len) {
             const current_char = self.buffer[self.index];
+            _ = current_char;
             switch (self.parse_state) {
                 .start
-                => unreachable,
+                => switch (current_char) {
+                    ' ', '\t', '\n', '\r',
+                    => {
+                        self.parse_state = .start_no_prologue;
+                        self.index += 1;
+                    },
+                },
             }
         }
         
