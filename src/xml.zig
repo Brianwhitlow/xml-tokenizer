@@ -1,3 +1,47 @@
+pub const Token = union(enum) {
+    invalid: Index,
+    bof,
+    eof,
+    
+    element_open_name: ElementName,
+    attribute: Attribute,
+    element_close_name: ElementName,
+    
+    comment: Range,
+    
+    pi_target: Range,
+    pi_contents: Range,
+    
+    text: Text,
+    
+    pub const ElementName = struct {
+        name: Range,
+        namespace: Range,
+    };
+    
+    pub const Attribute = struct {
+        name: Range,
+        value: Range,
+    };
+    
+    pub const Text = union(enum) {
+        plain: Range,
+        char_data: Range,
+        empty_whitespace: Range,
+    };
+    
+    pub const Index = struct { index: usize };
+    pub const Range = struct {
+        beg: usize,
+        end: usize,
+        
+        pub fn slice(self: Range, buffer: []const u8) []const u8 {
+            return buffer[self.beg..self.end];
+        }
+    };
+    
+};
+
 fn isValidXmlNameStartCharUtf8(char: u21) bool {
     return switch (char) {
         'A'...'Z',
