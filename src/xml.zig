@@ -5,6 +5,7 @@ pub const Token = union(enum) {
     
     element_open_name: ElementName,
     attribute: Attribute,
+    element_close,
     element_close_name: ElementName,
     
     comment: Range,
@@ -39,6 +40,29 @@ pub const Token = union(enum) {
             return buffer[self.beg..self.end];
         }
     };
+    
+};
+
+pub const Tokenizer = struct {
+    buffer: []const u8,
+    index: usize = 0,
+    parse_state: ParseState = .start,
+    
+    pub const ParseState = union(enum) {
+        start,
+    };
+    
+    pub fn next(self: *Tokenizer) Token {
+        
+        while (self.index < self.buffer.len) {
+            const current_char = self.buffer[self.index];
+            switch (self.parse_state) {
+                .start
+                => unreachable,
+            }
+        }
+        
+    }
     
 };
 
