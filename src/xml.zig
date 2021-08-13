@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const Index = struct { index: usize };
 pub const Range = struct {
     beg: usize,
@@ -48,25 +50,55 @@ pub const Token = union(enum) {
 pub const Tokenizer = struct {
     buffer: []const u8,
     index: usize = 0,
-    parse_state: ParseState = .start,
+    parse_state: ParseState = .{ .start = .none },
     
     pub const ParseState = union(enum) {
-        start,
-        start_no_prologue,
+        start: Start,
+        
+        pub const Start = enum {
+            none,
+            no_decl,
+            maybe_decl,
+        };
+        
     };
     
     pub fn next(self: *Tokenizer) Token {
+        std.debug.assert(blk: {
+            const at_start = self.index == 0 and self.parse_state == .{ .start = .none };
+            const after_start = self.index != 0 and self.parse_state != .{ .start = .none };
+            break :blk at_start or after_start;
+        });
+        
         while (self.index < self.buffer.len) {
             const current_char = self.buffer[self.index];
             _ = current_char;
             switch (self.parse_state) {
                 .start
-                => switch (current_char) {
-                    ' ', '\t', '\n', '\r',
-                    => {
-                        self.parse_state = .start_no_prologue;
-                        self.index += 1;
+                => |*start| switch (start.*) {
+                    .none
+                    => switch (current_char) {
+                        ' ', '\t', '\n', '\r',
+                        => {
+                            start.* = .no_decl;
+                            self.index += 1;
+                        },
+                        
+                        '<',
+                        => {
+                            start.* = .maybe_decl;
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => unreachable,
                     },
+                    
+                    .no_decl
+                    => unreachable,
+                    
+                    .maybe_decl
+                    => unreachable,
                 },
             }
         }
