@@ -160,7 +160,7 @@ pub const TokenStream = struct {
                 .tag_open
                 => switch (current_char) {
                     '?',
-                    => unreachable,
+                    => unreachable, // TODO: Handling this should be next
                     
                     '!',
                     => unreachable,
@@ -609,4 +609,19 @@ test "T1" {
     
     current = tokenizer.next();
     try testing.expectEqualStrings("book", current.element_close.slice(tokenizer.buffer));
+}
+
+test "T2" {
+    std.debug.print("\n", .{});
+    defer std.debug.print("\n", .{});
+    const testing = std.testing;
+    _ = testing;
+    
+    var tokenizer = TokenStream{ .buffer = 
+        @embedFile("../books.xml")
+    };
+    
+    var current = tokenizer.next();
+    while (current != .eof) : (current = tokenizer.next()) {}
+    
 }
