@@ -1,76 +1,97 @@
 const std = @import("std");
+const testing = std.testing;
 
 pub const Index = struct { index: usize };
 pub const Range = struct {
     beg: usize,
     end: usize,
-    
     pub fn slice(self: Range, buffer: []const u8) []const u8 {
         return buffer[self.beg..self.end];
     }
 };
 
 pub const Token = union(enum) {
-    invalid: Index,
     bof,
     eof,
+    invalid: Index,
     
-    element_open: ElementOpen,
+    element_open: ElementId,
     attribute: Attribute,
-    element_close: ElementClose,
+    element_close: ElementId,
     
-    text: Text,
+    empty_whitespace: Range,
+    text: Range,
+    char_data: CharData,
     
-    processing_instructions: ProcessingInstructions,
     comment: Comment,
+    processing_instructions: ProcessingInstructions,
     
-    pub const ElementOpen = ElementId;
-    pub const Attribute = NameValuePair;
-    pub const ElementClose = ElementId;
     
-    pub const Text = union(enum) {
-        content: Range,
-        char_data: Range,
-        empty_whitespace: Range,
+    
+    pub const ElementId = struct {
+        namespace_colon: ?Index,
+        identifier: Range,
+        pub fn slice(self: ElementId, buffer: []const u8) []const u8 {
+            return buffer[self.identifier.beg..self.identifier.end];
+        }
+        
+        pub fn namespace(self: ElementId, buffer: []const u8) ?[]const u8 {
+            return if (self.namespace_colon)
+            |namespace_colon| buffer[self.identifier.beg..namespace_colon.index]
+            else null;
+        }
+        
+        pub fn name(self: ElementId, buffer: []const u8) []const u8 {
+            return if (self.namespace_colon)
+            |namespace_colon| buffer[namespace_colon.index + 1..self.identifier.end]
+            else self.identifier.slice(buffer);
+        }
+    };
+    
+    pub const Attribute = struct {
+        parent: ElementId,
+        name: Range,
+        val: Range,
+        pub fn slice(self: Attribute, buffer: []const u8) []const u8 {
+            return buffer[self.name.beg..self.val.end];
+        }
+        
+        pub fn value(self: Attribute, buffer: []const u8) []const u8 {
+            const buffer_slice = self.val.slice(buffer);
+            const beg = 1;
+            const end = buffer_slice.len - 1;
+            return buffer_slice[beg..end];
+        }
+    };
+    
+    pub const CharData = struct {
+        range: Range,
+        pub fn data(self: CharData, buffer: []const u8) []const u8 {
+            const slice = self.range.slice(buffer);
+            const beg = "<![CDATA[".len;
+            const end = self.range.end - "]]>".len;
+            return slice[beg..end];
+        }
+    };
+    
+    pub const Comment = struct {
+        range: Range,
+        pub fn data(self: Comment, buffer: []const u8) []const u8 {
+            const slice = self.range.slice(buffer);
+            const beg = "<!--".len;
+            const end = self.range.end - "-->".len;
+            return slice[beg..end];
+        }
     };
     
     pub const ProcessingInstructions = struct {
         target: Range,
         instructions: Range,
-        
         pub fn slice(self: ProcessingInstructions, buffer: []const u8) []const u8 {
-            return buffer[self.target.beg - "<?".len..self.instructions.end + "?>".len];
+            const beg = self.target.beg - "<?".len;
+            const end = self.instructions.end + "?>".len;
+            return buffer[beg..end];
         }
-        
-    };
-    
-    pub const Comment = struct {
-        content: Range,
-        
-        pub fn slice(self: Comment, buffer: []const u8) []const u8 {
-            return buffer[self.content.beg - "<!--".len..self.content.end + "-->".len];
-        }
-        
-    };
-    
-    pub const ElementId = struct {
-        namespace: Range,
-        identifier: Range,
-        
-        pub fn slice(self: ElementId, buffer: []const u8) []const u8 {
-            return buffer[self.namespace.beg..self.identifier.end];
-        } 
-        
-    };
-    
-    pub const NameValuePair = struct {
-        name: Range,
-        value: Range,
-        
-        pub fn slice(self: NameValuePair, buffer: []const u8) []const u8 {
-            return buffer[self.name.beg..self.value.end + 1];
-        }
-        
     };
     
 };
@@ -82,393 +103,447 @@ pub const TokenStream = struct {
     
     pub const ParseState = union(enum) {
         start,
-        tag_open,
-        seek_element_name_end: struct {
-            namespace_beg: usize,
-            identifier_beg: usize,
-        },
+        start_whitespace,
+        left_angle_bracket,
+        element_name_start_char: ElementNameStartChar,
+        inside_element_open: InsideElementOpen,
+        right_angle_bracket: RightAngleBracket,
+        left_angle_bracket_fwd_slash,
+        close_element_name_start_char: ElementNameStartChar,
+        close_element_name_end_char,
         
-        seek_element_begin_end: ElementNameCache,
-        
-        tokenizing_attribute: struct {
-            element_name_cache: ElementNameCache,
-            state: union(enum) {
-                seek_name_end: NameStart,
-                seek_eql: AttrNameCache,
-                seek_quote1: AttrNameCache,
-                seek_quote2: struct {
-                    attr_name_cache: AttrNameCache,
-                    value_start: Index,
-                },
-                
-                pub const AttrNameCache = Range;
-                pub const NameStart = Index;
-            },
-        },
-        
-        in_content: struct {
+        pub const ElementNameStartChar = struct {
             start: Index,
-            non_whitespace_characters: bool = false,
-        },
+            colon: ?Index,
+        };
         
-        element_close: union(enum) {
-            start,
-            seek_name_end: NameCache,
-            seek_bracket,
+        pub const InsideElementOpen = struct {
+            el_id: Token.ElementId,
+            state: State,
             
-            pub const NameCache = struct {
-                namespace_beg: usize,
-                identifier_beg: usize,
+            pub const State = union(enum) {
+                whitespace,
+                attribute_name_start_char: Index,
+                attribute_seek_eql: AttributeNameCache,
+                attribute_eql: AttributeNameCache,
+                attribute_value_start_quote: AttributeNameValueCache,
+                attribute_value_end_quote,
+                forward_slash,
+                pub const AttributeNameCache = Range;
+                pub const AttributeNameValueCache = struct {
+                    name: Range,
+                    value_start: Index,
+                };
             };
-        },
+            
+        };
         
-        pub const ElementNameCache = struct {
-            namespace_beg: usize,
-            identifier_beg: usize,
-            identifier_end: usize,
+        pub const RightAngleBracket = struct {
+            start: Index,
+            non_whitespace_chars: bool,
         };
         
     };
     
     pub fn next(self: *TokenStream) Token {
-        std.debug.assert(blk: {
-            if (self.parse_state == .start) {
-                break :blk self.index == 0;
-            }
-            break :blk true;
-        });
+        var result: Token = .{ .invalid = .{ .index = self.index } };
         
-        while (self.index < self.buffer.len) {
+        const index_on_entry = self.index;
+        defer std.debug.assert( self.index >= index_on_entry );
+        
+        mainloop: while (self.index < self.buffer.len)
+        : (std.debug.assert(result.invalid.index == index_on_entry)) {
             const current_char = self.buffer[self.index];
-            
             switch (self.parse_state) {
                 .start
                 => switch (current_char) {
                     ' ', '\t', '\n', '\r',
-                    => self.index += 1,
+                    => {
+                        self.parse_state = .start_whitespace;
+                        self.index += 1;
+                    },
                     
                     '<',
                     => {
-                        self.parse_state = .tag_open;
+                        self.parse_state = .left_angle_bracket;
                         self.index += 1;
                     },
                     
                     else
-                    => unreachable,
+                    => {
+                        break :mainloop;
+                    },
                 },
                 
-                .tag_open
+                .start_whitespace
                 => switch (current_char) {
-                    '?',
-                    => unreachable, // TODO: Handling this should be next
+                    ' ', '\t', '\n', '\r',
+                    => self.index += 1,
                     
+                    '<',
+                    => {
+                        self.parse_state = .left_angle_bracket;
+                        result = .{ .empty_whitespace = .{ .beg = 0, .end = self.index } };
+                        self.index += 1;
+                        break :mainloop;
+                    },
+                    
+                    else
+                    => break :mainloop,
+                },
+                
+                .left_angle_bracket
+                => switch (current_char) {
                     '!',
                     => unreachable,
                     
+                    '?',
+                    => unreachable,
+                    
                     '/',
                     => {
-                        self.parse_state = .{ .element_close = .start };
+                        self.parse_state = .left_angle_bracket_fwd_slash;
                         self.index += 1;
                     },
                     
                     else
                     => {
-                        const current_utf8_cp = self.currentUtf8Codepoint() orelse unreachable;
-                        if (!isValidXmlNameStartCharUtf8(current_utf8_cp)) unreachable;
-                        self.parse_state = .{ .seek_element_name_end = .{
-                            .namespace_beg = self.index,
-                            .identifier_beg = self.index,
+                        const current_utf8_cp = blk: {
+                            const opt_blk_out = self.currentUtf8Codepoint();
+                            if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
+                                break :mainloop;
+                            break :blk opt_blk_out.?;
+                        };
+                        
+                        self.parse_state = .{ .element_name_start_char = .{
+                            .start = .{ .index = self.index },
+                            .colon = null,
                         } };
+                        
                         self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
                     },
                 },
                 
-                .seek_element_name_end
-                => |*seek_element_name_end| switch (current_char) {
+                .element_name_start_char
+                => |element_name_start_char| switch (current_char) {
+                    ' ', '\t', '\n', '\r',
+                    => {
+                        result = .{ .element_open = .{
+                            .namespace_colon = element_name_start_char.colon,
+                            .identifier = .{ .beg = element_name_start_char.start.index, .end = self.index },
+                        } };
+                        
+                        self.parse_state = .{ .inside_element_open = .{
+                            .el_id = result.element_open,
+                            .state = .whitespace,
+                        } };
+                        
+                        self.index += 1;
+                        break :mainloop;
+                    },
+                    
+                    '>',
+                    => {
+                        result = .{ .element_open = .{
+                            .namespace_colon = element_name_start_char.colon,
+                            .identifier = .{ .beg = element_name_start_char.start.index, .end = self.index },
+                        } };
+                        
+                        self.index += 1;
+                        self.parse_state = .{ .right_angle_bracket = .{
+                            .start = .{ .index = self.index },
+                            .non_whitespace_chars = false,
+                        } };
+                        
+                        break :mainloop;
+                    },
+                    
                     ':',
                     => {
-                        self.index += 1;
-                        seek_element_name_end.identifier_beg = self.index;
-                    },
-                    
-                    ' ', '\t', '\n', '\r',
-                    => {
-                        const result = Token { .element_open = .{
-                            .namespace = .{
-                                .beg = seek_element_name_end.namespace_beg,
-                                .end = seek_element_name_end.identifier_beg - 1,
-                            },
-                            
-                            .identifier = .{
-                                .beg = seek_element_name_end.identifier_beg,
-                                .end = self.index
-                            },
+                        self.parse_state = .{ .element_name_start_char = .{
+                            .start = element_name_start_char.start,
+                            .colon = .{ .index = self.index },
                         } };
-                        
-                        self.parse_state = .{ .seek_element_begin_end = .{
-                            .namespace_beg = result.element_open.namespace.beg,
-                            .identifier_beg = result.element_open.identifier.beg,
-                            .identifier_end = result.element_open.identifier.end,
-                        } };
-                        
                         self.index += 1;
-                        return result;
                     },
-                    
-                    '>',
-                    => {
-                        const result = Token { .element_open = .{
-                            .namespace = .{
-                                .beg = seek_element_name_end.namespace_beg,
-                                .end = seek_element_name_end.identifier_beg - 1,
-                            },
-                            
-                            .identifier = .{
-                                .beg = seek_element_name_end.identifier_beg,
-                                .end = self.index
-                            },
-                        } };
-                        
-                        self.index += 1;
-                        self.parse_state = .{ .in_content = .{ .start = .{ .index = self.index } } };
-                        
-                        return result;
-                    },
-                    
-                    else
-                    => {
-                        const current_utf8_cp = self.currentUtf8Codepoint() orelse unreachable;
-                        if (!isValidXmlNameCharUtf8(current_utf8_cp)) unreachable;
-                        self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                    },
-                },
-                
-                .seek_element_begin_end
-                => |seek_element_begin_end| switch (current_char) {
-                    ' ', '\t', '\n', '\r',
-                    => self.index += 1,
                     
                     '/',
-                    => {
-                        if (!safeAccessCmpBufferIndex(u8, self.buffer, self.index + 1, '>')) unreachable;
-                        
-                        const result = Token { .element_close = .{
-                            .namespace = .{
-                                .beg = seek_element_begin_end.namespace_beg,
-                                .end = seek_element_begin_end.identifier_beg - 1
-                            },
-                            
-                            .identifier = .{
-                                .beg = seek_element_begin_end.identifier_beg,
-                                .end = seek_element_begin_end.identifier_end,
-                            },
-                        } };
-                        
-                        self.index += 2;
-                        self.parse_state = .{ .in_content = .{ .start = .{ .index = self.index } } };
-                        
-                        return result;
-                    },
-                    
-                    '>',
-                    => {
-                        self.index += 1;
-                        self.parse_state = .{ .in_content = .{ .start = .{ .index = self.index } } };
-                    },
+                    => unreachable,
                     
                     else
                     => {
-                        const current_utf8_cp = self.currentUtf8Codepoint() orelse unreachable;
-                        if (!isValidXmlNameStartCharUtf8(current_utf8_cp)) unreachable;
-                        self.parse_state = .{ .tokenizing_attribute = .{
-                            .element_name_cache = seek_element_begin_end,
-                            .state = .{ .seek_name_end = .{ .index = self.index } },
-                        } };
+                        const current_utf8_cp = blk: {
+                            const opt_blk_out = self.currentUtf8Codepoint();
+                            if (opt_blk_out == null or !isValidXmlNameCharUtf8(opt_blk_out.?))
+                                break :mainloop;
+                            break :blk opt_blk_out.?;
+                        };
+                        
                         self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
                     },
                 },
                 
-                .tokenizing_attribute
-                => |*tokenizing_attribute| switch (tokenizing_attribute.state) {
-                    .seek_name_end
-                    => |seek_name_end| switch (current_char) {
-                        ' ', '\t', '\n', '\r',
-                        '=',
-                        => {
-                            tokenizing_attribute.state = .{ .seek_eql = .{
-                                .beg = seek_name_end.index,
-                                .end = self.index,
-                            } };
-                        },
-                        
-                        else
-                        => {
-                            const current_utf8_cp = self.currentUtf8Codepoint() orelse unreachable;
-                            if (!isValidXmlNameCharUtf8(current_utf8_cp)) unreachable;
-                            self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                        },
-                    },
-                    
-                    .seek_eql
-                    => |seek_eql| switch (current_char) {
+                .inside_element_open
+                => |inside_element_open| switch (inside_element_open.state) {
+                    .whitespace
+                    => switch (current_char) {
                         ' ', '\t', '\n', '\r',
                         => self.index += 1,
                         
-                        '=',
-                        => {
-                            tokenizing_attribute.state = .{ .seek_quote1 = seek_eql };
-                            self.index += 1;
-                        },
-                        
-                        else
-                        => unreachable,
-                    },
-                    
-                    .seek_quote1
-                    => |seek_quote1| switch (current_char) {
-                        ' ', '\t', '\n', '\r',
-                        => self.index += 1,
-                        
-                        '"',
-                        => {
-                            self.index += 1;
-                            tokenizing_attribute.state = .{ .seek_quote2 = .{
-                                .attr_name_cache = seek_quote1,
-                                .value_start = .{ .index = self.index } }
-                            };
-                        },
-                        
-                        else
-                        => unreachable,
-                    },
-                    
-                    .seek_quote2
-                    => |seek_quote2| switch (current_char) {
-                        '"',
-                        => {
-                            const result = Token {
-                                .attribute = .{
-                                    .name = seek_quote2.attr_name_cache,
-                                    .value = .{
-                                        .beg = seek_quote2.value_start.index,
-                                        .end = self.index
-                                    },
-                                },
-                            };
-                            
-                            self.index += 1;
-                            self.parse_state = .{ .seek_element_begin_end = tokenizing_attribute.element_name_cache };
-                            
-                            return result;
-                        },
-                        
-                        else
-                        => self.index += 1,
-                    },
-                },
-                
-                .in_content
-                => |*in_content| switch (current_char) {
-                    '<',
-                    => {
-                        const result = blk: {
-                            if (in_content.non_whitespace_characters) {
-                                break :blk Token { .text = .{ .content = .{
-                                    .beg = in_content.start.index,
-                                    .end = self.index,
-                                } } };
-                            }
-                            
-                            break :blk Token { .text = .{ .empty_whitespace = .{
-                                .beg = in_content.start.index,
-                                .end = self.index,
-                            } } };
-                        };
-                        
-                        self.parse_state = .tag_open;
-                        self.index += 1;
-                        return result;
-                    },
-                    
-                    else
-                    => {
-                        in_content.non_whitespace_characters = in_content.non_whitespace_characters or switch (current_char) {
-                            ' ', '\t', '\n', '\r',
-                            => false,
-                            
-                            else
-                            => true,
-                        };
-                        self.index += 1;
-                    },
-                },
-                
-                .element_close
-                => |*element_close| switch (element_close.*) {
-                    .start
-                    => {
-                        const current_utf8_cp = self.currentUtf8Codepoint() orelse unreachable;
-                        if (!isValidXmlNameStartCharUtf8(current_utf8_cp)) unreachable;
-                        element_close.* = .{ .seek_name_end = .{
-                            .namespace_beg = self.index,
-                            .identifier_beg = self.index,
-                        } };
-                        self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                    },
-                    
-                    .seek_name_end
-                    => |*seek_name_end| switch (current_char) {
-                        ':',
-                        => {
-                            self.index += 1;
-                            seek_name_end.identifier_beg = self.index;
-                        },
-                        
-                        ' ', '\t', '\n', '\r',
                         '>',
                         => {
-                            const result = Token { .element_close = .{
-                                .namespace = .{ .beg = seek_name_end.namespace_beg, .end = seek_name_end.identifier_beg - 1 },
-                                .identifier = .{ .beg = seek_name_end.identifier_beg, .end = self.index },
-                            } };
-                            
                             self.index += 1;
-                            if (current_char == '>') {
-                                self.parse_state = .{ .in_content = .{ .start = .{ .index = self.index } } };
-                            } else {
-                                element_close.* = .seek_bracket;
-                            }
-                            
-                            return result;
+                            self.parse_state = .{ .right_angle_bracket = .{
+                                .start = .{ .index = self.index },
+                                .non_whitespace_chars = false,
+                            } };
                         },
                         
                         else
                         => {
-                            const current_utf8_cp = self.currentUtf8Codepoint() orelse unreachable;
-                            if (!isValidXmlNameCharUtf8(current_utf8_cp)) unreachable;
+                            const current_utf8_cp = blk: {
+                                const opt_blk_out = self.currentUtf8Codepoint();
+                                if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
+                                    break :mainloop;
+                                break :blk opt_blk_out.?;
+                            };
+                            
+                            self.parse_state.inside_element_open.state = .{ .attribute_name_start_char = .{ .index = self.index, } };
+                            
                             self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
                         },
                     },
                     
-                    .seek_bracket
+                    .attribute_name_start_char
+                    => |attribute_name_start_char| switch (current_char) {
+                        ' ', '\t', '\n', '\r',
+                        '=',
+                        => self.parse_state.inside_element_open.state = .{ .attribute_seek_eql = .{
+                                .beg = attribute_name_start_char.index,
+                                .end = self.index
+                        } },
+                        
+                        else
+                        => {
+                            const current_utf8_cp = blk: {
+                                const opt_blk_out = self.currentUtf8Codepoint();
+                                if (opt_blk_out == null or !isValidXmlNameCharUtf8(opt_blk_out.?))
+                                    break :mainloop;
+                                break :blk opt_blk_out.?;
+                            };
+                            
+                            self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
+                        },
+                    },
+                    
+                    .attribute_seek_eql
+                    => |attribute_seek_eql| switch (current_char) {
+                        ' ', '\t', '\n', '\r',
+                        => self.index += 1,
+                        
+                        '=',
+                        => {
+                            self.parse_state.inside_element_open.state = .{ .attribute_eql = attribute_seek_eql };
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => break :mainloop,
+                    },
+                    
+                    .attribute_eql
+                    => |attribute_eql| switch (current_char) {
+                        ' ', '\t', '\n', '\r',
+                        => self.index += 1,
+                        
+                        '"',
+                        => {
+                            self.parse_state.inside_element_open.state = .{ .attribute_value_start_quote = .{
+                                .name = attribute_eql,
+                                .value_start = .{ .index = self.index },
+                            } };
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => break :mainloop,
+                    },
+                    
+                    .attribute_value_start_quote
+                    => |attribute_value_start_quote| switch (current_char) {
+                        '"',
+                        => {
+                            self.index += 1;
+                            self.parse_state.inside_element_open.state = .attribute_value_end_quote;
+                            
+                            result = .{ .attribute = .{
+                                .parent = inside_element_open.el_id,
+                                .name = attribute_value_start_quote.name,
+                                .val = .{
+                                    .beg = attribute_value_start_quote.value_start.index,
+                                    .end = self.index,
+                                },
+                            } };
+                            
+                            break :mainloop;
+                        },
+                        
+                        else
+                        => self.index += 1,
+                    },
+                    
+                    .attribute_value_end_quote
+                    => switch (current_char) {
+                        ' ', '\t', '\n', '\r',
+                        => {
+                            self.parse_state.inside_element_open.state = .whitespace;
+                            self.index += 1;
+                        },
+                        
+                        '>',
+                        => {
+                            self.index += 1;
+                            self.parse_state = .{ .right_angle_bracket = .{
+                                .start = .{ .index = self.index },
+                                .non_whitespace_chars = false,
+                            } };
+                        },
+                        
+                        '/',
+                        => {
+                            self.index += 1;
+                            self.parse_state.inside_element_open.state = .forward_slash;
+                        },
+                        
+                        else
+                        => break :mainloop,
+                    },
+                    
+                    .forward_slash
                     => switch (current_char) {
                         '>',
                         => {
                             self.index += 1;
-                            self.parse_state = .{ .in_content = .{ .start = .{ .index = self.index } } };
+                            self.parse_state = .{ .right_angle_bracket = .{
+                                .start = .{ .index = self.index },
+                                .non_whitespace_chars = false,
+                            } };
+                            
+                            result = .{ .element_close = inside_element_open.el_id };
+                            break :mainloop;
                         },
                         
-                        ' ', '\t', '\n', '\r',
-                        => self.index += 1,
-                        
                         else
-                        => unreachable,
+                        => break :mainloop,
+                    },
+                },
+                
+                .left_angle_bracket_fwd_slash
+                => {
+                    const current_utf8_cp = blk: {
+                        const opt_blk_out = self.currentUtf8Codepoint();
+                        if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
+                            break :mainloop;
+                        break :blk opt_blk_out.?;
+                    };
+                    
+                    self.parse_state = .{ .close_element_name_start_char = .{
+                        .start = .{ .index = self.index },
+                        .colon = null,
+                    } };
+                    
+                    self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
+                },
+                
+                .close_element_name_start_char
+                => |close_element_name_start_char| switch (current_char) {
+                    ' ', '\t', '\n', '\r',
+                    '>',
+                    => {
+                        result = .{ .element_close = .{
+                            .namespace_colon = close_element_name_start_char.colon,
+                            .identifier = .{
+                                .beg = close_element_name_start_char.start.index,
+                                .end = self.index,
+                            }
+                        } };
+                        
+                        self.parse_state = .close_element_name_end_char;
+                        break :mainloop;
+                    },
+                    
+                    ':',
+                    => {
+                        self.parse_state.close_element_name_start_char.colon = .{ .index = self.index };
+                        self.index += 1;
+                    },
+                    
+                    else
+                    => {
+                        const current_utf8_cp = blk: {
+                            const opt_blk_out = self.currentUtf8Codepoint();
+                            if (opt_blk_out == null or !isValidXmlNameCharUtf8(opt_blk_out.?))
+                                break :mainloop;
+                            break :blk opt_blk_out.?;
+                        };
+                        
+                        self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
+                    },
+                },
+                
+                .close_element_name_end_char
+                => switch (current_char) {
+                    ' ', '\t', '\n', '\r',
+                    => self.index += 1,
+                    
+                    '>',
+                    => {
+                        self.index += 1;
+                        self.parse_state = .{ .right_angle_bracket = .{
+                            .start = .{ .index = self.index },
+                            .non_whitespace_chars = false,
+                        } };
+                    },
+                    
+                    else
+                    => break :mainloop,
+                },
+                
+                .right_angle_bracket
+                => |right_angle_bracket| switch (current_char) {
+                    '<',
+                    => {
+                        const range = Range {
+                            .beg = right_angle_bracket.start.index,
+                            .end = self.index,
+                        };
+                        
+                        result =
+                        if (right_angle_bracket.non_whitespace_chars) .{ .text = range, }
+                        else .{ .empty_whitespace = range };
+                        
+                        self.parse_state = .left_angle_bracket;
+                        
+                        self.index += 1;
+                        break :mainloop;
+                    },
+                    
+                    ' ', '\t', '\n', '\r',
+                    => self.index += 1,
+                    
+                    else
+                    => {
+                        self.parse_state = .{ .right_angle_bracket = .{
+                            .start = right_angle_bracket.start,
+                            .non_whitespace_chars = true,
+                        } };
+                        self.index += 1;
                     },
                 },
             }
         }
         
-        return .eof;
+        return result;
         
     }
     
@@ -524,104 +599,172 @@ fn isValidXmlNameCharUtf8(char: u21) bool {
     };
 }
 
-test "T1" {
-    std.debug.print("\n", .{});
-    defer std.debug.print("\n", .{});
-    const testing = std.testing;
+
+
+
+
+fn expectEqualElementOpen(xml_text: []const u8, tok: Token, opt_namespace: ?[]const u8, expect_name: []const u8) !void {
+    try testing.expect(tok == .element_open);
+    const element_open = tok.element_open;
     
-    var tokenizer = TokenStream{ .buffer = 
-        \\<book category="WEB">
-        \\    <extra discount = "20%"/>
-        \\    <title lang="en">Learning XML</title >
-        \\    <author>Erik T. Ray</author>
-        \\</book>
+    const got_slice = element_open.slice(xml_text);
+    const got_ns = element_open.namespace(xml_text);
+    const got_name = element_open.name(xml_text);
+    
+    const expect_slice: []const u8 = blk: {
+        if (opt_namespace) |expect_ns| {
+            try testing.expect(got_ns != null);
+            try testing.expectEqualStrings(expect_ns, got_ns.?);
+            try testing.expectEqualStrings(expect_ns, got_slice[0..got_ns.?.len]);
+            break :blk @as([]const u8, try std.mem.join(testing.allocator, ":", &.{ expect_ns, expect_name }));
+        } else {
+            try testing.expect(got_ns == null);
+            try testing.expectEqualStrings(expect_name, got_slice);
+            break :blk expect_name;
+        }
     };
     
-    var current = tokenizer.next();
-    try testing.expectEqualStrings("book", current.element_open.identifier.slice(tokenizer.buffer));
+    defer if (opt_namespace != null) testing.allocator.free(expect_slice);
     
-    current = tokenizer.next();
-    try testing.expectEqualStrings("category", current.attribute.name.slice(tokenizer.buffer));
-    try testing.expectEqualStrings("WEB", current.attribute.value.slice(tokenizer.buffer));
-    try testing.expectEqualStrings("category=\"WEB\"", current.attribute.slice(tokenizer.buffer));
+    try testing.expectEqualStrings(expect_name, got_name);
+    try testing.expectEqualStrings(expect_slice, got_slice);
     
     
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("\n    ", current.text.empty_whitespace.slice(tokenizer.buffer));
-    
-    
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("extra", current.element_open.identifier.slice(tokenizer.buffer));
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("discount", current.attribute.name.slice(tokenizer.buffer));
-    try testing.expectEqualStrings("20%", current.attribute.value.slice(tokenizer.buffer));
-    try testing.expectEqualStrings("discount = \"20%\"", current.attribute.slice(tokenizer.buffer));
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("extra", current.element_close.slice(tokenizer.buffer));
-    
-    
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("\n    ", current.text.empty_whitespace.slice(tokenizer.buffer));
-    
-    
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("title", current.element_open.identifier.slice(tokenizer.buffer));
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("lang", current.attribute.name.slice(tokenizer.buffer));
-    try testing.expectEqualStrings("en", current.attribute.value.slice(tokenizer.buffer));
-    try testing.expectEqualStrings("lang=\"en\"", current.attribute.slice(tokenizer.buffer));
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("Learning XML", current.text.content.slice(tokenizer.buffer));
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("title", current.element_close.slice(tokenizer.buffer));
-    
-    
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("\n    ", current.text.empty_whitespace.slice(tokenizer.buffer));
-    
-    
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("author", current.element_open.identifier.slice(tokenizer.buffer));
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("Erik T. Ray", current.text.content.slice(tokenizer.buffer));
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("author", current.element_close.slice(tokenizer.buffer));
-    
-    
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("\n", current.text.empty_whitespace.slice(tokenizer.buffer));
-    
-    
-    
-    current = tokenizer.next();
-    try testing.expectEqualStrings("book", current.element_close.slice(tokenizer.buffer));
 }
 
-test "T2" {
-    std.debug.print("\n", .{});
-    defer std.debug.print("\n", .{});
-    const testing = std.testing;
-    _ = testing;
-    
-    var tokenizer = TokenStream{ .buffer = 
-        @embedFile("../books.xml")
-    };
-    
-    var current = tokenizer.next();
-    while (current != .eof) : (current = tokenizer.next()) {}
-    
+fn expectEqualText(xml_text: []const u8, tok: Token, text: []const u8) !void {
+    try testing.expect(tok == .text);
+    try testing.expectEqualStrings(text, tok.text.slice(xml_text));
 }
+
+fn expectEqualEmptyWhitespace(xml_text: []const u8, tok: Token, whitespace: []const u8) !void {
+    try expectEqualText(xml_text, .{ .text = tok.empty_whitespace }, whitespace);
+    for (whitespace) |char| {
+        try testing.expect(switch (char) {
+            ' ', '\t', '\n', '\r', => true,
+            else                   => false,
+        });
+    }
+}
+
+fn expectEqualElementClose(xml_text: []const u8, tok: Token, opt_namespace: ?[]const u8, expect_name: []const u8) !void {
+    try testing.expect(tok == .element_close);
+    try expectEqualElementOpen(xml_text, .{ .element_open = tok.element_close }, opt_namespace, expect_name);
+}
+
+fn expectEqualAttribute(
+    xml_text: []const u8,
+    tok: Token,
+    expect_parent: struct {
+        namespace: ?[]const u8,
+        name: []const u8
+    },
+    expect_name_value_pair: struct {
+        name: []const u8,
+        val: []const u8,
+    },
+) !void {
+    try testing.expect(tok == .attribute);
+    const got_parent = tok.attribute.parent;
+    const got_name = tok.attribute.name.slice(xml_text);
+    const got_value = tok.attribute.val.slice(xml_text);
+    
+    try expectEqualElementOpen(
+        xml_text,
+        .{
+            .element_open = .{
+                .namespace_colon = got_parent.namespace_colon,
+                .identifier = got_parent.identifier,
+            }
+        },
+        expect_parent.namespace,
+        expect_parent.name,
+    );
+    
+    try testing.expectEqualStrings(got_name, expect_name_value_pair.name);
+    try testing.expectEqualStrings(expect_name_value_pair.val, got_value[1..got_value.len - 1]);
+}
+
+test "T0" {
+    
+    const xml_text = 
+        \\<book>
+        // not well formed, since the namespace declaration for 'test' doesn't exist;
+        // this is just to make sure that namespaces are captured correctly.
+        \\    <test:extra discount = "20%"/>
+        \\    <title lang="en" lang2="ge" >Learning XML</title >
+        \\    <author>Erik T. Ray</author>
+        \\</book>
+    ;
+    
+    var tokenizer = TokenStream { .buffer = xml_text };
+    var current: Token = .bof;
+    
+    current = tokenizer.next();
+    try expectEqualElementOpen(xml_text, current, null, "book");
+    
+    current = tokenizer.next();
+    try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
+    
+    current = tokenizer.next();
+    try expectEqualElementOpen(xml_text, current, "test", "extra");
+    
+    current = tokenizer.next();
+    try expectEqualAttribute(xml_text, current, .{ .namespace = "test", .name = "extra" }, .{ .name = "discount", .val = "20%" });
+    
+    current = tokenizer.next();
+    try expectEqualElementClose(xml_text, current, "test", "extra");
+    
+    current = tokenizer.next();
+    try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
+    
+    current = tokenizer.next();
+    try expectEqualElementOpen(xml_text, current, null, "title");
+    
+    current = tokenizer.next();
+    try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang", .val = "en" });
+    
+    current = tokenizer.next();
+    try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang2", .val = "ge" });
+    
+    current = tokenizer.next();
+    try expectEqualText(xml_text, current, "Learning XML");
+    
+    current = tokenizer.next();
+    try expectEqualElementClose(xml_text, current, null, "title");
+    
+    current = tokenizer.next();
+    try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
+    
+    current = tokenizer.next();
+    try expectEqualElementOpen(xml_text, current, null, "author");
+    
+    current = tokenizer.next();
+    try expectEqualText(xml_text, current, "Erik T. Ray");
+    
+    current = tokenizer.next();
+    try expectEqualElementClose(xml_text, current, null, "author");
+    
+    current = tokenizer.next();
+    try expectEqualEmptyWhitespace(xml_text, current, "\n");
+    
+    current = tokenizer.next();
+    try expectEqualElementClose(xml_text, current, null, "book");
+}
+
+//test "T1" {
+//    std.debug.print("\n", .{});
+//    defer std.debug.print("\n", .{});
+    
+//    var xml_text = 
+//        \\<!-- faf -->
+//        \\<!---->
+//        \\<!-- --->
+//    ;
+    
+//    var tokenizer = TokenStream { .buffer = xml_text };
+//    var current: Token = .bof;
+    
+//    current = tokenizer.next();
+//    try testing.expect(current == .comment);
+//}
