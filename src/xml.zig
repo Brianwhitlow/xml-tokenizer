@@ -601,55 +601,136 @@ fn isValidXmlNameCharUtf8(char: u21) bool {
 
 
 
-
-
-fn expectEqualElementOpen(xml_text: []const u8, tok: Token, opt_namespace: ?[]const u8, expect_name: []const u8) !void {
-    try testing.expect(tok == .element_open);
-    const element_open = tok.element_open;
+fn expectEqualElementIdNamespace(
+    xml_text: []const u8,
+    el_id: Token.ElementId,
+    expect_opt_namespace: ?[]const u8,
+) !void {
+    const got_opt_namespace = el_id.namespace(xml_text);
     
-    const got_slice = element_open.slice(xml_text);
-    const got_ns = element_open.namespace(xml_text);
-    const got_name = element_open.name(xml_text);
-    
-    const expect_slice: []const u8 = blk: {
-        if (opt_namespace) |expect_ns| {
-            try testing.expect(got_ns != null);
-            try testing.expectEqualStrings(expect_ns, got_ns.?);
-            try testing.expectEqualStrings(expect_ns, got_slice[0..got_ns.?.len]);
-            break :blk @as([]const u8, try std.mem.join(testing.allocator, ":", &.{ expect_ns, expect_name }));
-        } else {
-            try testing.expect(got_ns == null);
-            try testing.expectEqualStrings(expect_name, got_slice);
-            break :blk expect_name;
-        }
-    };
-    
-    defer if (opt_namespace != null) testing.allocator.free(expect_slice);
-    
-    try testing.expectEqualStrings(expect_name, got_name);
-    try testing.expectEqualStrings(expect_slice, got_slice);
-    
-    
+    if (expect_opt_namespace) |expect_namespace| {
+        // Either both or neither must be null for succeeding the test.
+        try testing.expect(got_opt_namespace != null);
+        
+        const got_namespace = got_opt_namespace.?;
+        try testing.expectEqualStrings(expect_namespace, got_namespace);
+    } else {
+        // Either both or neither must be null for succeeding the test.
+        try testing.expect(got_opt_namespace == null);
+    }
 }
 
-fn expectEqualText(xml_text: []const u8, tok: Token, text: []const u8) !void {
+fn expectEqualElementIdName(
+    xml_text: []const u8, 
+    el_id: Token.ElementId, 
+    expect_name: []const u8,
+) !void {
+    const got_name = el_id.name(xml_text);
+    try testing.expectEqualStrings(expect_name, got_name);
+}
+
+fn expectEqualElementIdIdentifier(
+    xml_text: []const u8,
+    el_id: Token.ElementId,
+    expect_opt_namespace: ?[]const u8,
+    expect_name: []const u8,
+) !void {
+    try expectEqualElementIdNamespace(xml_text, el_id, expect_opt_namespace);
+    try expectEqualElementIdName(xml_text, el_id, expect_name);
+    
+    const expect_identifier
+    = if (expect_opt_namespace) |ns| try std.mem.join(testing.allocator, ":", &.{ns, expect_name})
+    else expect_name;
+    
+    defer if (expect_opt_namespace != null) testing.allocator.free(expect_identifier);
+    
+    try testing.expectEqualStrings(expect_identifier, el_id.identifier.slice(xml_text));
+}
+
+
+
+fn expectEqualElementOpen(
+    xml_text: []const u8,
+    tok: Token,
+    expect_opt_namespace: ?[]const u8,
+    expect_name: []const u8,
+) !void {
+    try testing.expect(tok == .element_open);
+    const el_id = tok.element_open;
+    
+    try expectEqualElementIdIdentifier(xml_text, el_id, expect_opt_namespace, expect_name);
+}
+
+fn expectEqualText(
+    xml_text: []const u8,
+    tok: Token,
+    text: []const u8
+) !void {
     try testing.expect(tok == .text);
     try testing.expectEqualStrings(text, tok.text.slice(xml_text));
 }
 
-fn expectEqualEmptyWhitespace(xml_text: []const u8, tok: Token, whitespace: []const u8) !void {
-    try expectEqualText(xml_text, .{ .text = tok.empty_whitespace }, whitespace);
-    for (whitespace) |char| {
-        try testing.expect(switch (char) {
+fn expectEqualEmptyWhitespace(
+    xml_text: []const u8,
+    tok: Token,
+    expect_whitespace: []const u8,
+) !void {
+    for (expect_whitespace) |char| {
+        // `expectEqualEmptyWhitespace` expects whitespace characters only.
+        std.debug.assert(switch (char) {
             ' ', '\t', '\n', '\r', => true,
             else                   => false,
         });
     }
+    
+    try testing.expect(tok == .empty_whitespace);
+    const got_whitespace = tok.empty_whitespace.slice(xml_text);
+    
+    try testing.expectEqualStrings(expect_whitespace, got_whitespace);
 }
 
-fn expectEqualElementClose(xml_text: []const u8, tok: Token, opt_namespace: ?[]const u8, expect_name: []const u8) !void {
+fn expectEqualElementClose(
+    xml_text: []const u8,
+    tok: Token,
+    expect_opt_namespace: ?[]const u8,
+    expect_name: []const u8
+) !void {
     try testing.expect(tok == .element_close);
-    try expectEqualElementOpen(xml_text, .{ .element_open = tok.element_close }, opt_namespace, expect_name);
+    const el_id = tok.element_close;
+    
+    try expectEqualElementIdIdentifier(xml_text, el_id, expect_opt_namespace, expect_name);
+}
+
+fn expectEqualAttributeParent(
+    xml_text: []const u8,
+    attr: Token.Attribute,
+    expect_opt_namespace: ?[]const u8,
+    expect_name: []const u8,
+) !void {
+    try expectEqualElementIdIdentifier(xml_text, attr.parent, expect_opt_namespace, expect_name);
+}
+
+fn expectEqualAttributeName(
+    xml_text: []const u8,
+    attr: Token.Attribute,
+    expect_name: []const u8,
+) !void {
+    try testing.expectEqualStrings(expect_name, attr.name.slice(xml_text));
+}
+
+fn expectEqualAttributeValue(
+    xml_text: []const u8,
+    attr: Token.Attribute,
+    expect_value: []const u8,
+) !void {
+    const expect_value_with_quotes = try std.mem.join(testing.allocator, "", &.{ "\"", expect_value, "\"" });
+    defer testing.allocator.free(expect_value_with_quotes);
+    
+    const got_value = attr.value(xml_text);
+    const got_value_with_quotes = attr.val.slice(xml_text);
+    
+    try testing.expectEqualStrings(expect_value,             got_value);
+    try testing.expectEqualStrings(expect_value_with_quotes, got_value_with_quotes);
 }
 
 fn expectEqualAttribute(
@@ -661,28 +742,23 @@ fn expectEqualAttribute(
     },
     expect_name_value_pair: struct {
         name: []const u8,
+        eql: []const u8, // e.g. ` = `, `= `, ` =`, etc.
         val: []const u8,
     },
 ) !void {
     try testing.expect(tok == .attribute);
-    const got_parent = tok.attribute.parent;
-    const got_name = tok.attribute.name.slice(xml_text);
-    const got_value = tok.attribute.val.slice(xml_text);
+    const attr = tok.attribute;
+    try expectEqualAttributeParent(xml_text, attr, expect_parent.namespace, expect_parent.name);
+    try expectEqualAttributeName(xml_text, attr, expect_name_value_pair.name);
+    try expectEqualAttributeValue(xml_text, attr, expect_name_value_pair.val);
     
-    try expectEqualElementOpen(
-        xml_text,
-        .{
-            .element_open = .{
-                .namespace_colon = got_parent.namespace_colon,
-                .identifier = got_parent.identifier,
-            }
-        },
-        expect_parent.namespace,
-        expect_parent.name,
-    );
+    const got_eql: []const u8 = blk: {
+        const beg = attr.name.end;
+        const end = attr.val.beg;
+        break :blk xml_text[beg..end];
+    };
     
-    try testing.expectEqualStrings(got_name, expect_name_value_pair.name);
-    try testing.expectEqualStrings(expect_name_value_pair.val, got_value[1..got_value.len - 1]);
+    try testing.expectEqualStrings(expect_name_value_pair.eql, got_eql);
 }
 
 test "T0" {
@@ -692,7 +768,7 @@ test "T0" {
         // not well formed, since the namespace declaration for 'test' doesn't exist;
         // this is just to make sure that namespaces are captured correctly.
         \\    <test:extra discount = "20%"/>
-        \\    <title lang="en" lang2="ge" >Learning XML</title >
+        \\    <title lang="en" lang2= "ge" >Learning XML</title >
         \\    <author>Erik T. Ray</author>
         \\</book>
     ;
@@ -702,52 +778,68 @@ test "T0" {
     
     current = tokenizer.next();
     try expectEqualElementOpen(xml_text, current, null, "book");
-    
-    current = tokenizer.next();
-    try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
-    
-    current = tokenizer.next();
-    try expectEqualElementOpen(xml_text, current, "test", "extra");
-    
-    current = tokenizer.next();
-    try expectEqualAttribute(xml_text, current, .{ .namespace = "test", .name = "extra" }, .{ .name = "discount", .val = "20%" });
-    
-    current = tokenizer.next();
-    try expectEqualElementClose(xml_text, current, "test", "extra");
-    
-    current = tokenizer.next();
-    try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
-    
-    current = tokenizer.next();
-    try expectEqualElementOpen(xml_text, current, null, "title");
-    
-    current = tokenizer.next();
-    try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang", .val = "en" });
-    
-    current = tokenizer.next();
-    try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang2", .val = "ge" });
-    
-    current = tokenizer.next();
-    try expectEqualText(xml_text, current, "Learning XML");
-    
-    current = tokenizer.next();
-    try expectEqualElementClose(xml_text, current, null, "title");
-    
-    current = tokenizer.next();
-    try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
-    
-    current = tokenizer.next();
-    try expectEqualElementOpen(xml_text, current, null, "author");
-    
-    current = tokenizer.next();
-    try expectEqualText(xml_text, current, "Erik T. Ray");
-    
-    current = tokenizer.next();
-    try expectEqualElementClose(xml_text, current, null, "author");
-    
-    current = tokenizer.next();
-    try expectEqualEmptyWhitespace(xml_text, current, "\n");
-    
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualElementOpen(xml_text, current, "test", "extra");
+        
+            current = tokenizer.next();
+            try expectEqualAttribute(xml_text, current, .{ .namespace = "test", .name = "extra" }, .{ .name = "discount", .eql = " = ", .val = "20%" });
+            
+        current = tokenizer.next();
+        try expectEqualElementClose(xml_text, current, "test", "extra");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualElementOpen(xml_text, current, null, "title");
+            
+            current = tokenizer.next();
+            try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang", .eql = "=", .val = "en" });
+            
+            current = tokenizer.next();
+            try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang2", .eql = "= ", .val = "ge" });
+            
+            current = tokenizer.next();
+            try expectEqualText(xml_text, current, "Learning XML");
+            
+        current = tokenizer.next();
+        try expectEqualElementClose(xml_text, current, null, "title");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualElementOpen(xml_text, current, null, "author");
+            
+            current = tokenizer.next();
+            try expectEqualText(xml_text, current, "Erik T. Ray");
+            
+        current = tokenizer.next();
+        try expectEqualElementClose(xml_text, current, null, "author");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualEmptyWhitespace(xml_text, current, "\n");
+        
+        
+        
     current = tokenizer.next();
     try expectEqualElementClose(xml_text, current, null, "book");
 }
