@@ -76,11 +76,10 @@ pub const Token = union(enum) {
     
     pub const Comment = struct {
         range: Range,
-        pub fn data(self: Comment, buffer: []const u8) []const u8 {
-            const slice = self.range.slice(buffer);
-            const beg = "<!--".len;
+        pub fn data(self: Comment, xml_text: []const u8) []const u8 {
+            const beg = self.range.beg + "<!--".len;
             const end = self.range.end - "-->".len;
-            return slice[beg..end];
+            return xml_text[beg..end];
         }
     };
     
@@ -107,10 +106,15 @@ pub const TokenStream = struct {
         left_angle_bracket,
         element_name_start_char: ElementNameStartChar,
         inside_element_open: InsideElementOpen,
+        found_right_angle_bracket,
         right_angle_bracket: RightAngleBracket,
         left_angle_bracket_fwd_slash,
         close_element_name_start_char: ElementNameStartChar,
         close_element_name_end_char,
+        found_adhoc_markup,
+        found_adhoc_markup_dash,
+        inside_comment: InsideComment,
+        eof,
         
         pub const ElementNameStartChar = struct {
             start: Index,
@@ -143,6 +147,17 @@ pub const TokenStream = struct {
             non_whitespace_chars: bool,
         };
         
+        pub const InsideComment = struct {
+            start: usize,
+            state: State,
+            
+            pub const State = enum {
+                seek_dash,
+                found_dash1,
+                found_dash2,
+            };
+        };
+        
     };
     
     pub fn next(self: *TokenStream) Token {
@@ -152,7 +167,10 @@ pub const TokenStream = struct {
         defer std.debug.assert( self.index >= index_on_entry );
         
         mainloop: while (self.index < self.buffer.len)
-        : (std.debug.assert(result.invalid.index == index_on_entry)) {
+        : ({
+            // This is to ensure that there is never a state invariant where the result has been changed but not returned.
+            std.debug.assert(result.invalid.index == index_on_entry);
+        }) {
             const current_char = self.buffer[self.index];
             switch (self.parse_state) {
                 .start
@@ -195,7 +213,10 @@ pub const TokenStream = struct {
                 .left_angle_bracket
                 => switch (current_char) {
                     '!',
-                    => unreachable,
+                    => {
+                        self.parse_state = .found_adhoc_markup;
+                        self.index += 1;
+                    },
                     
                     '?',
                     => unreachable,
@@ -227,6 +248,7 @@ pub const TokenStream = struct {
                 .element_name_start_char
                 => |element_name_start_char| switch (current_char) {
                     ' ', '\t', '\n', '\r',
+                    '/',
                     => {
                         result = .{ .element_open = .{
                             .namespace_colon = element_name_start_char.colon,
@@ -235,12 +257,28 @@ pub const TokenStream = struct {
                         
                         self.parse_state = .{ .inside_element_open = .{
                             .el_id = result.element_open,
-                            .state = .whitespace,
+                            .state = if (current_char == '/') .forward_slash else .whitespace,
                         } };
                         
                         self.index += 1;
                         break :mainloop;
                     },
+                    
+                    //'/',
+                    //=> {
+                    //    result = .{ .element_open = .{
+                    //        .namespace_colon = element_name_start_char.colon,
+                    //        .identifier = .{ .beg = element_name_start_char.start.index, .end = self.index },
+                    //    } };
+                        
+                    //    self.parse_state = .{ .inside_element_open = .{
+                    //        .el_id = result.element_open,
+                    //        .state = .forward_slash,
+                    //    } };
+                        
+                    //    self.index += 1;
+                    //    break :mainloop;
+                    //},
                     
                     '>',
                     => {
@@ -249,12 +287,7 @@ pub const TokenStream = struct {
                             .identifier = .{ .beg = element_name_start_char.start.index, .end = self.index },
                         } };
                         
-                        self.index += 1;
-                        self.parse_state = .{ .right_angle_bracket = .{
-                            .start = .{ .index = self.index },
-                            .non_whitespace_chars = false,
-                        } };
-                        
+                        self.parse_state = .found_right_angle_bracket;
                         break :mainloop;
                     },
                     
@@ -266,9 +299,6 @@ pub const TokenStream = struct {
                         } };
                         self.index += 1;
                     },
-                    
-                    '/',
-                    => unreachable,
                     
                     else
                     => {
@@ -292,11 +322,13 @@ pub const TokenStream = struct {
                         
                         '>',
                         => {
+                            self.parse_state = .found_right_angle_bracket;
+                        },
+                        
+                        '/',
+                        => {
+                            self.parse_state.inside_element_open.state = .forward_slash;
                             self.index += 1;
-                            self.parse_state = .{ .right_angle_bracket = .{
-                                .start = .{ .index = self.index },
-                                .non_whitespace_chars = false,
-                            } };
                         },
                         
                         else
@@ -401,18 +433,12 @@ pub const TokenStream = struct {
                         },
                         
                         '>',
-                        => {
-                            self.index += 1;
-                            self.parse_state = .{ .right_angle_bracket = .{
-                                .start = .{ .index = self.index },
-                                .non_whitespace_chars = false,
-                            } };
-                        },
+                        => self.parse_state = .found_right_angle_bracket,
                         
                         '/',
                         => {
-                            self.index += 1;
                             self.parse_state.inside_element_open.state = .forward_slash;
+                            self.index += 1;
                         },
                         
                         else
@@ -423,13 +449,8 @@ pub const TokenStream = struct {
                     => switch (current_char) {
                         '>',
                         => {
-                            self.index += 1;
-                            self.parse_state = .{ .right_angle_bracket = .{
-                                .start = .{ .index = self.index },
-                                .non_whitespace_chars = false,
-                            } };
-                            
                             result = .{ .element_close = inside_element_open.el_id };
+                            self.parse_state = .found_right_angle_bracket;
                             break :mainloop;
                         },
                         
@@ -467,8 +488,14 @@ pub const TokenStream = struct {
                                 .end = self.index,
                             }
                         } };
-                        
                         self.parse_state = .close_element_name_end_char;
+                        
+                        if (current_char == '>' and self.index == self.buffer.len) {
+                            self.parse_state = .eof;
+                            result = .eof;
+                            break :mainloop;
+                        }
+                        
                         break :mainloop;
                     },
                     
@@ -497,11 +524,97 @@ pub const TokenStream = struct {
                     => self.index += 1,
                     
                     '>',
+                    => self.parse_state = .found_right_angle_bracket,
+                    
+                    else
+                    => break :mainloop,
+                },
+                
+                .right_angle_bracket
+                => |right_angle_bracket| {
+                    const range = Range {
+                        .beg = right_angle_bracket.start.index,
+                        .end = self.index,
+                    };
+                    
+                    switch (current_char) {
+                        '<',
+                        => {
+                            const end_of_file_condition = self.index == self.buffer.len;
+                            const at_least_whitespace_found = self.index != right_angle_bracket.start.index;
+                            
+                            if (at_least_whitespace_found) {
+                                result =
+                                if (right_angle_bracket.non_whitespace_chars) .{ .text = range, }
+                                else .{ .empty_whitespace = range };
+                            }
+                            
+                            self.parse_state = .left_angle_bracket;
+                            self.index += 1;
+                            
+                            if (end_of_file_condition) {
+                                result = .{ .invalid = .{ .index = self.index } };
+                            }
+                            
+                            if (at_least_whitespace_found or end_of_file_condition) {
+                                break :mainloop;
+                            }
+                        },
+                        
+                        ' ', '\t', '\n', '\r',
+                        => {
+                            self.index += 1;
+                            if (self.index == self.buffer.len) {
+                                result = .eof;
+                                break :mainloop;
+                            }
+                        },
+                        
+                        else
+                        => {
+                            self.parse_state.right_angle_bracket.non_whitespace_chars = true;
+                            self.index += 1;
+                            if (self.index == self.buffer.len) {
+                                result = .eof;
+                                break :mainloop;
+                            }
+                        },
+                    }
+                    
+                },
+                
+                .found_adhoc_markup
+                => switch (current_char) {
+                    '-',
+                    => {
+                        self.parse_state = .found_adhoc_markup_dash;
+                        self.index += 1;
+                    },
+                    
+                    '[',
+                    => unreachable,
+                    
+                    'D',
+                    => unreachable,
+                    
+                    'E',
+                    => unreachable,
+                    
+                    'A',
+                    => unreachable,
+                    
+                    else
+                    => break :mainloop,
+                },
+                
+                .found_adhoc_markup_dash
+                => switch (current_char) {
+                    '-',
                     => {
                         self.index += 1;
-                        self.parse_state = .{ .right_angle_bracket = .{
-                            .start = .{ .index = self.index },
-                            .non_whitespace_chars = false,
+                        self.parse_state = .{ .inside_comment = .{
+                            .start = self.index - ("<!--".len),
+                            .state = .seek_dash,
                         } };
                     },
                     
@@ -509,37 +622,65 @@ pub const TokenStream = struct {
                     => break :mainloop,
                 },
                 
-                .right_angle_bracket
-                => |right_angle_bracket| switch (current_char) {
-                    '<',
-                    => {
-                        const range = Range {
-                            .beg = right_angle_bracket.start.index,
-                            .end = self.index,
-                        };
+                .inside_comment
+                => |inside_comment| switch (inside_comment.state) {
+                    .seek_dash,
+                    => switch (current_char) {
+                        '-',
+                        => {
+                            self.parse_state.inside_comment.state = .found_dash1;
+                            self.index += 1;
+                        },
                         
-                        result =
-                        if (right_angle_bracket.non_whitespace_chars) .{ .text = range, }
-                        else .{ .empty_whitespace = range };
-                        
-                        self.parse_state = .left_angle_bracket;
-                        
-                        self.index += 1;
-                        break :mainloop;
+                        else
+                        => self.index += 1,
                     },
                     
-                    ' ', '\t', '\n', '\r',
-                    => self.index += 1,
+                    .found_dash1,
+                    => switch (current_char) {
+                        '-',
+                        => {
+                            self.parse_state.inside_comment.state = .found_dash2;
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => {
+                            self.parse_state.inside_comment.state = .seek_dash;
+                            self.index += 1;
+                        }
+                    },
                     
-                    else
-                    => {
-                        self.parse_state = .{ .right_angle_bracket = .{
-                            .start = right_angle_bracket.start,
-                            .non_whitespace_chars = true,
-                        } };
-                        self.index += 1;
+                    .found_dash2,
+                    => switch (current_char) {
+                        '>',
+                        => {
+                            self.parse_state = .found_right_angle_bracket;
+                            result = .{ .comment = .{ .range = .{ .beg = inside_comment.start, .end = self.index + 1 } } };
+                            break :mainloop;
+                        },
+                        
+                        else
+                        => break :mainloop,
                     },
                 },
+                
+                .found_right_angle_bracket
+                => {
+                    self.index += 1;
+                    self.parse_state = .{ .right_angle_bracket = .{
+                        .start = .{ .index = self.index },
+                        .non_whitespace_chars = false,
+                    } };
+                    
+                    if (self.index == self.buffer.len) {
+                        result = .eof;
+                        break :mainloop;
+                    }
+                },
+                
+                .eof
+                => unreachable,
             }
         }
         
@@ -555,12 +696,7 @@ pub const TokenStream = struct {
     
 };
 
-/// Returns false if index would be an out-of-bounds access, or if `buffer[index] != with`.
-fn safeAccessCmpBufferIndex(comptime T: type, buffer: []const T, index: usize, with: T) bool {
-    return index < buffer.len and buffer[index] == with;
-}
-
-fn isValidXmlNameStartCharUtf8(char: u21) bool {
+pub fn isValidXmlNameStartCharUtf8(char: u21) bool {
     return switch (char) {
         'A'...'Z',
         'a'...'z',
@@ -584,7 +720,7 @@ fn isValidXmlNameStartCharUtf8(char: u21) bool {
     };
 }
 
-fn isValidXmlNameCharUtf8(char: u21) bool {
+pub fn isValidXmlNameCharUtf8(char: u21) bool {
     return isValidXmlNameStartCharUtf8(char) or switch (char) {
         '0'...'9',
         '-',
@@ -599,7 +735,249 @@ fn isValidXmlNameCharUtf8(char: u21) bool {
     };
 }
 
+test "T0" {
+    const xml_text = 
+        \\<book>
+        // not well formed, since the namespace declaration for 'test' doesn't exist;
+        // this is just to make sure that namespaces are captured correctly.
+        \\    <test:extra discount = "20%"/>
+        \\    <title lang="en" lang2= "ge" >Learning XML</title >
+        \\    <author>Erik T. Ray</author>
+        \\</book>
+    ;
+    
+    var tokenizer = TokenStream { .buffer = xml_text };
+    var current: Token = .bof;
+    
+    current = tokenizer.next();
+    try expectEqualElementOpen(xml_text, current, null, "book");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualElementOpen(xml_text, current, "test", "extra");
+        
+            current = tokenizer.next();
+            try expectEqualAttribute(xml_text, current, .{ .namespace = "test", .name = "extra" }, .{ .name = "discount", .eql = " = ", .val = "20%" });
+            
+        current = tokenizer.next();
+        try expectEqualElementClose(xml_text, current, "test", "extra");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualElementOpen(xml_text, current, null, "title");
+            
+            current = tokenizer.next();
+            try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang", .eql = "=", .val = "en" });
+            
+            current = tokenizer.next();
+            try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang2", .eql = "= ", .val = "ge" });
+            
+            current = tokenizer.next();
+            try expectEqualText(xml_text, current, "Learning XML");
+            
+        current = tokenizer.next();
+        try expectEqualElementClose(xml_text, current, null, "title");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualElementOpen(xml_text, current, null, "author");
+            
+            current = tokenizer.next();
+            try expectEqualText(xml_text, current, "Erik T. Ray");
+            
+        current = tokenizer.next();
+        try expectEqualElementClose(xml_text, current, null, "author");
+        
+        
+        
+        current = tokenizer.next();
+        try expectEqualEmptyWhitespace(xml_text, current, "\n");
+        
+        
+        
+    current = tokenizer.next();
+    try expectEqualElementClose(xml_text, current, null, "book");
+    
+    current = tokenizer.next();
+    try testing.expect(current == .eof);
+    
+    current = tokenizer.next();
+    try testing.expect(current == .invalid);
+    
+}
 
+test "Empty Element with attributes" {
+    const xml_text =
+        \\<book title="Don Quijote" author="Miguel Cervantes"/>
+    ;
+    
+    var tokenizer = TokenStream { .buffer = xml_text };
+    var current: Token = .bof;
+    
+    current = tokenizer.next();
+    try expectEqualElementOpen(xml_text, current, null, "book");
+    
+    current = tokenizer.next();
+    try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "book" }, .{ .name = "title", .eql = "=", .val = "Don Quijote" });
+    
+    current = tokenizer.next();
+    try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "book" }, .{ .name = "author", .eql = "=", .val = "Miguel Cervantes" });
+    
+    current = tokenizer.next();
+    try expectEqualElementClose(xml_text, current, null, "book");
+    
+    current = tokenizer.next();
+    try testing.expect(current == .eof);
+    
+    current = tokenizer.next();
+    try testing.expect(current == .invalid);
+    
+}
+
+test "Tag Whitespace Variants" {
+    const xml_text =
+        \\<person/>
+        \\<person />
+        \\<person></person>
+        \\<person ></person >
+        \\<person></person >
+        \\<person ></person>
+
+        \\<person id="0"/>
+        \\<person id ="0"/>
+        \\<person id= "0"/>
+        \\<person id = "0"/>
+
+        \\<person id="0" />
+        \\<person id ="0" />
+        \\<person id= "0" />
+        \\<person id = "0" />
+
+        \\<person id="0"></person>
+        \\<person id ="0"></person>
+        \\<person id= "0"></person>
+        \\<person id = "0"></person>
+
+        \\<person id="0" ></person>
+        \\<person id ="0" ></person>
+        \\<person id= "0" ></person>
+        \\<person id = "0" ></person>
+
+        \\<person id="0"></person >
+        \\<person id ="0"></person >
+        \\<person id= "0"></person >
+        \\<person id = "0"></person >
+
+        \\<person id="0" ></person >
+        \\<person id ="0" ></person >
+        \\<person id= "0" ></person >
+        \\<person id = "0" ></person >
+    ;
+    
+    const initial_elements_with_no_attributes = 6;
+    const element_count = std.mem.count(u8, xml_text, "\n");
+    
+    var tokenizer = TokenStream { .buffer = xml_text };
+    var current: Token = .bof;
+    
+    
+    { // First five elements with no attribute
+        var idx: usize = 0;
+        errdefer std.debug.print("\nOn iteration {}\n", .{idx});
+        
+        while (idx < initial_elements_with_no_attributes) : (idx += 1) {
+            current = tokenizer.next();
+            try expectEqualElementOpen(xml_text, current, null, "person");
+            
+            current = tokenizer.next();
+            try expectEqualElementClose(xml_text, current, null, "person");
+            
+            current = tokenizer.next();
+            try expectEqualEmptyWhitespace(xml_text, current, "\n");
+        }
+    }
+    
+    { // All the rest
+        var idx: usize = 0;
+        errdefer std.debug.print("\nOn iteration {} (after first set)\n", .{idx});
+        
+        const eql_sign = [_][]const u8 {
+            "=",
+            " =",
+            "= ",
+            " = ",
+        };
+        
+        while (idx < (element_count - initial_elements_with_no_attributes)) : (idx += 1) {
+            current = tokenizer.next();
+            try expectEqualElementOpen(xml_text, current, null, "person");
+            
+            current = tokenizer.next();
+            try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "person"}, .{ .name = "id", .eql = eql_sign[idx % 4], .val = "0" });
+            
+            current = tokenizer.next();
+            try expectEqualElementClose(xml_text, current, null, "person");
+            
+            current = tokenizer.next();
+            try expectEqualEmptyWhitespace(xml_text, current, "\n");
+        }
+    }
+    
+}
+
+test "Comments" {
+    var xml_text = 
+        \\<!-- faf -->
+        \\<!---->
+        \\<!--- -->
+    ;
+    
+    var tokenizer = TokenStream { .buffer = xml_text };
+    var current: Token = .bof;
+    
+    current = tokenizer.next();
+    try testing.expect(current == .comment);
+    try testing.expectEqualStrings(" faf ", current.comment.data(xml_text));
+    
+    current = tokenizer.next();
+    try expectEqualEmptyWhitespace(xml_text, current, "\n");
+    
+    current = tokenizer.next();
+    try testing.expect(current == .comment);
+    try testing.expectEqualStrings("", current.comment.data(xml_text));
+    
+    current = tokenizer.next();
+    try expectEqualEmptyWhitespace(xml_text, current, "\n");
+    
+    current = tokenizer.next();
+    try testing.expect(current == .comment);
+    try testing.expectEqualStrings("- ", current.comment.data(xml_text));
+    
+    current = tokenizer.next();
+    try testing.expect(current == .eof);
+    
+    current = tokenizer.next();
+    try testing.expect(current == .invalid);
+    
+}
 
 fn expectEqualElementIdNamespace(
     xml_text: []const u8,
@@ -760,103 +1138,3 @@ fn expectEqualAttribute(
     
     try testing.expectEqualStrings(expect_name_value_pair.eql, got_eql);
 }
-
-test "T0" {
-    
-    const xml_text = 
-        \\<book>
-        // not well formed, since the namespace declaration for 'test' doesn't exist;
-        // this is just to make sure that namespaces are captured correctly.
-        \\    <test:extra discount = "20%"/>
-        \\    <title lang="en" lang2= "ge" >Learning XML</title >
-        \\    <author>Erik T. Ray</author>
-        \\</book>
-    ;
-    
-    var tokenizer = TokenStream { .buffer = xml_text };
-    var current: Token = .bof;
-    
-    current = tokenizer.next();
-    try expectEqualElementOpen(xml_text, current, null, "book");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualElementOpen(xml_text, current, "test", "extra");
-        
-            current = tokenizer.next();
-            try expectEqualAttribute(xml_text, current, .{ .namespace = "test", .name = "extra" }, .{ .name = "discount", .eql = " = ", .val = "20%" });
-            
-        current = tokenizer.next();
-        try expectEqualElementClose(xml_text, current, "test", "extra");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualElementOpen(xml_text, current, null, "title");
-            
-            current = tokenizer.next();
-            try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang", .eql = "=", .val = "en" });
-            
-            current = tokenizer.next();
-            try expectEqualAttribute(xml_text, current, .{ .namespace = null, .name = "title" }, .{ .name = "lang2", .eql = "= ", .val = "ge" });
-            
-            current = tokenizer.next();
-            try expectEqualText(xml_text, current, "Learning XML");
-            
-        current = tokenizer.next();
-        try expectEqualElementClose(xml_text, current, null, "title");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualElementOpen(xml_text, current, null, "author");
-            
-            current = tokenizer.next();
-            try expectEqualText(xml_text, current, "Erik T. Ray");
-            
-        current = tokenizer.next();
-        try expectEqualElementClose(xml_text, current, null, "author");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualEmptyWhitespace(xml_text, current, "\n");
-        
-        
-        
-    current = tokenizer.next();
-    try expectEqualElementClose(xml_text, current, null, "book");
-}
-
-//test "T1" {
-//    std.debug.print("\n", .{});
-//    defer std.debug.print("\n", .{});
-    
-//    var xml_text = 
-//        \\<!-- faf -->
-//        \\<!---->
-//        \\<!-- --->
-//    ;
-    
-//    var tokenizer = TokenStream { .buffer = xml_text };
-//    var current: Token = .bof;
-    
-//    current = tokenizer.next();
-//    try testing.expect(current == .comment);
-//}
