@@ -264,22 +264,6 @@ pub const TokenStream = struct {
                         break :mainloop;
                     },
                     
-                    //'/',
-                    //=> {
-                    //    result = .{ .element_open = .{
-                    //        .namespace_colon = element_name_start_char.colon,
-                    //        .identifier = .{ .beg = element_name_start_char.start.index, .end = self.index },
-                    //    } };
-                        
-                    //    self.parse_state = .{ .inside_element_open = .{
-                    //        .el_id = result.element_open,
-                    //        .state = .forward_slash,
-                    //    } };
-                        
-                    //    self.index += 1;
-                    //    break :mainloop;
-                    //},
-                    
                     '>',
                     => {
                         result = .{ .element_open = .{
