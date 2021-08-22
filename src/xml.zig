@@ -114,6 +114,9 @@ pub const TokenStream = struct {
         found_adhoc_markup,
         found_adhoc_markup_dash,
         inside_comment: InsideComment,
+        left_angle_bracket_qmark,
+        pi_target_name_start_char: Index,
+        pi_target_name_end_char: PITargetNameEndChar,
         eof,
         
         pub const ElementNameStartChar = struct {
@@ -158,18 +161,29 @@ pub const TokenStream = struct {
             };
         };
         
+        pub const PITargetNameEndChar = struct {
+            target: Range,
+            state: State,
+            
+            pub const State = enum {
+                seek_qm,
+                in_string,
+                found_qm,
+            };
+        };
+        
     };
     
     pub fn next(self: *TokenStream) Token {
         var result: Token = .{ .invalid = .{ .index = self.index } };
         
-        const index_on_entry = self.index;
-        defer std.debug.assert( self.index >= index_on_entry );
+        const on_start = .{ .index = self.index };
+        defer std.debug.assert( self.index >= on_start.index );
         
         mainloop: while (self.index < self.buffer.len)
         : ({
             // This is to ensure that there is never a state invariant where the result has been changed but not returned.
-            std.debug.assert(result.invalid.index == index_on_entry);
+            std.debug.assert(result.invalid.index == on_start.index);
         }) {
             const current_char = self.buffer[self.index];
             switch (self.parse_state) {
@@ -219,7 +233,10 @@ pub const TokenStream = struct {
                     },
                     
                     '?',
-                    => unreachable,
+                    => {
+                        self.parse_state = .left_angle_bracket_qmark;
+                        self.index += 1;
+                    },
                     
                     '/',
                     => {
@@ -663,6 +680,97 @@ pub const TokenStream = struct {
                     }
                 },
                 
+                .left_angle_bracket_qmark
+                => {
+                    const current_utf8_cp = blk: {
+                        const opt_blk_out = self.currentUtf8Codepoint();
+                        if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
+                            break :mainloop;
+                        break :blk opt_blk_out.?;
+                    };
+                    
+                    self.parse_state = .{ .pi_target_name_start_char = .{ .index = self.index } };
+                    self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
+                },
+                
+                .pi_target_name_start_char
+                => |pi_target_name_start_char| switch (current_char) {
+                    ' ', '\t', '\n', '\r', '?',
+                    => {
+                        self.parse_state = .{ .pi_target_name_end_char = .{
+                            .target = .{ .beg = pi_target_name_start_char.index, .end = self.index },
+                            .state = if (current_char == '?') .found_qm else .seek_qm,
+                        } };
+                        self.index += 1;
+                    },
+                    
+                    else
+                    => {
+                        const current_utf8_cp = blk: {
+                            const opt_blk_out = self.currentUtf8Codepoint();
+                            if (opt_blk_out == null or !isValidXmlNameCharUtf8(opt_blk_out.?))
+                                break :mainloop;
+                            break :blk opt_blk_out.?;
+                        };
+                        
+                        self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
+                    },
+                },
+                
+                .pi_target_name_end_char
+                => |pi_target_name_end_char| switch (pi_target_name_end_char.state) {
+                    .seek_qm,
+                    => switch (current_char) {
+                        '"',
+                        => {
+                            self.parse_state.pi_target_name_end_char.state = .in_string;
+                            self.index += 1;
+                        },
+                        
+                        '?',
+                        => {
+                            self.parse_state.pi_target_name_end_char.state = .found_qm;
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => self.index += 1,
+                    },
+                    
+                    .in_string
+                    => switch (current_char) {
+                        '"',
+                        => {
+                            self.parse_state.pi_target_name_end_char.state = .seek_qm;
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => {
+                            self.index += 1;
+                        },
+                    },
+                    
+                    .found_qm
+                    => switch (current_char) {
+                        '>',
+                        => {
+                            result = .{ .processing_instructions = .{
+                                .target = pi_target_name_end_char.target,
+                                .instructions = .{ .beg = pi_target_name_end_char.target.end + 1, .end = self.index - 1 },
+                            } };
+                            
+                            self.parse_state = .found_right_angle_bracket;
+                            break :mainloop;
+                        },
+                        
+                        else
+                        => {
+                            break :mainloop;
+                        },
+                    },
+                },
+                
                 .eof
                 => unreachable,
             }
@@ -720,6 +828,7 @@ pub fn isValidXmlNameCharUtf8(char: u21) bool {
 }
 
 test "T0" {
+    std.debug.print("\n", .{});
     const xml_text = 
         \\<book>
         // not well formed, since the namespace declaration for 'test' doesn't exist;
@@ -928,7 +1037,7 @@ test "Tag Whitespace Variants" {
 }
 
 test "Comments" {
-    var xml_text = 
+    const xml_text = 
         \\<!-- faf -->
         \\<!---->
         \\<!--- -->
@@ -961,6 +1070,38 @@ test "Comments" {
     current = tokenizer.next();
     try testing.expect(current == .invalid);
     
+}
+
+test "Processing Instructions" {
+    const xml_text = 
+        \\<?faf ""?>
+        \\<?did moob?>
+        \\<?xml encoding="UTF-8"?>
+    ;
+    
+    var tokenizer = TokenStream { .buffer = xml_text };
+    var current: Token = .bof;
+    
+    current = tokenizer.next();
+    try expectEqualProcessingInstructions(xml_text, current, "faf", "\"\"");
+    
+    current = tokenizer.next();
+    try expectEqualEmptyWhitespace(xml_text, current, "\n");
+    
+    current = tokenizer.next();
+    try expectEqualProcessingInstructions(xml_text, current, "did", "moob");
+    
+    current = tokenizer.next();
+    try expectEqualEmptyWhitespace(xml_text, current, "\n");
+    
+    current = tokenizer.next();
+    try expectEqualProcessingInstructions(xml_text, current, "xml", "encoding=\"UTF-8\"");
+    
+    current = tokenizer.next();
+    try testing.expect(current == .eof);
+    
+    current = tokenizer.next();
+    try testing.expect(current == .invalid);
 }
 
 fn expectEqualElementIdNamespace(
@@ -1121,4 +1262,26 @@ fn expectEqualAttribute(
     };
     
     try testing.expectEqualStrings(expect_name_value_pair.eql, got_eql);
+}
+
+fn expectEqualProcessingInstructions(
+    xml_text: []const u8,
+    tok: Token,
+    expect_target: []const u8,
+    expect_instructions: []const u8,
+) !void {
+    try testing.expect(tok == .processing_instructions);
+    const pi_instructions = tok.processing_instructions;
+    
+    const got_target = pi_instructions.target.slice(xml_text);
+    const got_instructions = pi_instructions.instructions.slice(xml_text);
+    const got_slice = pi_instructions.slice(xml_text);
+    
+    try testing.expectEqualStrings(expect_target, got_target);
+    try testing.expectEqualStrings(expect_instructions, got_instructions);
+    
+    const expect_slice = try std.mem.join(testing.allocator, "", &.{ "<?", got_target, " ", got_instructions, "?>" });
+    defer testing.allocator.free(expect_slice);
+    
+    try testing.expectEqualStrings(expect_slice, got_slice);
 }
