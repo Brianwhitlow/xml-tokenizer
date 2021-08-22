@@ -16,8 +16,8 @@ pub const Token = union(enum) {
     invalid: Index,
     
     element_open: ElementId,
-    attribute: Attribute,
     element_close: ElementId,
+    attribute: Attribute,
     
     empty_whitespace: Range,
     text: Range,
@@ -174,9 +174,11 @@ pub const TokenStream = struct {
         
     };
     
-    pub fn reset(self: *TokenStream) void {
+    pub fn reset(self: *TokenStream, new_buffer: ?[]const u8) Token {
         self.parse_state = .start;
         self.index = 0;
+        self.buffer = new_buffer orelse self.buffer;
+        return .bof;
     }
     
     pub fn next(self: *TokenStream) Token {
