@@ -174,6 +174,11 @@ pub const TokenStream = struct {
         
     };
     
+    pub fn reset(self: *TokenStream) void {
+        self.parse_state = .start;
+        self.index = 0;
+    }
+    
     pub fn next(self: *TokenStream) Token {
         var result: Token = .{ .invalid = .{ .index = self.index } };
         
@@ -355,6 +360,10 @@ pub const TokenStream = struct {
                                 .beg = attribute_name_start_char.index,
                                 .end = self.index
                         } },
+                        
+                        // This is required to properly tokenize cases like 'xml:<name>' and 'xmlns:<namespace name>'
+                        ':',
+                        => self.index += 1,
                         
                         else
                         => {
@@ -774,6 +783,10 @@ pub const TokenStream = struct {
                 .eof
                 => unreachable,
             }
+        }
+        
+        if (result == .invalid and self.index < self.buffer.len) {
+            result.invalid.index = self.index;
         }
         
         return result;
