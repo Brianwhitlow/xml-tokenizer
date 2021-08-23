@@ -26,8 +26,6 @@ pub const Token = union(enum) {
     comment: Comment,
     processing_instructions: ProcessingInstructions,
     
-    
-    
     pub const ElementId = struct {
         namespace_colon: ?Index,
         identifier: Range,
