@@ -240,7 +240,8 @@ pub const TokenStream = struct {
             switch (self.parse_state) {
                 .start
                 => switch (current_char) {
-                    ' ', '\t', '\n', '\r', '<',
+                    ' ', '\t', '\n', '\r',
+                    '<',
                     => {
                         self.index += 1;
                         self.parse_state = switch (current_char) {
@@ -286,52 +287,32 @@ pub const TokenStream = struct {
                     },
                     
                     else
-                    => {
-                        const current_utf8_cp = blk: {
-                            const opt_blk_out = self.currentUtf8Codepoint();
-                            if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
-                                break :mainloop;
-                            break :blk opt_blk_out.?;
-                        };
-                        
+                    => if (self.currentIsValidNameStartChar()) {
                         self.parse_state = .{ .el_open_name_start_char = .{
                             .start = Index.init(self.index),
                             .colon = null,
                         } };
-                        
-                        self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                    },
+                        self.index += std.unicode.utf8ByteSequenceLength(current_char)
+                        catch unreachable;
+                    } else break :mainloop,
                 },
                 
                 .left_angle_bracket_fwd_slash
-                => {
-                    const current_utf8_cp = blk: {
-                        const opt_blk_out = self.currentUtf8Codepoint();
-                        if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
-                            break :mainloop;
-                        break :blk opt_blk_out.?;
-                    };
-                    
+                => if (self.currentIsValidNameStartChar()) {
                     self.parse_state = .{ .el_close_name_start_char = .{
                         .start = Index.init(self.index),
                         .colon = null,
                     } };
-                    
-                    self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                },
+                    self.index += std.unicode.utf8ByteSequenceLength(current_char)
+                    catch unreachable;
+                } else break :mainloop,
                 
                 .left_angle_bracket_qmark
-                => {
-                    const current_utf8_cp = blk: {
-                        const opt_blk_out = self.currentUtf8Codepoint();
-                        if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
-                            break :mainloop;
-                        break :blk opt_blk_out.?;
-                    };
-                    
+                => if (self.currentIsValidNameStartChar()) {
                     self.parse_state = .{ .pi_target_name_start_char = Index.init(self.index) };
-                    self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                },
+                    self.index += std.unicode.utf8ByteSequenceLength(current_char)
+                    catch unreachable;
+                } else break :mainloop,
                 
                 
                 
@@ -375,16 +356,10 @@ pub const TokenStream = struct {
                     },
                     
                     else
-                    => {
-                        const current_utf8_cp = blk: {
-                            const opt_blk_out = self.currentUtf8Codepoint();
-                            if (opt_blk_out == null or !isValidXmlNameCharUtf8(opt_blk_out.?))
-                                break :mainloop;
-                            break :blk opt_blk_out.?;
-                        };
-                        
-                        self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                    },
+                    => if (self.currentIsValidNameChar()) {
+                        self.index += std.unicode.utf8ByteSequenceLength(current_char)
+                        catch unreachable;
+                    } else break :mainloop,
                 },
                 
                 .el_open_name_end_char
@@ -406,18 +381,11 @@ pub const TokenStream = struct {
                         },
                         
                         else
-                        => {
-                            const current_utf8_cp = blk: {
-                                const opt_blk_out = self.currentUtf8Codepoint();
-                                if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
-                                    break :mainloop;
-                                break :blk opt_blk_out.?;
-                            };
-                            
+                        => if (self.currentIsValidNameStartChar()) {
                             self.parse_state.el_open_name_end_char.state = .{ .attribute_name_start_char = Index.init(self.index) };
-                            
-                            self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                        },
+                            self.index += std.unicode.utf8ByteSequenceLength(current_char)
+                            catch unreachable;
+                        } else break :mainloop,
                     },
                     
                     .attribute_name_start_char
@@ -434,16 +402,10 @@ pub const TokenStream = struct {
                         => self.index += 1,
                         
                         else
-                        => {
-                            const current_utf8_cp = blk: {
-                                const opt_blk_out = self.currentUtf8Codepoint();
-                                if (opt_blk_out == null or !isValidXmlNameCharUtf8(opt_blk_out.?))
-                                    break :mainloop;
-                                break :blk opt_blk_out.?;
-                            };
-                            
-                            self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                        },
+                        => if (self.currentIsValidNameChar()) {
+                            self.index += std.unicode.utf8ByteSequenceLength(current_char)
+                            catch unreachable;
+                        } else break :mainloop,
                     },
                     
                     .attribute_seek_eql
@@ -568,16 +530,10 @@ pub const TokenStream = struct {
                     },
                     
                     else
-                    => {
-                        const current_utf8_cp = blk: {
-                            const opt_blk_out = self.currentUtf8Codepoint();
-                            if (opt_blk_out == null or !isValidXmlNameCharUtf8(opt_blk_out.?))
-                                break :mainloop;
-                            break :blk opt_blk_out.?;
-                        };
-                        
-                        self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                    },
+                    => if (self.currentIsValidNameChar()) {
+                        self.index += std.unicode.utf8ByteSequenceLength(current_char)
+                        catch unreachable;
+                    } else break :mainloop,
                 },
                 
                 .el_close_name_end_char
@@ -606,16 +562,10 @@ pub const TokenStream = struct {
                     },
                     
                     else
-                    => {
-                        const current_utf8_cp = blk: {
-                            const opt_blk_out = self.currentUtf8Codepoint();
-                            if (opt_blk_out == null or !isValidXmlNameCharUtf8(opt_blk_out.?))
-                                break :mainloop;
-                            break :blk opt_blk_out.?;
-                        };
-                        
-                        self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                    },
+                    => if (self.currentIsValidNameChar()) {
+                        self.index += std.unicode.utf8ByteSequenceLength(current_char)
+                        catch unreachable;
+                    } else break :mainloop,
                 },
                 
                 .pi_target_name_end_char
@@ -844,6 +794,19 @@ pub const TokenStream = struct {
         if (self.index + utf8_cp_len > self.buffer.len) return null;
         return std.unicode.utf8Decode(self.buffer[self.index..self.index + utf8_cp_len]) catch null;
     }
+    
+    fn currentIsValidNameChar(self: TokenStream) bool {
+        const current_cp = self.currentUtf8Codepoint();
+        const invalid_cp = current_cp == null or !isValidXmlNameCharUtf8(current_cp.?);
+        return !invalid_cp;
+    }
+    
+    fn currentIsValidNameStartChar(self: TokenStream) bool {
+        const current_cp = self.currentUtf8Codepoint();
+        const invalid_cp = current_cp == null or !isValidXmlNameStartCharUtf8(current_cp.?);
+        return !invalid_cp;
+    }
+    
 };
 
 pub fn isValidXmlNameStartCharUtf8(char: u21) bool {
