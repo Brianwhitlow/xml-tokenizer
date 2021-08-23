@@ -144,9 +144,6 @@ pub const TokenStream = struct {
         left_angle_bracket_fwd_slash,
         left_angle_bracket_qmark,
         
-        found_adhoc_markup,
-        found_adhoc_markup_dash,
-        
         el_open_name_start_char: ElementNameStartChar,
         el_open_name_end_char: ElementNameEndChar,
         
@@ -155,6 +152,9 @@ pub const TokenStream = struct {
         
         pi_target_name_start_char: Index,
         pi_target_name_end_char: PITargetNameEndChar,
+        
+        found_adhoc_markup,
+        found_adhoc_markup_dash,
         
         inside_comment: InsideComment,
         
@@ -275,6 +275,8 @@ pub const TokenStream = struct {
                     => break :mainloop,
                 },
                 
+                
+                
                 .left_angle_bracket
                 => switch (current_char) {
                     '!',
@@ -312,6 +314,38 @@ pub const TokenStream = struct {
                         self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
                     },
                 },
+                
+                .left_angle_bracket_fwd_slash
+                => {
+                    const current_utf8_cp = blk: {
+                        const opt_blk_out = self.currentUtf8Codepoint();
+                        if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
+                            break :mainloop;
+                        break :blk opt_blk_out.?;
+                    };
+                    
+                    self.parse_state = .{ .el_close_name_start_char = .{
+                        .start = Index.init(self.index),
+                        .colon = null,
+                    } };
+                    
+                    self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
+                },
+                
+                .left_angle_bracket_qmark
+                => {
+                    const current_utf8_cp = blk: {
+                        const opt_blk_out = self.currentUtf8Codepoint();
+                        if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
+                            break :mainloop;
+                        break :blk opt_blk_out.?;
+                    };
+                    
+                    self.parse_state = .{ .pi_target_name_start_char = Index.init(self.index) };
+                    self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
+                },
+                
+                
                 
                 .el_open_name_start_char
                 => |el_open_name_start_char| switch (current_char) {
@@ -514,22 +548,7 @@ pub const TokenStream = struct {
                     },
                 },
                 
-                .left_angle_bracket_fwd_slash
-                => {
-                    const current_utf8_cp = blk: {
-                        const opt_blk_out = self.currentUtf8Codepoint();
-                        if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
-                            break :mainloop;
-                        break :blk opt_blk_out.?;
-                    };
-                    
-                    self.parse_state = .{ .el_close_name_start_char = .{
-                        .start = Index.init(self.index),
-                        .colon = null,
-                    } };
-                    
-                    self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                },
+                
                 
                 .el_close_name_start_char
                 => |el_close_name_start_char| switch (current_char) {
@@ -585,167 +604,7 @@ pub const TokenStream = struct {
                     => break :mainloop,
                 },
                 
-                .right_angle_bracket
-                => |right_angle_bracket| {
-                    const range = Range {
-                        .beg = right_angle_bracket.start.index,
-                        .end = self.index,
-                    };
-                    
-                    switch (current_char) {
-                        '<',
-                        => {
-                            const end_of_file_condition = self.index == self.buffer.len;
-                            const at_least_whitespace_found = self.index != right_angle_bracket.start.index;
-                            
-                            if (at_least_whitespace_found) {
-                                result =
-                                if (right_angle_bracket.non_whitespace_chars) .{ .text = range, }
-                                else .{ .empty_whitespace = range };
-                            }
-                            
-                            self.parse_state = .left_angle_bracket;
-                            self.index += 1;
-                            
-                            if (end_of_file_condition) {
-                                result = .{ .invalid = Index.init(self.index) };
-                            }
-                            
-                            if (at_least_whitespace_found or end_of_file_condition) {
-                                break :mainloop;
-                            }
-                        },
-                        
-                        ' ', '\t', '\n', '\r',
-                        => {
-                            self.index += 1;
-                            if (self.index == self.buffer.len) {
-                                result = .eof;
-                                break :mainloop;
-                            }
-                        },
-                        
-                        else
-                        => {
-                            self.parse_state.right_angle_bracket.non_whitespace_chars = true;
-                            self.index += 1;
-                            if (self.index == self.buffer.len) {
-                                result = .eof;
-                                break :mainloop;
-                            }
-                        },
-                    }
-                    
-                },
                 
-                .found_adhoc_markup
-                => switch (current_char) {
-                    '-',
-                    => {
-                        self.parse_state = .found_adhoc_markup_dash;
-                        self.index += 1;
-                    },
-                    
-                    '[',
-                    => unreachable,
-                    
-                    'D',
-                    => unreachable,
-                    
-                    'E',
-                    => unreachable,
-                    
-                    'A',
-                    => unreachable,
-                    
-                    else
-                    => break :mainloop,
-                },
-                
-                .found_adhoc_markup_dash
-                => switch (current_char) {
-                    '-',
-                    => {
-                        self.index += 1;
-                        self.parse_state = .{ .inside_comment = .{
-                            .start = self.index - ("<!--".len),
-                            .state = .seek_dash,
-                        } };
-                    },
-                    
-                    else
-                    => break :mainloop,
-                },
-                
-                .inside_comment
-                => |inside_comment| switch (inside_comment.state) {
-                    .seek_dash,
-                    => switch (current_char) {
-                        '-',
-                        => {
-                            self.parse_state.inside_comment.state = .found_dash1;
-                            self.index += 1;
-                        },
-                        
-                        else
-                        => self.index += 1,
-                    },
-                    
-                    .found_dash1,
-                    => switch (current_char) {
-                        '-',
-                        => {
-                            self.parse_state.inside_comment.state = .found_dash2;
-                            self.index += 1;
-                        },
-                        
-                        else
-                        => {
-                            self.parse_state.inside_comment.state = .seek_dash;
-                            self.index += 1;
-                        }
-                    },
-                    
-                    .found_dash2,
-                    => switch (current_char) {
-                        '>',
-                        => {
-                            self.parse_state = .found_right_angle_bracket;
-                            result = .{ .comment = Token.Comment.init(inside_comment.start, self.index + 1) };
-                            break :mainloop;
-                        },
-                        
-                        else
-                        => break :mainloop,
-                    },
-                },
-                
-                .found_right_angle_bracket
-                => {
-                    self.index += 1;
-                    self.parse_state = .{ .right_angle_bracket = .{
-                        .start = Index.init(self.index),
-                        .non_whitespace_chars = false,
-                    } };
-                    
-                    if (self.index == self.buffer.len) {
-                        result = .eof;
-                        break :mainloop;
-                    }
-                },
-                
-                .left_angle_bracket_qmark
-                => {
-                    const current_utf8_cp = blk: {
-                        const opt_blk_out = self.currentUtf8Codepoint();
-                        if (opt_blk_out == null or !isValidXmlNameStartCharUtf8(opt_blk_out.?))
-                            break :mainloop;
-                        break :blk opt_blk_out.?;
-                    };
-                    
-                    self.parse_state = .{ .pi_target_name_start_char = Index.init(self.index) };
-                    self.index += std.unicode.utf8CodepointSequenceLength(current_utf8_cp) catch unreachable;
-                },
                 
                 .pi_target_name_start_char
                 => |pi_target_name_start_char| switch (current_char) {
@@ -823,6 +682,161 @@ pub const TokenStream = struct {
                             break :mainloop;
                         },
                     },
+                },
+                
+                
+                
+                .found_adhoc_markup
+                => switch (current_char) {
+                    '-',
+                    => {
+                        self.parse_state = .found_adhoc_markup_dash;
+                        self.index += 1;
+                    },
+                    
+                    '[',
+                    => unreachable,
+                    
+                    'D',
+                    => unreachable,
+                    
+                    'E',
+                    => unreachable,
+                    
+                    'A',
+                    => unreachable,
+                    
+                    else
+                    => break :mainloop,
+                },
+                
+                .found_adhoc_markup_dash
+                => switch (current_char) {
+                    '-',
+                    => {
+                        self.index += 1;
+                        self.parse_state = .{ .inside_comment = .{
+                            .start = self.index - ("<!--".len),
+                            .state = .seek_dash,
+                        } };
+                    },
+                    
+                    else
+                    => break :mainloop,
+                },
+                
+                
+                
+                .inside_comment
+                => |inside_comment| switch (inside_comment.state) {
+                    .seek_dash,
+                    => switch (current_char) {
+                        '-',
+                        => {
+                            self.parse_state.inside_comment.state = .found_dash1;
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => self.index += 1,
+                    },
+                    
+                    .found_dash1,
+                    => switch (current_char) {
+                        '-',
+                        => {
+                            self.parse_state.inside_comment.state = .found_dash2;
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => {
+                            self.parse_state.inside_comment.state = .seek_dash;
+                            self.index += 1;
+                        }
+                    },
+                    
+                    .found_dash2,
+                    => switch (current_char) {
+                        '>',
+                        => {
+                            self.parse_state = .found_right_angle_bracket;
+                            result = .{ .comment = Token.Comment.init(inside_comment.start, self.index + 1) };
+                            break :mainloop;
+                        },
+                        
+                        else
+                        => break :mainloop,
+                    },
+                },
+                
+                
+                
+                .found_right_angle_bracket
+                => {
+                    self.index += 1;
+                    self.parse_state = .{ .right_angle_bracket = .{
+                        .start = Index.init(self.index),
+                        .non_whitespace_chars = false,
+                    } };
+                    
+                    if (self.index == self.buffer.len) {
+                        result = .eof;
+                        break :mainloop;
+                    }
+                },
+                
+                .right_angle_bracket
+                => |right_angle_bracket| {
+                    const range = Range {
+                        .beg = right_angle_bracket.start.index,
+                        .end = self.index,
+                    };
+                    
+                    switch (current_char) {
+                        '<',
+                        => {
+                            const end_of_file_condition = self.index == self.buffer.len;
+                            const at_least_whitespace_found = self.index != right_angle_bracket.start.index;
+                            
+                            if (at_least_whitespace_found) {
+                                result =
+                                if (right_angle_bracket.non_whitespace_chars) .{ .text = range, }
+                                else .{ .empty_whitespace = range };
+                            }
+                            
+                            self.parse_state = .left_angle_bracket;
+                            self.index += 1;
+                            
+                            if (end_of_file_condition) {
+                                result = .{ .invalid = Index.init(self.index) };
+                            }
+                            
+                            if (at_least_whitespace_found or end_of_file_condition) {
+                                break :mainloop;
+                            }
+                        },
+                        
+                        ' ', '\t', '\n', '\r',
+                        => {
+                            self.index += 1;
+                            if (self.index == self.buffer.len) {
+                                result = .eof;
+                                break :mainloop;
+                            }
+                        },
+                        
+                        else
+                        => {
+                            self.parse_state.right_angle_bracket.non_whitespace_chars = true;
+                            self.index += 1;
+                            if (self.index == self.buffer.len) {
+                                result = .eof;
+                                break :mainloop;
+                            }
+                        },
+                    }
+                    
                 },
                 
                 .eof
