@@ -3,6 +3,7 @@ const testing = std.testing;
 
 pub const Index = struct {
     index: usize,
+    
     pub fn init(value: usize) Index {
         return .{ .index = value };
     }
@@ -11,6 +12,7 @@ pub const Index = struct {
 pub const Range = struct {
     beg: usize,
     end: usize,
+    
     pub fn init(beg: usize, end: usize) Range {
         return .{
             .beg = beg,
