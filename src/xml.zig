@@ -393,8 +393,8 @@ pub const TokenStream = struct {
                         ' ', '\t', '\n', '\r',
                         '=',
                         => self.parse_state.el_open_name_end_char.state = .{ .attribute_seek_eql = .{
-                                .beg = attribute_name_start_char.index,
-                                .end = self.index
+                            .beg = attribute_name_start_char.index,
+                            .end = self.index
                         } },
                         
                         // This is required to properly tokenize cases like 'xml:<name>' and 'xmlns:<namespace name>'
