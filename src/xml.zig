@@ -240,22 +240,17 @@ pub const TokenStream = struct {
             switch (self.parse_state) {
                 .start
                 => switch (current_char) {
-                    ' ', '\t', '\n', '\r',
+                    ' ', '\t', '\n', '\r', '<',
                     => {
-                        self.parse_state = .start_whitespace;
                         self.index += 1;
-                    },
-                    
-                    '<',
-                    => {
-                        self.parse_state = .left_angle_bracket;
-                        self.index += 1;
+                        self.parse_state = switch (current_char) {
+                            '<', => .left_angle_bracket,
+                            else => .start_whitespace,
+                        };
                     },
                     
                     else
-                    => {
-                        break :mainloop;
-                    },
+                    => break :mainloop,
                 },
                 
                 .start_whitespace
@@ -279,22 +274,15 @@ pub const TokenStream = struct {
                 
                 .left_angle_bracket
                 => switch (current_char) {
-                    '!',
+                    '!', '?', '/',
                     => {
-                        self.parse_state = .found_adhoc_markup;
                         self.index += 1;
-                    },
-                    
-                    '?',
-                    => {
-                        self.parse_state = .left_angle_bracket_qmark;
-                        self.index += 1;
-                    },
-                    
-                    '/',
-                    => {
-                        self.parse_state = .left_angle_bracket_fwd_slash;
-                        self.index += 1;
+                        self.parse_state = switch (current_char) {
+                            '!', => .found_adhoc_markup,
+                            '?', => .left_angle_bracket_qmark,
+                            '/', => .left_angle_bracket_fwd_slash,
+                            else => unreachable,
+                        };
                     },
                     
                     else
@@ -1158,6 +1146,33 @@ test "Processing Instructions" {
     
     current = tokenizer.next();
     try expectEqualProcessingInstructions(xml_text, current, "xml", "encoding=\"UTF-8\"");
+    
+    current = tokenizer.next();
+    try testing.expect(current == .eof);
+    
+    current = tokenizer.next();
+    try testing.expect(current == .invalid);
+}
+
+test "UTF-8" {
+    const xml_text =
+        \\<text name="opôpomòz" info="Ïñí" />
+    ;
+    
+    var tokenizer = TokenStream { .buffer = xml_text };
+    var current: Token = .bof;
+    
+    current = tokenizer.next();
+    try expectEqualElementOpen(xml_text, current, null, "text");
+    
+    current = tokenizer.next();
+    try expectEqualAttribute(xml_text, current, "name", "opôpomòz");
+    
+    current = tokenizer.next();
+    try expectEqualAttribute(xml_text, current, "info", "Ïñí");
+    
+    current = tokenizer.next();
+    try expectEqualElementClose(xml_text, current, null, "text");
     
     current = tokenizer.next();
     try testing.expect(current == .eof);
