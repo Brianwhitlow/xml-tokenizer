@@ -849,7 +849,6 @@ pub const TokenStream = struct {
         }
         
         return result;
-        
     }
     
     fn currentUtf8Codepoint(self: TokenStream) ?u21 {
