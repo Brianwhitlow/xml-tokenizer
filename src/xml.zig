@@ -856,7 +856,6 @@ pub const TokenStream = struct {
         if (self.index + utf8_cp_len > self.buffer.len) return null;
         return std.unicode.utf8Decode(self.buffer[self.index..self.index + utf8_cp_len]) catch null;
     }
-    
 };
 
 pub fn isValidXmlNameStartCharUtf8(char: u21) bool {
