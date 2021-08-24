@@ -143,6 +143,9 @@ pub const TokenStream = struct {
         left_angle_bracket,
         left_angle_bracket_fwd_slash,
         left_angle_bracket_qmark,
+        left_angle_bracket_exclmark,
+        left_angle_bracket_exclmark_dash,
+        left_angle_bracket_exclmark_sbracket,
         
         el_open_name_start_char: ElementNameStartChar,
         el_open_name_end_char: ElementNameEndChar,
@@ -152,9 +155,6 @@ pub const TokenStream = struct {
         
         pi_target_name_start_char: Index,
         pi_target_name_end_char: PITargetNameEndChar,
-        
-        found_adhoc_markup,
-        found_adhoc_markup_dash,
         
         inside_comment: InsideComment,
         
@@ -279,7 +279,7 @@ pub const TokenStream = struct {
                     => {
                         self.index += 1;
                         self.parse_state = switch (current_char) {
-                            '!', => .found_adhoc_markup,
+                            '!', => .left_angle_bracket_exclmark,
                             '?', => .left_angle_bracket_qmark,
                             '/', => .left_angle_bracket_fwd_slash,
                             else => unreachable,
@@ -313,6 +313,51 @@ pub const TokenStream = struct {
                     self.index += std.unicode.utf8ByteSequenceLength(current_char)
                     catch unreachable;
                 } else break :mainloop,
+                
+                .left_angle_bracket_exclmark
+                => switch (current_char) {
+                    '-',
+                    => {
+                        self.parse_state = .left_angle_bracket_exclmark_dash;
+                        self.index += 1;
+                    },
+                    
+                    '[',
+                    => {
+                        self.parse_state = .left_angle_bracket_exclmark_sbracket;
+                        self.index += 1;
+                    },
+                    
+                    'D',
+                    => unreachable,
+                    
+                    'E',
+                    => unreachable,
+                    
+                    'A',
+                    => unreachable,
+                    
+                    else
+                    => break :mainloop,
+                },
+                
+                .left_angle_bracket_exclmark_dash
+                => switch (current_char) {
+                    '-',
+                    => {
+                        self.index += 1;
+                        self.parse_state = .{ .inside_comment = .{
+                            .start = self.index - ("<!--".len),
+                            .state = .seek_dash,
+                        } };
+                    },
+                    
+                    else
+                    => break :mainloop,
+                },
+                
+                .left_angle_bracket_exclmark_sbracket
+                => unreachable,
                 
                 
                 
@@ -620,47 +665,6 @@ pub const TokenStream = struct {
                             break :mainloop;
                         },
                     },
-                },
-                
-                
-                
-                .found_adhoc_markup
-                => switch (current_char) {
-                    '-',
-                    => {
-                        self.parse_state = .found_adhoc_markup_dash;
-                        self.index += 1;
-                    },
-                    
-                    '[',
-                    => unreachable,
-                    
-                    'D',
-                    => unreachable,
-                    
-                    'E',
-                    => unreachable,
-                    
-                    'A',
-                    => unreachable,
-                    
-                    else
-                    => break :mainloop,
-                },
-                
-                .found_adhoc_markup_dash
-                => switch (current_char) {
-                    '-',
-                    => {
-                        self.index += 1;
-                        self.parse_state = .{ .inside_comment = .{
-                            .start = self.index - ("<!--".len),
-                            .state = .seek_dash,
-                        } };
-                    },
-                    
-                    else
-                    => break :mainloop,
                 },
                 
                 
