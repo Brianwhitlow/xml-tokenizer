@@ -143,9 +143,9 @@ pub const TokenStream = struct {
         left_angle_bracket,
         left_angle_bracket_fwd_slash,
         left_angle_bracket_qmark,
-        left_angle_bracket_exclmark,
-        left_angle_bracket_exclmark_dash,
-        left_angle_bracket_exclmark_sbracket,
+        left_angle_bracket_emark,
+        left_angle_bracket_emark_dash,
+        left_angle_bracket_emark_sbracket: struct { match_index: usize = 0 },
         
         el_open_name_start_char: ElementNameStartChar,
         el_open_name_end_char: ElementNameEndChar,
@@ -157,6 +157,7 @@ pub const TokenStream = struct {
         pi_target_name_end_char: PITargetNameEndChar,
         
         inside_comment: InsideComment,
+        inside_char_data: InsideCharData,
         
         found_right_angle_bracket,
         right_angle_bracket: RightAngleBracket,
@@ -194,6 +195,17 @@ pub const TokenStream = struct {
             non_whitespace_chars: bool,
         };
         
+        pub const PITargetNameEndChar = struct {
+            target: Range,
+            state: State,
+            
+            pub const State = enum {
+                seek_qm,
+                in_string,
+                found_qm,
+            };
+        };
+        
         pub const InsideComment = struct {
             start: usize,
             state: State,
@@ -205,14 +217,14 @@ pub const TokenStream = struct {
             };
         };
         
-        pub const PITargetNameEndChar = struct {
-            target: Range,
+        pub const InsideCharData = struct {
+            start: usize,
             state: State,
             
             pub const State = enum {
-                seek_qm,
-                in_string,
-                found_qm,
+                seek_sbracket,
+                found_sbracket1,
+                found_sbracket2,
             };
         };
         
@@ -279,7 +291,7 @@ pub const TokenStream = struct {
                     => {
                         self.index += 1;
                         self.parse_state = switch (current_char) {
-                            '!', => .left_angle_bracket_exclmark,
+                            '!', => .left_angle_bracket_emark,
                             '?', => .left_angle_bracket_qmark,
                             '/', => .left_angle_bracket_fwd_slash,
                             else => unreachable,
@@ -314,17 +326,17 @@ pub const TokenStream = struct {
                     catch unreachable;
                 } else break :mainloop,
                 
-                .left_angle_bracket_exclmark
+                .left_angle_bracket_emark
                 => switch (current_char) {
                     '-',
                     => {
-                        self.parse_state = .left_angle_bracket_exclmark_dash;
+                        self.parse_state = .left_angle_bracket_emark_dash;
                         self.index += 1;
                     },
                     
                     '[',
                     => {
-                        self.parse_state = .left_angle_bracket_exclmark_sbracket;
+                        self.parse_state = .{ .left_angle_bracket_emark_sbracket = .{ .match_index = 0 } };
                         self.index += 1;
                     },
                     
@@ -341,7 +353,7 @@ pub const TokenStream = struct {
                     => break :mainloop,
                 },
                 
-                .left_angle_bracket_exclmark_dash
+                .left_angle_bracket_emark_dash
                 => switch (current_char) {
                     '-',
                     => {
@@ -356,8 +368,29 @@ pub const TokenStream = struct {
                     => break :mainloop,
                 },
                 
-                .left_angle_bracket_exclmark_sbracket
-                => unreachable,
+                .left_angle_bracket_emark_sbracket
+                => |left_angle_bracket_emark_sbracket| {
+                    const token_string = "CDATA[";
+                    switch (left_angle_bracket_emark_sbracket.match_index) {
+                        0...(token_string.len - 1),
+                        => {
+                            const is_match = current_char == token_string[left_angle_bracket_emark_sbracket.match_index];
+                            if (!is_match) break :mainloop;
+                            self.parse_state.left_angle_bracket_emark_sbracket.match_index += 1;
+                        },
+                        
+                        token_string.len,
+                        => self.parse_state = .{ .inside_char_data = .{
+                            .start = self.index - ("<![CDATA[".len),
+                            .state = .seek_sbracket,
+                        } },
+                        
+                        else
+                        => unreachable,
+                    }
+                    
+                    self.index += 1;
+                },
                 
                 
                 
@@ -709,6 +742,52 @@ pub const TokenStream = struct {
                         
                         else
                         => break :mainloop,
+                    },
+                },
+                
+                .inside_char_data
+                => |inside_char_data| switch (inside_char_data.state) {
+                    .seek_sbracket
+                    => switch (current_char) {
+                        ']',
+                        => {
+                            self.parse_state.inside_char_data.state = .found_sbracket1;
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => self.index += 1,
+                    },
+                    
+                    .found_sbracket1
+                    => switch (current_char) {
+                        ']',
+                        => {
+                            self.parse_state.inside_char_data.state = .found_sbracket2;
+                            self.index += 1;
+                        },
+                        
+                        else
+                        => {
+                            self.parse_state.inside_char_data.state = .seek_sbracket;
+                            self.index += 1;
+                        },
+                    },
+                    
+                    .found_sbracket2
+                    => switch (current_char) {
+                        '>',
+                        => {
+                            self.parse_state = .found_right_angle_bracket;
+                            result = .{ .char_data = Token.CharData.init(inside_char_data.start, self.index + 1) };
+                            break :mainloop;
+                        },
+                        
+                        else
+                        => {
+                            self.parse_state.inside_char_data.state = .seek_sbracket;
+                            self.index += 1;
+                        },
                     },
                 },
                 
@@ -1148,6 +1227,34 @@ test "UTF-8" {
     try testing.expect(current == .invalid);
 }
 
+test "CDATA Section" {
+    const xml_text =
+        \\<a >this is<![CDATA[<not real="markup"/>]]></a >
+    ;
+    
+    var tokenizer = TokenStream { .buffer = xml_text };
+    var current: Token = .bof;
+    
+    current = tokenizer.next();
+    try expectEqualElementOpen(xml_text, current, null, "a");
+    
+    current = tokenizer.next();
+    try expectEqualText(xml_text, current, "this is");
+    
+    current = tokenizer.next();
+    try expectEqualCharDataSection(xml_text, current, \\<not real="markup"/>
+    );
+    
+    current = tokenizer.next();
+    try expectEqualElementClose(xml_text, current, null, "a");
+    
+    current = tokenizer.next();
+    try testing.expect(current == .eof);
+    
+    current = tokenizer.next();
+    try testing.expect(current == .invalid);
+}
+
 fn expectEqualElementIdNamespace(
     xml_text: []const u8,
     el_id: Token.ElementId,
@@ -1303,4 +1410,16 @@ fn expectEqualProcessingInstructions(
     defer testing.allocator.free(expect_slice);
     
     try testing.expectEqualStrings(expect_slice, got_slice);
+}
+
+fn expectEqualCharDataSection(
+    xml_text: []const u8,
+    tok: Token,
+    expect_data: []const u8,
+) !void {
+    try testing.expect(tok == .char_data);
+    const char_data = tok.char_data;
+    
+    const got_data = char_data.data(xml_text);
+    try testing.expectEqualStrings(expect_data, got_data);
 }
