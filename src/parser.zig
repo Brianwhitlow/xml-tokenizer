@@ -1,4 +1,5 @@
 const std = @import("std");
+const mem = std.mem;
 const Allocator = std.mem.Allocator;
 const token_stream = @import("token_stream.zig");
 
@@ -9,175 +10,221 @@ const TokenStream = token_stream.TokenStream;
 
 pub const Node = union(enum) {
     const Self = @This();
-    invalid,
-    text: []u8,
-    char_data: []u8,
-    empty_whitespace: []u8,
+    empty,
+    invalid: Index,
+    text: []const u8,
+    char_data: []const u8,
+    empty_whitespace: []const u8,
+    comment: []const u8,
     element: Element,
+    processing_instructions: ProcessingInstruction,
     
     pub const Element = struct {
-        name: []u8 = &.{},
-        namespace: ?[]u8 = null,
-        attributes: std.StringArrayHashMapUnmanaged([]u8) = .{},
-        children: std.ArrayListUnmanaged(Node) = .{},
+        name: []const u8 = &.{},
+        namespace: ?[]const u8 = null,
+        attributes: std.StringArrayHashMapUnmanaged([]const u8) = .{},
+        children: std.ArrayListUnmanaged(Self) = .{},
+    };
+    
+    pub const ProcessingInstruction = struct {
+        target: []const u8 = &.{},
+        instructions: []const u8 = &.{},
     };
     
     pub fn deinit(self: *Self, allocator: *Allocator) void {
-        self.deinitTemplate(allocator, true);
-    }
-    
-    pub fn deinitNoUndef(self: *Self, allocator: *Allocator) void {
-        self.deinitTemplate(allocator, false);
-    }
-    
-    fn deinitTemplate(self: *Self, allocator: *Allocator, comptime undefine_mem: bool) void {
-        defer if (undefine_mem) { self.* = undefined; };
         switch (self.*) {
-            .invalid
-            => {},
-            
+            .invalid,
             .text,
             .char_data,
-            .empty_whitespace
-            => |bytes| allocator.free(bytes),
+            .empty_whitespace,
+            .empty,
+            .comment,
+            .processing_instructions,
+            => {},
             
             .element
             => |*element| {
-                if (element.namespace) |ns| {
-                    allocator.free(ns);
-                }
-                
                 for (element.children.items) |*child| {
-                    child.deinitTemplate(allocator, undefine_mem);
+                    child.deinit(allocator);
                 }
                 
-                for (element.attributes.entries.items(.value)) |val| {
-                    allocator.free(val);
-                }
-                
-                allocator.free(element.name);
                 element.children.deinit(allocator);
                 element.attributes.deinit(allocator);
             },
         }
     }
+    
 };
 
-pub fn parse(allocator: *Allocator, xml_text: []const u8, p_error_info: ?*?Index) !Node {
-    if (p_error_info) |p_err_info| p_err_info.* = null;
+pub const NodeTree = struct {
+    source_buffer: []const u8,
+    root: Node,
+};
+
+const ParseOptions = packed struct {
+    keep_empty_whitespace: bool = false,
+    keep_comments: bool = false,
+    keep_processing_instructions: bool = false,
+};
+
+pub fn parse(
+    allocator: *Allocator,
+    xml_text: []const u8,
+    copy_text: bool,
+    parse_options: ParseOptions,
+) !NodeTree {
+    var output: NodeTree = .{
+        .source_buffer = if (copy_text) try allocator.dupe(u8, xml_text) else xml_text,
+        .root = .{ .element = .{} },
+    }; errdefer if (copy_text) allocator.free(output.source_buffer);
     
-    var tokenizer: TokenStream = .{ .buffer = xml_text };
+    var tok_stream: TokenStream = .{ .buffer = output.source_buffer };
     var current: Token = .bof;
     
-    var result: Node = .{ .element = .{} };
-    errdefer result.deinit(allocator);
-    
-    const closure = struct {
+    const internal_parser = struct {
         allocator: *Allocator,
-        xml_text: []const u8,
-        tokenizer: *TokenStream,
-        current: *Token,
-        fn parseIntoElement(this: @This(), dst: *Node.Element) error{OutOfMemory, NoMatchingClose, WrongClose}!void {
+        xml_source: []const u8,
+        parse_options: ParseOptions,
+        
+        p_tok_stream: *TokenStream,
+        p_current: *Token,
+        p_node_tree: *NodeTree,
+        
+        fn parse(state: *const @This(), dst: *Node.Element) (error { Invalid, AttributeNameAlreadySpecified } || Allocator.Error)!void {
+            errdefer state.p_node_tree.root.deinit(state.allocator);
             
-            while (this.current.* != .invalid) {
-                switch (this.current.*) {
-                    .processing_instructions,
-                    .empty_whitespace,
-                    .comment,
-                    .bof,
-                    => this.current.* = this.tokenizer.next(),
+            while (true) {
+                switch (state.p_current.*) {
+                    .bof => state.p_current.* = state.p_tok_stream.next(),
+                    .eof => return,
+                    .invalid => return error.Invalid,
                     
                     .element_open
                     => |element_open| {
-                        var new_node = Node { .element = .{} };
-                        errdefer new_node.deinit(this.allocator);
+                        var new_child: Node = .{ .element = .{
+                            .name = element_open.name(state.xml_source),
+                            .namespace = element_open.namespace(state.xml_source),
+                        } };
                         
-                        new_node.element.name = try this.allocator.dupe(u8, element_open.name(this.xml_text));
-                        if (element_open.namespace(this.xml_text)) |ns| {
-                            new_node.element.namespace = try this.allocator.dupe(u8, ns);
-                        }
+                        state.p_current.* = state.p_tok_stream.next();
+                        try state.parse(&new_child.element);
+                        try dst.children.append(state.allocator, new_child);
+                    },
+                    
+                    .element_close
+                    => |element_close| {
+                        if (switch(std.builtin.mode) {
+                            .ReleaseFast, .ReleaseSmall
+                            => true,
+                            
+                            else
+                            => false,
+                        }) return;
                         
+                        if (blk: {
+                            const eql_name = blk_eql_name: {
+                                const got_name = element_close.name(state.xml_source);
+                                const expect_name = dst.name;
+                                break :blk_eql_name mem.eql(u8, expect_name, got_name);
+                            };
+                            
+                            const eql_namespace = blk_eql_ns: {
+                                const got_ns = element_close.namespace(state.xml_source);
+                                const expect_ns = dst.namespace;
+                                
+                                const all_null = (got_ns == null) and (expect_ns == null);
+                                const no_null  = (got_ns != null) and (expect_ns != null);
+                                
+                                const all_eql = no_null and mem.eql(u8, expect_ns.?, got_ns.?);
+                                break :blk_eql_ns all_null or all_eql;
+                            };
+                            
+                            break :blk !eql_name or !eql_namespace;
+                        }) return error.Invalid;
                         
-                        this.current.* = this.tokenizer.next();
-                        try this.parseIntoElement(&new_node.element);
-                        try dst.children.append(this.allocator, new_node);
+                        state.p_current.* = state.p_tok_stream.next();
+                        return;
                     },
                     
                     .attribute
                     => |attribute| {
-                        const name = attribute.name.slice(this.xml_text);
+                        const name = attribute.name.slice(state.xml_source);
+                        const value = attribute.value(state.xml_source);
                         
-                        const value = try this.allocator.dupe(u8, attribute.value(this.xml_text));
-                        errdefer this.allocator.free(value);
-                        
-                        try dst.attributes.put(this.allocator, name, value);
-                        this.current.* = this.tokenizer.next();
-                    },
-                    
-                    
-                    .element_close
-                    => |element_close| {
-                        const eql_name = std.mem.eql(u8, element_close.name(this.xml_text), dst.name);
-                        const eql_namespace = blk: {
-                            const expected_namespace = element_close.namespace(this.xml_text);
-                            
-                            const both_null = (expected_namespace == null) and (dst.namespace == null);
-                            
-                            const neither_null = (expected_namespace != null) and (dst.namespace != null);
-                            const mem_eql = neither_null and std.mem.eql(u8, expected_namespace.?, dst.namespace.?);
-                            
-                            break :blk both_null or mem_eql;
-                        };
-                        
-                        if (!eql_name or !eql_namespace) {
-                            return error.WrongClose;
+                        const gop: std.StringArrayHashMapUnmanaged([]const u8).GetOrPutResult = try dst.attributes.getOrPut(state.allocator, name);
+                        if (gop.found_existing) {
+                            return error.AttributeNameAlreadySpecified;
                         }
                         
-                        this.current.* = this.tokenizer.next();
-                        
-                        return;
+                        gop.value_ptr.* = value;
+                        state.p_current.* = state.p_tok_stream.next();
                     },
                     
-                    .eof
-                    => return,
+                    .empty_whitespace => |empty_whitespace| {
+                        if (state.parse_options.keep_empty_whitespace) {
+                            try dst.children.append(state.allocator, .{ .empty_whitespace = empty_whitespace.slice(state.xml_source) });
+                        }
+                        
+                        state.p_current.* = state.p_tok_stream.next();
+                    },
                     
-                    else
-                    => unreachable,
+                    .text => |text| {
+                        try dst.children.append(state.allocator, .{ .text = text.slice(state.xml_source) });
+                        state.p_current.* = state.p_tok_stream.next();
+                    },
+                    
+                    .char_data => |char_data| {
+                        try dst.children.append(state.allocator, .{ .char_data = char_data.data(state.xml_source) });
+                        state.p_current.* = state.p_tok_stream.next();
+                    },
+                    
+                    .comment => |comment| {
+                        if (state.parse_options.keep_comments) {
+                            try dst.children.append(state.allocator, .{ .comment = comment.data(state.xml_source) });
+                        }
+                        
+                        state.p_current.* = state.p_tok_stream.next();
+                    },
+                    
+                    .processing_instructions => |processing_instructions| {
+                        if (state.parse_options.keep_processing_instructions) {
+                            try dst.children.append(state.allocator, .{ .processing_instructions = .{
+                                .target = processing_instructions.target.slice(state.xml_source),
+                                .instructions = processing_instructions.instructions.slice(state.xml_source),
+                            } });
+                        }
+                        
+                        state.p_current.* = state.p_tok_stream.next();
+                    },
                 }
             }
-            
-            return error.NoMatchingClose;
         }
     } {
         .allocator = allocator,
-        .xml_text = xml_text,
-        .tokenizer = &tokenizer,
-        .current = &current,
+        .xml_source = output.source_buffer,
+        .parse_options = parse_options,
+        .p_tok_stream = &tok_stream,
+        .p_current = &current,
+        .p_node_tree = &output,
     };
     
-    try closure.parseIntoElement(&result.element);
-    return result;
+    try internal_parser.parse(&output.root.element);
+    return output;
 }
 
 test "T0" {
-    std.debug.print("\n", .{});
-    var node = try parse(std.testing.allocator, \\<my_element is="uninteresting"></my_element>
-    , null);
-    defer node.deinit(std.testing.allocator);
+    var node_tree = try parse(
+        std.testing.allocator,
+        \\<root faf1="">
+        \\    <mem>
+        \\        damns
+        \\    </mem>
+        \\</root>
+        , false,
+        .{}
+    );
+    defer node_tree.root.deinit(std.testing.allocator);
     
-    const root: Node.Element = node.element.children.items[0].element;
-    std.debug.print("namespace: {s}\nname: {s}\n", .{root.namespace, root.name});
+    std.debug.print("\n{}\n", .{node_tree.root});
     
-    {
-        var iterator = root.attributes.iterator();
-        while (iterator.next()) |kv| {
-            std.debug.print("\t{s} = {s}\n", .{kv.key_ptr.*, kv.value_ptr.*});
-        }
-    }
-    
-    for (root.children.items) |child| {
-        std.debug.print("\t{}\n", .{child});
-    }
-    
-    _ = node;
 }
