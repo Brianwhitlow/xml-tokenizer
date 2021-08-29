@@ -1,4 +1,5 @@
 const std = @import("std");
+const testing = std.testing;
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
 const token_stream = @import("token_stream.zig");
@@ -24,6 +25,22 @@ pub const Node = union(enum) {
         namespace: ?[]const u8,
         attributes: std.StringArrayHashMapUnmanaged([]const u8),
         children: std.ArrayListUnmanaged(Self),
+        
+        pub fn addChild(self: *Element, allocator: *Allocator, child_node: Node) error {OutOfMemory}!void {
+            try self.children.append(allocator, child_node);
+        }
+        
+        pub fn addAttribute(self: *Element, allocator: *Allocator, name: []const u8, value: []const u8) error {OutOfMemory, AttributeAlreadySpecified}!void {
+            const gop = try self.attributes.getOrPut(allocator, name);
+            if (gop.found_existing) return error.AttributeAlreadySpecified;
+            gop.value_ptr.* = value;
+        }
+        
+        pub fn deinit(self: *Element, allocator: *Allocator) void {
+            for (self.children.items) |*child| child.deinit(allocator);
+            self.attributes.deinit(allocator);
+            self.children.deinit(allocator);
+        }
     };
     
     pub const ProcessingInstruction = struct {
@@ -43,27 +60,25 @@ pub const Node = union(enum) {
             => {},
             
             .element
-            => |*element| {
-                for (element.children.items) |*child| child.deinit(allocator);
-                element.attributes.deinit(allocator);
-                element.children.deinit(allocator);
-            },
+            => |*element| element.deinit(allocator),
         }
     }
     
 };
 
 pub const NodeTree = struct {
-    source_buffer: []const u8,
     root: Node,
+    
+    /// Buffer where the actual strings referenced by any attributes, elements, text, etc. exists.
+    string_source: []u8,
 };
 
 pub const ParseOptions = packed struct {
-    store_empty_whitespace: StoreType = .Discard,
-    store_comments: StoreType = .Discard,
-    store_processing_instructions: StoreType = .Discard,
+    store_empty_whitespace: StoreType = .Flag,
+    store_comments: StoreType = .Flag,
+    store_processing_instructions: StoreType = .Flag,
     
-    pub const StoreType = enum(u2) {
+    pub const StoreType = enum(u8) {
         Discard,
         Flag,
         Keep,
@@ -71,268 +86,94 @@ pub const ParseOptions = packed struct {
 };
 
 pub fn parse(
-    allocator: *Allocator,
+    heap_strategy: struct {
+        node_allocator: *Allocator,
+        strings: union(enum) {
+            /// It is recommended that if a buffer is used, its length be >= that of the provided XML text.
+            /// If a buffer is used, it will be stored in the `string_source` member of the returned `NodeTree`.
+            buffer: []u8,
+            allocator: *Allocator,
+        },
+    },
     xml_text: []const u8,
     parse_options: ParseOptions,
 ) !NodeTree {
-    var tok_stream: TokenStream = .{ .buffer = xml_text };
-    var current: Token = .bof;
+    _ = parse_options;
     
-    var source_buffer_array = try std.ArrayList(u8).initCapacity(allocator, xml_text.len);
-    errdefer source_buffer_array.deinit();
-    
-    var output: NodeTree = .{
-        .source_buffer = undefined,
-        .root = .{ .element = .{
-            .name = &.{},
-            .namespace = null,
-            .attributes = .{},
-            .children = .{},
-        } },
-    };
-    errdefer output.root.deinit(allocator);
-    
-    const state = struct {
-        allocator: *Allocator,
-        xml_text: []const u8,
-        p_tok_stream: *TokenStream,
-        p_current: *Token,
-        parse_options: ParseOptions,
-        p_source_buffer_array: *@TypeOf(source_buffer_array),
+    var parser = struct {
+        const Self = @This();
+        string_fixed_buffer_allocator_state: std.heap.FixedBufferAllocator,
+        node_allocator: *Allocator,
+        tok_stream: TokenStream,
+        current: Token,
         
-        const Error = Allocator.Error || error {
-            Invalid,
-            EofMaybeTooEarly,
-            MaybeEofTooEarly,
-            EofTooEarly,
-            WrongClose,
-            AttributeAlreadySpecified,
-        };
+        const Error = Allocator.Error || error { Invalid };
         
-        fn assignNodeProperties(state: *const @This(), dst:* Node.Element) Error!void {
-            const sba_items = &state.p_source_buffer_array.items;
-            
-            while (true) : (state.p_current.* = state.p_tok_stream.next()) {
-                switch (state.p_current.*) {
+        inline fn stringAllocator(state: *Self) *Allocator {
+            return &state.string_fixed_buffer_allocator_state.allocator;
+        }
+        
+        inline fn nodeAllocator(state: *Self) *Allocator {
+            return state.node_allocator;
+        }
+        
+        fn parse(state: *Self, dst: *Node) !void {
+            while (true) : (state.current = state.tok_stream.next()) {
+                switch (state.current) {
                     .bof
-                    => |bof| unreachable,
+                    => {},
                     
                     .eof
-                    => |eof| return error.MaybeEofTooEarly,
+                    => unreachable,
                     
                     .invalid
-                    => |invalid| return error.Invalid,
+                    => |invalid| {
+                        dst.deinit(state.nodeAllocator());
+                        dst.* = .{ .invalid = invalid };
+                        return error.Invalid;
+                    },
                     
                     .element_open
                     => |element_open| {
-                        const name = element_open.name(state.xml_text);
-                        const namespace = element_open.namespace(state.xml_text);
-                        
-                        const name_range = Range.init(state.p_source_buffer_array.items.len, name.len);
-                        state.p_source_buffer_array.appendSliceAssumeCapacity(name);
-                        
-                        const namespace_range: ?Range = if (namespace) |ns| blk: {
-                            const blk_out = Range.init(state.p_source_buffer_array.items.len, ns.len);
-                            state.p_source_buffer_array.appendSliceAssumeCapacity(ns);
-                            break :blk blk_out;
-                        } else null;
-                        
-                        var new_node: Node = .{ .element = .{
-                            .name = name_range.slice(state.p_source_buffer_array.items),
-                            .namespace = if (namespace_range) |nsr| nsr.slice(state.p_source_buffer_array.items) else null,
-                            .attributes = .{},
-                            .children = .{},
-                        } };
-                        errdefer new_node.deinit(state.allocator);
-                        
-                        state.p_current.* = state.p_tok_stream.next();
-                        state.assignNodeProperties(&new_node.element) catch |err| switch (err) {
-                            error.MaybeEofTooEarly
-                            => return error.EofTooEarly,
-                            
-                            else
-                            => return err,
-                        };
-                        try dst.children.append(state.allocator, new_node);
+                        _ = element_open;
                     },
                     
-                    .element_close
-                    => |element_close| {
-                        
-                        const is_eql = blk_is_eql: {
-                            const expect_name = dst.name;
-                            const expect_namespace = dst.namespace;
-                            
-                            const got_name = element_close.name(state.xml_text);
-                            const got_namespace = element_close.namespace(state.xml_text);
-                            
-                            const eql_name = mem.eql(u8, expect_name, got_name);
-                            const eql_namespace = blk_eql_ns: {
-                                const both_null = (expect_namespace == null) and (got_namespace == null);
-                                const none_null = (expect_namespace != null) and (got_namespace != null);
-                                
-                                const mem_eql = none_null and mem.eql(u8, expect_namespace.?, got_namespace.?);
-                                break :blk_eql_ns both_null or mem_eql;
-                            };
-                            
-                            break :blk_is_eql eql_name and eql_namespace;
-                        };
-                        
-                        if (!is_eql) {
-                            return error.WrongClose;
-                        }
-                        
-                        return;
-                    },
-                    
-                    .attribute
-                    => |attribute| {
-                        const name = attribute.name.slice(state.xml_text);
-                        const value = attribute.value(state.xml_text);
-                        
-                        const name_range = Range.init(sba_items.len, sba_items.len + name.len);
-                        state.p_source_buffer_array.appendSliceAssumeCapacity(name);
-                        
-                        const value_range = Range.init(sba_items.len, sba_items.len + value.len);
-                        state.p_source_buffer_array.appendSliceAssumeCapacity(value);
-                        
-                        const gop = try dst.attributes.getOrPut(state.allocator, name_range.slice(state.p_source_buffer_array.items));
-                        if (gop.found_existing) return error.AttributeAlreadySpecified;
-                        gop.value_ptr.* = value_range.slice(state.p_source_buffer_array.items);
-                    },
-                    
-                    .empty_whitespace
-                    => |empty_whitespace| switch (state.parse_options.store_empty_whitespace) {
-                        .Keep
-                        => {
-                            const ws = empty_whitespace.slice(state.xml_text);
-                            const ws_range = Range.init(state.p_source_buffer_array.items.len, ws.len);
-                            state.p_source_buffer_array.appendSliceAssumeCapacity(ws);
-                            try dst.children.append(state.allocator, .{ .empty_whitespace = ws_range.slice(state.p_source_buffer_array.items) });
-                        },
-                        
-                        .Flag
-                        => try dst.children.append(state.allocator, .{ .empty_whitespace = null }),
-                        
-                        .Discard
-                        => {},
-                    },
-                    
-                    .text
-                    => |text| {
-                        const text_string = text.slice(state.xml_text);
-                        const text_range = Range.init(sba_items.len, sba_items.len + text_string.len);
-                        state.p_source_buffer_array.appendSliceAssumeCapacity(text_string);
-                        try dst.children.append(state.allocator, .{ .text = text_range.slice(state.p_source_buffer_array.items) });
-                    },
-                    
-                    .char_data
-                    => |char_data| {
-                        const text_string = char_data.data(state.xml_text);
-                        const text_range = Range.init(state.p_source_buffer_array.items.len, text_string.len);
-                        state.p_source_buffer_array.appendSliceAssumeCapacity(text_string);
-                        try dst.children.append(state.allocator, .{ .char_data = text_range.slice(state.p_source_buffer_array.items) });
-                    },
-                    
-                    .comment
-                    => |comment| switch (state.parse_options.store_comments) {
-                        .Keep
-                        => {
-                            const comment_str = comment.data(state.xml_text);
-                            const comment_range = Range.init(state.p_source_buffer_array.items.len, comment_str.len);
-                            state.p_source_buffer_array.appendSliceAssumeCapacity(comment_str);
-                            try dst.children.append(state.allocator, .{ .comment = comment_range.slice(state.p_source_buffer_array.items) });
-                        },
-                        
-                        .Flag
-                        => try dst.children.append(state.allocator, .{ .comment = null }),
-                        
-                        .Discard
-                        => {},
-                    },
-                    
-                    .processing_instructions
-                    => |processing_instructions| switch (state.parse_options.store_comments) {
-                        .Keep
-                        => {
-                            const target = processing_instructions.target.slice(state.xml_text);
-                            const instructions = processing_instructions.instructions.slice(state.xml_text);
-                            
-                            const target_range = Range.init(state.p_source_buffer_array.items.len, target.len);
-                            state.p_source_buffer_array.appendSliceAssumeCapacity(target);
-                            
-                            const instructions_range = Range.init(state.p_source_buffer_array.items.len, instructions.len);
-                            state.p_source_buffer_array.appendSliceAssumeCapacity(instructions);
-                            
-                            try dst.children.append(state.allocator, .{ .processing_instructions = .{
-                                .target = target_range.slice(state.p_source_buffer_array.items),
-                                .instructions = instructions_range.slice(state.p_source_buffer_array.items),
-                            } });
-                        },
-                        
-                        .Flag
-                        => try dst.children.append(state.allocator, .{ .processing_instructions = null }),
-                        
-                        .Discard
-                        => {},
-                    },
+                    else
+                    => unreachable,
                 }
             }
         }
         
     } {
-        .allocator = allocator,
-        .xml_text = xml_text,
-        .p_tok_stream = &tok_stream,
-        .p_current = &current,
-        .p_source_buffer_array = &source_buffer_array,
-        .parse_options = parse_options,
-    };
-    
-    current = tok_stream.next();
-    state.assignNodeProperties(&output.root.element) catch |err| switch (err) {
-        error.MaybeEofTooEarly
-        => {},
-        
-        error.Invalid
-        => {
-            output.root.deinit(allocator);
-            source_buffer_array.deinit();
-            source_buffer_array.items.len = 0;
-            output.root = .{ .invalid = current.invalid };
+        .string_fixed_buffer_allocator_state = switch (heap_strategy.strings) {
+            .buffer => |buffer| std.heap.FixedBufferAllocator.init(buffer),
+            .allocator => |allocator| std.heap.FixedBufferAllocator.init(try allocator.allocAdvanced(u8, null, xml_text.len, .at_least)),
         },
-        
-        else
-        => return err,
+        .node_allocator = heap_strategy.node_allocator,
+        .tok_stream = .{ .buffer = xml_text },
+        .current = .bof,
     };
     
-    output.source_buffer = source_buffer_array.toOwnedSlice();
+    errdefer switch (heap_strategy.strings) {
+        .buffer => {},
+        .allocator => |allocator| allocator.free(parser.string_fixed_buffer_allocator_state.buffer),
+    };
     
-    return output;
+    var output_root: Node = .empty;
+    errdefer output_root.deinit(parser.nodeAllocator());
+    
+    try parser.parse(&output_root);
+    return NodeTree {
+        .root = output_root,
+        .string_source = parser.string_fixed_buffer_allocator_state.buffer,
+    };
 }
 
 test "T0" {
-    std.debug.print("\n", .{});
-    const xml_text =
-        \\<my_element is="quite"> boring </my_element>
-    ;
+    var node_tree = try parse(.{ .node_allocator = testing.allocator, .strings = .{ .allocator = testing.allocator } },
+        \\<my_element is="not"> very interesting </my_element>
+        , .{}
+    );
     
-    var parsed = try parse(std.testing.allocator, xml_text, .{},);
-    defer {
-        parsed.root.deinit(std.testing.allocator);
-        std.testing.allocator.free(parsed.source_buffer);
-    }
-    
-    const real_root = parsed.root.element.children.items[0];
-    
-    std.debug.print("{s}:", .{real_root.element.namespace});
-    std.debug.print("{s}\n", .{real_root.element.name});
-    {
-        const slice = real_root.element.attributes.entries.slice();
-        const keys = slice.items(.key);
-        const value = slice.items(.value);
-        for (keys) |k, idx| std.debug.print("\t{s} = {s}\n", .{k, value[idx]});
-    }
-    std.debug.print("\n", .{});
-    
+    _ = node_tree;
 }
