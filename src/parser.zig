@@ -67,10 +67,9 @@ pub const Node = union(enum) {
 };
 
 pub const NodeTree = struct {
-    root: Node,
-    
     /// Buffer where the actual strings referenced by any attributes, elements, text, etc. exists.
     string_source: []u8,
+    root: Node,
 };
 
 pub const ParseOptions = packed struct {
@@ -86,87 +85,138 @@ pub const ParseOptions = packed struct {
 };
 
 pub fn parse(
-    heap_strategy: struct {
-        node_allocator: *Allocator,
-        strings: union(enum) {
-            /// It is recommended that if a buffer is used, its length be >= that of the provided XML text.
-            /// If a buffer is used, it will be stored in the `string_source` member of the returned `NodeTree`.
-            buffer: []u8,
-            allocator: *Allocator,
-        },
-    },
+    allocator: *Allocator,
     xml_text: []const u8,
     parse_options: ParseOptions,
 ) !NodeTree {
-    _ = parse_options;
+    var output: NodeTree = .{
+        .string_source = try allocator.allocAdvanced(u8, null, xml_text.len, .at_least),
+        .root = .empty,
+    }; errdefer allocator.free(string_fba_state.buffer);
     
-    var parser = struct {
-        const Self = @This();
-        string_fixed_buffer_allocator_state: std.heap.FixedBufferAllocator,
-        node_allocator: *Allocator,
-        tok_stream: TokenStream,
-        current: Token,
+    var tokenizer = TokenStream.init(xml_text);
+    var current = tokenizer.next();
+    
+    var string_fba_state = std.heap.FixedBufferAllocator.init();
+    const string_allocator: *Allocator = &string_fba_state.allocator;
+    
+    var dst_stack = try std.ArrayList(*Node.Element).initCapacity(allocator, blk_precalculate: {
+        defer current = tokenizer.reset();
         
-        const Error = Allocator.Error || error { Invalid };
+        var open_tag_count: usize = 0;
+        var close_tag_count: usize = 0;
         
-        inline fn stringAllocator(state: *Self) *Allocator {
-            return &state.string_fixed_buffer_allocator_state.allocator;
+        while (true) : (current = tokenizer.next()) switch (current) {
+            .bof
+            => |_| {},
+            
+            .eof
+            => |_| break,
+            
+            // Note the early return point
+            .invalid
+            => |invalid| {
+                output.string_source = undefined;
+                allocator.free(string_fba_state.buffer);
+                
+                output.root.deinit(allocator);
+                output.root = .{ .invalid = invalid };
+                
+                return output;
+            },
+            
+            .element_open => |_| open_tag_count += 1,
+            .element_close => |_| close_tag_count += 1,
+            
+            .attribute,
+            .empty_whitespace,
+            .text,
+            .char_data,
+            .comment,
+            .processing_instructions,
+            => {},
+        };
+        
+        if (open_tag_count != close_tag_count) {
+            output.string_source = undefined;
+            allocator.free(string_fba_state.buffer);
+            
+            output.root.deinit(allocator);
+            output.root = .{ .invalid = invalid };
+            
+            return output;
         }
         
-        inline fn nodeAllocator(state: *Self) *Allocator {
-            return state.node_allocator;
+        break :blk_precalculate open_tag_count * @sizeOf(Node.Element);
+    }); defer dst_stack.deinit();
+    
+    const closure = struct {
+        p_dst_stack: *@TypeOf(dst_stack),
+        fn currentDst(closure: @This()) *Node.Element {
+            const index = closure.p_dst_stack.items.len - 1;
+            const items = closure.p_dst_stack.items;
+            return &items[index];
         }
-        
-        fn parse(state: *Self, dst: *Node) !void {
-            while (true) : (state.current = state.tok_stream.next()) {
-                switch (state.current) {
-                    .bof
-                    => {},
-                    
-                    .eof
-                    => unreachable,
-                    
-                    .invalid
-                    => |invalid| {
-                        dst.deinit(state.nodeAllocator());
-                        dst.* = .{ .invalid = invalid };
-                        return error.Invalid;
-                    },
-                    
-                    .element_open
-                    => |element_open| {
-                        _ = element_open;
-                    },
-                    
-                    else
-                    => unreachable,
-                }
-            }
-        }
-        
-    } {
-        .string_fixed_buffer_allocator_state = switch (heap_strategy.strings) {
-            .buffer => |buffer| std.heap.FixedBufferAllocator.init(buffer),
-            .allocator => |allocator| std.heap.FixedBufferAllocator.init(try allocator.allocAdvanced(u8, null, xml_text.len, .at_least)),
-        },
-        .node_allocator = heap_strategy.node_allocator,
-        .tok_stream = .{ .buffer = xml_text },
-        .current = .bof,
+    } { .p_dst_stack = &dst_stack };
+    
+    while (true) : (current = tokenizer.next()) switch (current) {
+            .bof
+            => |bof| {
+                _ = bof;
+            },
+            
+            .eof
+            => |eof| {
+                _ = eof;
+            },
+            
+            .invalid
+            => |invalid| {
+                _ = invalid;
+            },
+            
+            .element_open
+            => |element_open| {
+                _ = element_open;
+            },
+            
+            .element_close
+            => |element_close| {
+                _ = element_close;
+            },
+            
+            .attribute
+            => |attribute| {
+                _ = attribute;
+            },
+            
+            .empty_whitespace
+            => |empty_whitespace| {
+                _ = empty_whitespace;
+            },
+            
+            .text
+            => |text| {
+                _ = text;
+            },
+            
+            .char_data
+            => |char_data| {
+                _ = char_data;
+            },
+            
+            .comment
+            => |comment| {
+                _ = comment;
+            },
+            
+            .processing_instructions
+            => |processing_instructions| {
+                _ = processing_instructions;
+            },
     };
     
-    errdefer switch (heap_strategy.strings) {
-        .buffer => {},
-        .allocator => |allocator| allocator.free(parser.string_fixed_buffer_allocator_state.buffer),
-    };
-    
-    var output_root: Node = .empty;
-    errdefer output_root.deinit(parser.nodeAllocator());
-    
-    try parser.parse(&output_root);
-    return NodeTree {
-        .root = output_root,
-        .string_source = parser.string_fixed_buffer_allocator_state.buffer,
-    };
+    return output;
 }
 
 test "T0" {
