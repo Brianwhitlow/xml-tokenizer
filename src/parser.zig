@@ -14,21 +14,21 @@ pub const Node = union(enum) {
     invalid: Index,
     text: []const u8,
     char_data: []const u8,
-    empty_whitespace: []const u8,
-    comment: []const u8,
+    comment: ?[]const u8,
+    empty_whitespace: ?[]const u8,
     element: Element,
-    processing_instructions: ProcessingInstruction,
+    processing_instructions: ?ProcessingInstruction,
     
     pub const Element = struct {
-        name: []const u8 = &.{},
-        namespace: ?[]const u8 = null,
-        attributes: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-        children: std.ArrayListUnmanaged(Self) = .{},
+        name: []const u8,
+        namespace: ?[]const u8,
+        attributes: std.StringArrayHashMapUnmanaged([]const u8),
+        children: std.ArrayListUnmanaged(Self),
     };
     
     pub const ProcessingInstruction = struct {
-        target: []const u8 = &.{},
-        instructions: []const u8 = &.{},
+        target: []const u8,
+        instructions: []const u8,
     };
     
     pub fn deinit(self: *Self, allocator: *Allocator) void {
@@ -44,12 +44,9 @@ pub const Node = union(enum) {
             
             .element
             => |*element| {
-                for (element.children.items) |*child| {
-                    child.deinit(allocator);
-                }
-                
-                element.children.deinit(allocator);
+                for (element.children.items) |*child| child.deinit(allocator);
                 element.attributes.deinit(allocator);
+                element.children.deinit(allocator);
             },
         }
     }
@@ -61,170 +58,281 @@ pub const NodeTree = struct {
     root: Node,
 };
 
-const ParseOptions = packed struct {
-    keep_empty_whitespace: bool = false,
-    keep_comments: bool = false,
-    keep_processing_instructions: bool = false,
+pub const ParseOptions = packed struct {
+    store_empty_whitespace: StoreType = .Discard,
+    store_comments: StoreType = .Discard,
+    store_processing_instructions: StoreType = .Discard,
+    
+    pub const StoreType = enum(u2) {
+        Discard,
+        Flag,
+        Keep,
+    };
 };
 
 pub fn parse(
     allocator: *Allocator,
     xml_text: []const u8,
-    copy_text: bool,
     parse_options: ParseOptions,
 ) !NodeTree {
-    var output: NodeTree = .{
-        .source_buffer = if (copy_text) try allocator.dupe(u8, xml_text) else xml_text,
-        .root = .{ .element = .{} },
-    }; errdefer if (copy_text) allocator.free(output.source_buffer);
-    
-    var tok_stream: TokenStream = .{ .buffer = output.source_buffer };
+    var tok_stream: TokenStream = .{ .buffer = xml_text };
     var current: Token = .bof;
     
-    const internal_parser = struct {
+    var source_buffer_array = try std.ArrayList(u8).initCapacity(allocator, xml_text.len);
+    errdefer source_buffer_array.deinit();
+    
+    var output: NodeTree = .{
+        .source_buffer = undefined,
+        .root = .{ .element = .{
+            .name = &.{},
+            .namespace = null,
+            .attributes = .{},
+            .children = .{},
+        } },
+    };
+    errdefer output.root.deinit(allocator);
+    
+    const state = struct {
         allocator: *Allocator,
-        xml_source: []const u8,
-        parse_options: ParseOptions,
-        
+        xml_text: []const u8,
         p_tok_stream: *TokenStream,
         p_current: *Token,
-        p_node_tree: *NodeTree,
+        parse_options: ParseOptions,
+        p_source_buffer_array: *@TypeOf(source_buffer_array),
         
-        fn parse(state: *const @This(), dst: *Node.Element) (error { Invalid, AttributeNameAlreadySpecified } || Allocator.Error)!void {
-            errdefer state.p_node_tree.root.deinit(state.allocator);
+        const Error = Allocator.Error || error {
+            Invalid,
+            EofMaybeTooEarly,
+            MaybeEofTooEarly,
+            EofTooEarly,
+            WrongClose,
+            AttributeAlreadySpecified,
+        };
+        
+        fn assignNodeProperties(state: *const @This(), dst:* Node.Element) Error!void {
+            const sba_items = &state.p_source_buffer_array.items;
             
-            while (true) {
+            while (true) : (state.p_current.* = state.p_tok_stream.next()) {
                 switch (state.p_current.*) {
-                    .bof => state.p_current.* = state.p_tok_stream.next(),
-                    .eof => return,
-                    .invalid => return error.Invalid,
+                    .bof
+                    => |bof| unreachable,
+                    
+                    .eof
+                    => |eof| return error.MaybeEofTooEarly,
+                    
+                    .invalid
+                    => |invalid| return error.Invalid,
                     
                     .element_open
                     => |element_open| {
-                        var new_child: Node = .{ .element = .{
-                            .name = element_open.name(state.xml_source),
-                            .namespace = element_open.namespace(state.xml_source),
+                        const name = element_open.name(state.xml_text);
+                        const namespace = element_open.namespace(state.xml_text);
+                        
+                        const name_range = Range.init(state.p_source_buffer_array.items.len, name.len);
+                        state.p_source_buffer_array.appendSliceAssumeCapacity(name);
+                        
+                        const namespace_range: ?Range = if (namespace) |ns| blk: {
+                            const blk_out = Range.init(state.p_source_buffer_array.items.len, ns.len);
+                            state.p_source_buffer_array.appendSliceAssumeCapacity(ns);
+                            break :blk blk_out;
+                        } else null;
+                        
+                        var new_node: Node = .{ .element = .{
+                            .name = name_range.slice(state.p_source_buffer_array.items),
+                            .namespace = if (namespace_range) |nsr| nsr.slice(state.p_source_buffer_array.items) else null,
+                            .attributes = .{},
+                            .children = .{},
                         } };
+                        errdefer new_node.deinit(state.allocator);
                         
                         state.p_current.* = state.p_tok_stream.next();
-                        try state.parse(&new_child.element);
-                        try dst.children.append(state.allocator, new_child);
+                        state.assignNodeProperties(&new_node.element) catch |err| switch (err) {
+                            error.MaybeEofTooEarly
+                            => return error.EofTooEarly,
+                            
+                            else
+                            => return err,
+                        };
+                        try dst.children.append(state.allocator, new_node);
                     },
                     
                     .element_close
                     => |element_close| {
-                        if (switch(std.builtin.mode) {
-                            .ReleaseFast, .ReleaseSmall
-                            => true,
-                            
-                            else
-                            => false,
-                        }) return;
                         
-                        if (blk: {
-                            const eql_name = blk_eql_name: {
-                                const got_name = element_close.name(state.xml_source);
-                                const expect_name = dst.name;
-                                break :blk_eql_name mem.eql(u8, expect_name, got_name);
-                            };
+                        const is_eql = blk_is_eql: {
+                            const expect_name = dst.name;
+                            const expect_namespace = dst.namespace;
                             
+                            const got_name = element_close.name(state.xml_text);
+                            const got_namespace = element_close.namespace(state.xml_text);
+                            
+                            const eql_name = mem.eql(u8, expect_name, got_name);
                             const eql_namespace = blk_eql_ns: {
-                                const got_ns = element_close.namespace(state.xml_source);
-                                const expect_ns = dst.namespace;
+                                const both_null = (expect_namespace == null) and (got_namespace == null);
+                                const none_null = (expect_namespace != null) and (got_namespace != null);
                                 
-                                const all_null = (got_ns == null) and (expect_ns == null);
-                                const no_null  = (got_ns != null) and (expect_ns != null);
-                                
-                                const all_eql = no_null and mem.eql(u8, expect_ns.?, got_ns.?);
-                                break :blk_eql_ns all_null or all_eql;
+                                const mem_eql = none_null and mem.eql(u8, expect_namespace.?, got_namespace.?);
+                                break :blk_eql_ns both_null or mem_eql;
                             };
                             
-                            break :blk !eql_name or !eql_namespace;
-                        }) return error.Invalid;
+                            break :blk_is_eql eql_name and eql_namespace;
+                        };
                         
-                        state.p_current.* = state.p_tok_stream.next();
+                        if (!is_eql) {
+                            return error.WrongClose;
+                        }
+                        
                         return;
                     },
                     
                     .attribute
                     => |attribute| {
-                        const name = attribute.name.slice(state.xml_source);
-                        const value = attribute.value(state.xml_source);
+                        const name = attribute.name.slice(state.xml_text);
+                        const value = attribute.value(state.xml_text);
                         
-                        const gop: std.StringArrayHashMapUnmanaged([]const u8).GetOrPutResult = try dst.attributes.getOrPut(state.allocator, name);
-                        if (gop.found_existing) {
-                            return error.AttributeNameAlreadySpecified;
-                        }
+                        const name_range = Range.init(sba_items.len, sba_items.len + name.len);
+                        state.p_source_buffer_array.appendSliceAssumeCapacity(name);
                         
-                        gop.value_ptr.* = value;
-                        state.p_current.* = state.p_tok_stream.next();
-                    },
-                    
-                    .empty_whitespace => |empty_whitespace| {
-                        if (state.parse_options.keep_empty_whitespace) {
-                            try dst.children.append(state.allocator, .{ .empty_whitespace = empty_whitespace.slice(state.xml_source) });
-                        }
+                        const value_range = Range.init(sba_items.len, sba_items.len + value.len);
+                        state.p_source_buffer_array.appendSliceAssumeCapacity(value);
                         
-                        state.p_current.* = state.p_tok_stream.next();
+                        const gop = try dst.attributes.getOrPut(state.allocator, name_range.slice(state.p_source_buffer_array.items));
+                        if (gop.found_existing) return error.AttributeAlreadySpecified;
+                        gop.value_ptr.* = value_range.slice(state.p_source_buffer_array.items);
                     },
                     
-                    .text => |text| {
-                        try dst.children.append(state.allocator, .{ .text = text.slice(state.xml_source) });
-                        state.p_current.* = state.p_tok_stream.next();
-                    },
-                    
-                    .char_data => |char_data| {
-                        try dst.children.append(state.allocator, .{ .char_data = char_data.data(state.xml_source) });
-                        state.p_current.* = state.p_tok_stream.next();
-                    },
-                    
-                    .comment => |comment| {
-                        if (state.parse_options.keep_comments) {
-                            try dst.children.append(state.allocator, .{ .comment = comment.data(state.xml_source) });
-                        }
+                    .empty_whitespace
+                    => |empty_whitespace| switch (state.parse_options.store_empty_whitespace) {
+                        .Keep
+                        => {
+                            const ws = empty_whitespace.slice(state.xml_text);
+                            const ws_range = Range.init(state.p_source_buffer_array.items.len, ws.len);
+                            state.p_source_buffer_array.appendSliceAssumeCapacity(ws);
+                            try dst.children.append(state.allocator, .{ .empty_whitespace = ws_range.slice(state.p_source_buffer_array.items) });
+                        },
                         
-                        state.p_current.* = state.p_tok_stream.next();
+                        .Flag
+                        => try dst.children.append(state.allocator, .{ .empty_whitespace = null }),
+                        
+                        .Discard
+                        => {},
                     },
                     
-                    .processing_instructions => |processing_instructions| {
-                        if (state.parse_options.keep_processing_instructions) {
+                    .text
+                    => |text| {
+                        const text_string = text.slice(state.xml_text);
+                        const text_range = Range.init(sba_items.len, sba_items.len + text_string.len);
+                        state.p_source_buffer_array.appendSliceAssumeCapacity(text_string);
+                        try dst.children.append(state.allocator, .{ .text = text_range.slice(state.p_source_buffer_array.items) });
+                    },
+                    
+                    .char_data
+                    => |char_data| {
+                        const text_string = char_data.data(state.xml_text);
+                        const text_range = Range.init(state.p_source_buffer_array.items.len, text_string.len);
+                        state.p_source_buffer_array.appendSliceAssumeCapacity(text_string);
+                        try dst.children.append(state.allocator, .{ .char_data = text_range.slice(state.p_source_buffer_array.items) });
+                    },
+                    
+                    .comment
+                    => |comment| switch (state.parse_options.store_comments) {
+                        .Keep
+                        => {
+                            const comment_str = comment.data(state.xml_text);
+                            const comment_range = Range.init(state.p_source_buffer_array.items.len, comment_str.len);
+                            state.p_source_buffer_array.appendSliceAssumeCapacity(comment_str);
+                            try dst.children.append(state.allocator, .{ .comment = comment_range.slice(state.p_source_buffer_array.items) });
+                        },
+                        
+                        .Flag
+                        => try dst.children.append(state.allocator, .{ .comment = null }),
+                        
+                        .Discard
+                        => {},
+                    },
+                    
+                    .processing_instructions
+                    => |processing_instructions| switch (state.parse_options.store_comments) {
+                        .Keep
+                        => {
+                            const target = processing_instructions.target.slice(state.xml_text);
+                            const instructions = processing_instructions.instructions.slice(state.xml_text);
+                            
+                            const target_range = Range.init(state.p_source_buffer_array.items.len, target.len);
+                            state.p_source_buffer_array.appendSliceAssumeCapacity(target);
+                            
+                            const instructions_range = Range.init(state.p_source_buffer_array.items.len, instructions.len);
+                            state.p_source_buffer_array.appendSliceAssumeCapacity(instructions);
+                            
                             try dst.children.append(state.allocator, .{ .processing_instructions = .{
-                                .target = processing_instructions.target.slice(state.xml_source),
-                                .instructions = processing_instructions.instructions.slice(state.xml_source),
+                                .target = target_range.slice(state.p_source_buffer_array.items),
+                                .instructions = instructions_range.slice(state.p_source_buffer_array.items),
                             } });
-                        }
+                        },
                         
-                        state.p_current.* = state.p_tok_stream.next();
+                        .Flag
+                        => try dst.children.append(state.allocator, .{ .processing_instructions = null }),
+                        
+                        .Discard
+                        => {},
                     },
                 }
             }
         }
+        
     } {
         .allocator = allocator,
-        .xml_source = output.source_buffer,
-        .parse_options = parse_options,
+        .xml_text = xml_text,
         .p_tok_stream = &tok_stream,
         .p_current = &current,
-        .p_node_tree = &output,
+        .p_source_buffer_array = &source_buffer_array,
+        .parse_options = parse_options,
     };
     
-    try internal_parser.parse(&output.root.element);
+    current = tok_stream.next();
+    state.assignNodeProperties(&output.root.element) catch |err| switch (err) {
+        error.MaybeEofTooEarly
+        => {},
+        
+        error.Invalid
+        => {
+            output.root.deinit(allocator);
+            source_buffer_array.deinit();
+            source_buffer_array.items.len = 0;
+            output.root = .{ .invalid = current.invalid };
+        },
+        
+        else
+        => return err,
+    };
+    
+    output.source_buffer = source_buffer_array.toOwnedSlice();
+    
     return output;
 }
 
 test "T0" {
-    var node_tree = try parse(
-        std.testing.allocator,
-        \\<root faf1="">
-        \\    <mem>
-        \\        damns
-        \\    </mem>
-        \\</root>
-        , false,
-        .{}
-    );
-    defer node_tree.root.deinit(std.testing.allocator);
+    std.debug.print("\n", .{});
+    const xml_text =
+        \\<my_element is="quite"> boring </my_element>
+    ;
     
-    std.debug.print("\n{}\n", .{node_tree.root});
+    var parsed = try parse(std.testing.allocator, xml_text, .{},);
+    defer {
+        parsed.root.deinit(std.testing.allocator);
+        std.testing.allocator.free(parsed.source_buffer);
+    }
+    
+    const real_root = parsed.root.element.children.items[0];
+    
+    std.debug.print("{s}:", .{real_root.element.namespace});
+    std.debug.print("{s}\n", .{real_root.element.name});
+    {
+        const slice = real_root.element.attributes.entries.slice();
+        const keys = slice.items(.key);
+        const value = slice.items(.value);
+        for (keys) |k, idx| std.debug.print("\t{s} = {s}\n", .{k, value[idx]});
+    }
+    std.debug.print("\n", .{});
     
 }
