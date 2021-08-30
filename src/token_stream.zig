@@ -345,6 +345,8 @@ pub const TokenStream = struct {
                         self.index += 1;
                     },
                     
+                    // TODO: Remember to add handling for internal DOCTYPE tokenizing.
+                    
                     'D',
                     => unreachable,
                     
