@@ -26,7 +26,7 @@ pub const Node = union(enum) {
         attributes: std.StringArrayHashMapUnmanaged([]const u8),
         children: std.ArrayListUnmanaged(Self),
         
-        pub fn addChild(self: *Element, allocator: *Allocator, child_node: Node) error {OutOfMemory}!void {
+        pub fn addChild(self: *Element, allocator: *Allocator, child_node: Node) Allocator.Error!void {
             try self.children.append(allocator, child_node);
         }
         
@@ -89,29 +89,38 @@ pub fn parse(
     xml_text: []const u8,
     parse_options: ParseOptions,
 ) !NodeTree {
+    _ = parse_options;
+    
     var output: NodeTree = .{
         .string_source = try allocator.allocAdvanced(u8, null, xml_text.len, .at_least),
-        .root = .empty,
-    }; errdefer allocator.free(string_fba_state.buffer);
+        .root = .{ .element = .{
+            .name = &.{},
+            .namespace = null,
+            .attributes = .{},
+            .children = .{},
+        } },
+    };
+    errdefer output.root.deinit(allocator);
+    errdefer allocator.free(output.string_source);
     
     var tokenizer = TokenStream.init(xml_text);
     var current = tokenizer.next();
     
-    var string_fba_state = std.heap.FixedBufferAllocator.init();
+    var string_fba_state = std.heap.FixedBufferAllocator.init(output.string_source);
     const string_allocator: *Allocator = &string_fba_state.allocator;
     
-    var dst_stack = try std.ArrayList(*Node.Element).initCapacity(allocator, blk_precalculate: {
-        defer current = tokenizer.reset();
+    var dst_stack = try std.ArrayList(*Node.Element).initCapacity(allocator, 1 + blk_precalculate: {
+        defer current = tokenizer.reset(null);
         
-        var open_tag_count: usize = 0;
-        var close_tag_count: usize = 0;
+        var max_open_tags: usize = 0;
+        var tags_in_scope: usize = 0;
         
-        while (true) : (current = tokenizer.next()) switch (current) {
-            .bof
-            => |_| {},
-            
-            .eof
-            => |_| break,
+        while (true) : ({
+            max_open_tags = std.math.max(max_open_tags, tags_in_scope);
+            current = tokenizer.next();
+        }) switch (current) {
+            .bof => continue,
+            .eof => break,
             
             // Note the early return point
             .invalid
@@ -125,8 +134,19 @@ pub fn parse(
                 return output;
             },
             
-            .element_open => |_| open_tag_count += 1,
-            .element_close => |_| close_tag_count += 1,
+            .element_open => |_| tags_in_scope += 1,
+            .element_close => |element_close| {
+                if (tags_in_scope == 0) {
+                    output.string_source = undefined;
+                    allocator.free(string_fba_state.buffer);
+                    
+                    output.root.deinit(allocator);
+                    output.root = .{ .invalid = .{ .index = element_close.identifier.beg } };
+                    
+                    return output;
+                }
+                tags_in_scope -= 1;
+            },
             
             .attribute,
             .empty_whitespace,
@@ -134,10 +154,34 @@ pub fn parse(
             .char_data,
             .comment,
             .processing_instructions,
-            => {},
+            => continue,
         };
         
-        if (open_tag_count != close_tag_count) {
+        break :blk_precalculate max_open_tags * @sizeOf(*Node.Element);
+        
+    });
+    defer dst_stack.deinit();
+    
+    const closure = struct {
+        p_dst_stack: *@TypeOf(dst_stack),
+        fn currentDst(closure: @This()) *Node.Element {
+            const index = closure.p_dst_stack.items.len - 1;
+            const items = closure.p_dst_stack.items;
+            return items[index];
+        }
+    } { .p_dst_stack = &dst_stack };
+    
+    try dst_stack.append(&output.root.element);
+    
+    while (true) : (current = tokenizer.next()) switch (current) {
+        .bof
+        => |_| continue,
+        
+        .eof
+        => |_| break,
+        
+        .invalid
+        => |invalid| {
             output.string_source = undefined;
             allocator.free(string_fba_state.buffer);
             
@@ -145,85 +189,119 @@ pub fn parse(
             output.root = .{ .invalid = invalid };
             
             return output;
-        }
+        },
         
-        break :blk_precalculate open_tag_count * @sizeOf(Node.Element);
-    }); defer dst_stack.deinit();
-    
-    const closure = struct {
-        p_dst_stack: *@TypeOf(dst_stack),
-        fn currentDst(closure: @This()) *Node.Element {
-            const index = closure.p_dst_stack.items.len - 1;
-            const items = closure.p_dst_stack.items;
-            return &items[index];
-        }
-    } { .p_dst_stack = &dst_stack };
-    
-    while (true) : (current = tokenizer.next()) switch (current) {
-            .bof
-            => |bof| {
-                _ = bof;
-            },
+        .element_open
+        => |element_open| {
+            const src_name = element_open.name(xml_text);
+            const src_namespace = element_open.namespace(xml_text);
             
-            .eof
-            => |eof| {
-                _ = eof;
-            },
+            try closure.currentDst().addChild(allocator, .{ .element = .{
+                .name = try string_allocator.dupe(u8, src_name),
+                .namespace = if (src_namespace) |ns| try string_allocator.dupe(u8, ns) else null,
+                .attributes = .{},
+                .children = .{},
+            } });
             
-            .invalid
-            => |invalid| {
-                _ = invalid;
-            },
+            const newest_dst_ptr: *Node.Element = blk: {
+                const items = closure.currentDst().children.items;
+                const index = items.len - 1;
+                break :blk &items[index].element;
+            };
             
-            .element_open
-            => |element_open| {
-                _ = element_open;
-            },
+            try dst_stack.append(newest_dst_ptr);
+        },
+        
+        .element_close
+        => |element_close| {
+            if (!blk_match: {
+                const expect_name = closure.currentDst().name;
+                const expect_namespace = closure.currentDst().namespace;
+                
+                const got_name = element_close.name(xml_text);
+                const got_namespace = element_close.namespace(xml_text);
+                
+                const eql_names = mem.eql(u8, expect_name, got_name);
+                const eql_ns = blk_ns_match: {
+                    const both_null = (expect_namespace == null) and (got_namespace == null);
+                    const none_null = (expect_namespace != null) and (got_namespace != null);
+                    const mem_eql = none_null and mem.eql(u8, expect_namespace.?, got_namespace.?);
+                    break :blk_ns_match mem_eql or both_null;
+                };
+                
+                break :blk_match eql_names and eql_ns;
+            }) {
+                _ = dst_stack.popOrNull().?;
+            }
+        },
+        
+        .attribute
+        => |attribute| {
+            const src_name = attribute.name.slice(xml_text);
+            const src_value = attribute.value(xml_text);
             
-            .element_close
-            => |element_close| {
-                _ = element_close;
-            },
+            const cpy_name = try string_allocator.dupe(u8, src_name);
+            errdefer string_allocator.free(cpy_name);
             
-            .attribute
-            => |attribute| {
-                _ = attribute;
-            },
+            const cpy_value = try string_allocator.dupe(u8, src_value);
+            errdefer string_allocator.free(cpy_value);
             
-            .empty_whitespace
-            => |empty_whitespace| {
-                _ = empty_whitespace;
-            },
+            try closure.currentDst().addAttribute(allocator, cpy_name, cpy_value);
+        },
+        
+        .empty_whitespace
+        => |empty_whitespace| {
+            _ = empty_whitespace;
+        },
+        
+        .text
+        => |text| {
+            const src_data = text.slice(xml_text);
             
-            .text
-            => |text| {
-                _ = text;
-            },
+            const cpy_data = try string_allocator.dupe(u8, src_data);
+            errdefer string_allocator.free(cpy_data);
             
-            .char_data
-            => |char_data| {
-                _ = char_data;
-            },
-            
-            .comment
-            => |comment| {
-                _ = comment;
-            },
-            
-            .processing_instructions
-            => |processing_instructions| {
-                _ = processing_instructions;
-            },
+            try closure.currentDst().addChild(allocator, .{ .text = cpy_data });
+        },
+        
+        .char_data
+        => |char_data| {
+            _ = char_data;
+        },
+        
+        .comment
+        => |comment| {
+            _ = comment;
+        },
+        
+        .processing_instructions
+        => |processing_instructions| {
+            _ = processing_instructions;
+        },
     };
     
     return output;
 }
 
 test "T0" {
-    var node_tree = try parse(.{ .node_allocator = testing.allocator, .strings = .{ .allocator = testing.allocator } },
-        \\<my_element is="not"> very interesting </my_element>
-        , .{}
-    );
+    std.debug.print("\n", .{});
     
-    _ = node_tree;
+    var node_tree = try parse(testing.allocator,
+    \\<my_element is="not"> very interesting </my_element>
+    , .{});
+    defer node_tree.root.deinit(testing.allocator);
+    defer testing.allocator.free(node_tree.string_source);
+    
+    const real_root: Node.Element = node_tree.root.element.children.items[0].element;
+    
+    std.debug.print("namespace: {s}\n", .{real_root.namespace});
+    std.debug.print("name: {s}\n", .{real_root.name});
+    
+    std.debug.print("attributes:\n", .{});
+    {const vals = real_root.attributes.values();
+    for (real_root.attributes.keys()) |k, v| {
+        std.debug.print("\t{s} = {s}\n", .{k, vals[v]});
+    }}
+    
+    std.debug.print("{s}\n", .{real_root.children.items[0].text});
 }
