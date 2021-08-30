@@ -132,6 +132,7 @@ pub const Token = union(enum) {
 };
 
 pub const TokenStream = struct {
+    const Self = @This();
     buffer: []const u8,
     index: usize = 0,
     parse_state: ParseState = .start,
@@ -230,14 +231,18 @@ pub const TokenStream = struct {
         
     };
     
-    pub fn reset(self: *TokenStream, new_buffer: ?[]const u8) Token {
+    pub fn init(buffer: []const u8) Self {
+        return Self { .buffer = buffer };
+    }
+    
+    pub fn reset(self: *Self, new_buffer: ?[]const u8) Token {
         self.parse_state = .start;
         self.index = 0;
         self.buffer = new_buffer orelse self.buffer;
         return .bof;
     }
     
-    pub fn next(self: *TokenStream) Token {
+    pub fn next(self: *Self) Token {
         var result: Token = .{ .invalid = Index.init(self.index) };
         
         const on_start = .{ .index = self.index };
@@ -872,19 +877,19 @@ pub const TokenStream = struct {
         return result;
     }
     
-    fn currentUtf8Codepoint(self: TokenStream) ?u21 {
+    fn currentUtf8Codepoint(self: Self) ?u21 {
         const utf8_cp_len = std.unicode.utf8ByteSequenceLength(self.buffer[self.index]) catch return null;
         if (self.index + utf8_cp_len > self.buffer.len) return null;
         return std.unicode.utf8Decode(self.buffer[self.index..self.index + utf8_cp_len]) catch null;
     }
     
-    fn currentIsValidNameChar(self: TokenStream) bool {
+    fn currentIsValidNameChar(self: Self) bool {
         const current_cp = self.currentUtf8Codepoint();
         const invalid_cp = current_cp == null or !isValidXmlNameCharUtf8(current_cp.?);
         return !invalid_cp;
     }
     
-    fn currentIsValidNameStartChar(self: TokenStream) bool {
+    fn currentIsValidNameStartChar(self: Self) bool {
         const current_cp = self.currentUtf8Codepoint();
         const invalid_cp = current_cp == null or !isValidXmlNameStartCharUtf8(current_cp.?);
         return !invalid_cp;
