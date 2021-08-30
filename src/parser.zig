@@ -266,7 +266,12 @@ pub fn parse(
         
         .char_data
         => |char_data| {
-            _ = char_data;
+            const src_data = char_data.data(xml_text);
+            
+            const cpy_data = try string_allocator.dupe(u8, src_data);
+            errdefer string_allocator.free(cpy_data);
+            
+            try closure.currentDst().addChild(allocator, .{ .char_data = cpy_data });
         },
         
         .comment
@@ -287,7 +292,7 @@ test "T0" {
     std.debug.print("\n", .{});
     
     var node_tree = try parse(testing.allocator,
-    \\<my_element is="not"> very interesting </my_element>
+    \\<my_element is="not"> <word>very</word> <word>interesting</word> </my_element>
     , .{});
     defer node_tree.root.deinit(testing.allocator);
     defer testing.allocator.free(node_tree.string_source);
@@ -297,11 +302,28 @@ test "T0" {
     std.debug.print("namespace: {s}\n", .{real_root.namespace});
     std.debug.print("name: {s}\n", .{real_root.name});
     
-    std.debug.print("attributes:\n", .{});
-    {const vals = real_root.attributes.values();
-    for (real_root.attributes.keys()) |k, v| {
-        std.debug.print("\t{s} = {s}\n", .{k, vals[v]});
-    }}
+    {
+        std.debug.print("attributes:\n", .{});
+        const keys = real_root.attributes.keys();
+        const vals = real_root.attributes.values();
+        for (keys) |k, v_index| {
+            const v = vals[v_index];
+            std.debug.print("\t{s} = {s}\n", .{k, v});
+        }
+    }
     
-    std.debug.print("{s}\n", .{real_root.children.items[0].text});
+    std.debug.print("children:\n", .{});
+    for (real_root.children.items) |child| {
+        switch (child) {
+            .invalid => break,
+            .empty => break,
+            .text => |text| std.debug.print("\ttext:'{s}'\n", .{text}),
+            .char_data => |char_data| std.debug.print("\tCDATA:'{s}'\n", .{char_data}),
+            .comment => |comment| std.debug.print("\tcomment:'{s}'\n", .{comment}),
+            .empty_whitespace => |empty_whitespace| std.debug.print("\tcomment:'{s}'\n", .{empty_whitespace}),
+            .element => |element| std.debug.print("\telement: '{s}'", .{element}),
+            .processing_instructions => |pi| std.debug.print("\tPI: '{s}'\n", .{pi}),
+        }
+    }
+    
 }
