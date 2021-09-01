@@ -1,9 +1,9 @@
 const std = @import("std");
-const testing = std.testing;
 const mem = std.mem;
+const testing = std.testing;
 const Allocator = std.mem.Allocator;
-const token_stream = @import("token_stream.zig");
 
+const token_stream = @import("token_stream.zig");
 const Index = token_stream.Index;
 const Range = token_stream.Range;
 const Token = token_stream.Token;
@@ -214,7 +214,7 @@ pub fn parse(
         
         .element_close
         => |element_close| {
-            if (!blk_match: {
+            const matching_close_tag = blk_match: {
                 const expect_name = closure.currentDst().name;
                 const expect_namespace = closure.currentDst().namespace;
                 
@@ -230,9 +230,10 @@ pub fn parse(
                 };
                 
                 break :blk_match eql_names and eql_ns;
-            }) {
-                _ = dst_stack.popOrNull().?;
-            }
+            };
+            
+            _ = if (matching_close_tag) dst_stack.pop()
+            else return error.WrongClose;
         },
         
         .attribute
@@ -250,8 +251,15 @@ pub fn parse(
         },
         
         .empty_whitespace
-        => |empty_whitespace| {
-            _ = empty_whitespace;
+        => |empty_whitespace| switch (parse_options.store_empty_whitespace) {
+            .Discard => {},
+            .Flag => try closure.currentDst().addChild(allocator, .{ .empty_whitespace = null }),
+            .Keep => {
+                const data_copy = try string_allocator.dupe(u8, empty_whitespace.slice(xml_text));
+                errdefer string_allocator.free(data_copy);
+                
+                try closure.currentDst().addChild(allocator, .{ .empty_whitespace = data_copy });
+            },
         },
         
         .text
@@ -288,42 +296,95 @@ pub fn parse(
     return output;
 }
 
+pub const StringifyOptions = struct {
+    newline: []const u8 = "\n",
+    incrementing_indentation: []const u8 = "\t",
+};
+
+pub fn internalStringify(
+    value: Node,
+    options: StringifyOptions,
+    out_stream: anytype, // std.io.Writer(),
+    indentation_level: usize,
+    is_last_child: bool,
+) @TypeOf(out_stream).Error!void {
+    switch (value) {
+        .empty,
+        .invalid => {},
+        
+        .text
+        => |data| try out_stream.writeAll(data),
+        
+        .char_data
+        => |char_data| try out_stream.print("<![CDATA[{s}]]>", .{char_data}),
+        
+        .comment => |comment|
+        if (comment) |comment_data|
+            try out_stream.print("<!--{s}-->", .{comment_data}),
+        
+        .empty_whitespace => |empty_whitespace|
+        if (empty_whitespace) |ew_data|
+            try out_stream.writeAll(ew_data)
+        else {
+            try out_stream.writeAll(options.newline);
+            
+            {
+                var idx: usize = 0;
+                while (idx < indentation_level - @boolToInt(is_last_child)) : (idx += 1)
+                    try out_stream.writeAll(options.incrementing_indentation);
+            }
+        },
+        
+        .element => |element| {
+            try out_stream.writeByte('<');
+            if (element.namespace) |ns| try out_stream.print("{s}:", .{ns});
+            try out_stream.writeAll(element.name);
+            {
+                const keys = element.attributes.keys();
+                const vals = element.attributes.values();
+                for (keys) |k, idx| {
+                    const v = vals[idx];
+                    try out_stream.print(" {s} = \"{s}\"", .{k, v});
+                }
+            }
+            
+            if (element.children.items.len == 0) {
+                return out_stream.writeAll("/>");
+            }
+            
+            try out_stream.writeByte('>');
+            
+            for (element.children.items) |child, idx|  {
+                try internalStringify(child, options, out_stream, indentation_level + 1, idx + 1 == element.children.items.len);
+            }
+            
+            try out_stream.writeAll("</");
+            if (element.namespace) |ns| try out_stream.print("{s}:", .{ns});
+            try out_stream.print("{s}>", .{element.name});
+        },
+        
+        .processing_instructions => |processing_instructions|
+        if (processing_instructions) |pi|
+            try out_stream.print("<?{s} {s}?>", .{pi.target, pi.instructions}),
+        
+    }
+}
+
 test "T0" {
     std.debug.print("\n", .{});
-    
+    std.debug.print("\n", .{});
     var node_tree = try parse(testing.allocator,
     \\<my_element is="not"> <word>very</word> <word>interesting</word> </my_element>
-    , .{});
+    , .{
+        .store_empty_whitespace = .Keep,
+        .store_comments = .Flag,
+        .store_processing_instructions = .Flag,
+    });
     defer node_tree.root.deinit(testing.allocator);
     defer testing.allocator.free(node_tree.string_source);
     
-    const real_root: Node.Element = node_tree.root.element.children.items[0].element;
+    //const real_root: Node.Element = node_tree.root.element.children.items[0].element;
     
-    std.debug.print("namespace: {s}\n", .{real_root.namespace});
-    std.debug.print("name: {s}\n", .{real_root.name});
-    
-    {
-        std.debug.print("attributes:\n", .{});
-        const keys = real_root.attributes.keys();
-        const vals = real_root.attributes.values();
-        for (keys) |k, v_index| {
-            const v = vals[v_index];
-            std.debug.print("\t{s} = {s}\n", .{k, v});
-        }
-    }
-    
-    std.debug.print("children:\n", .{});
-    for (real_root.children.items) |child| {
-        switch (child) {
-            .invalid => break,
-            .empty => break,
-            .text => |text| std.debug.print("\ttext:'{s}'\n", .{text}),
-            .char_data => |char_data| std.debug.print("\tCDATA:'{s}'\n", .{char_data}),
-            .comment => |comment| std.debug.print("\tcomment:'{s}'\n", .{comment}),
-            .empty_whitespace => |empty_whitespace| std.debug.print("\tcomment:'{s}'\n", .{empty_whitespace}),
-            .element => |element| std.debug.print("\telement: '{s}'", .{element}),
-            .processing_instructions => |pi| std.debug.print("\tPI: '{s}'\n", .{pi}),
-        }
-    }
-    
+    try internalStringify(node_tree.root.element.children.items[0], .{}, std.io.getStdOut().writer(), 0, true);
+    std.debug.print("\n", .{});
 }
