@@ -1,4 +1,4 @@
 zig-cache/
 zig-out/
 .git/
-./build.zig
+build.zig
