@@ -15,12 +15,12 @@ pub const ParseState = union(enum) {
     start,
     start_whitespace,
     
-    left_angle_bracket,
-    left_angle_bracket_fwd_slash,
-    left_angle_bracket_qmark,
-    left_angle_bracket_emark,
-    left_angle_bracket_emark_dash,
-    left_angle_bracket_emark_sbracket: struct { match_index: usize = 0 },
+    @"<",
+    @"</",
+    @"<?",
+    @"<!",
+    @"<!-",
+    @"<![": struct { match_index: usize = 0 },
     
     el_open_name_start_char: ElementNameStartChar,
     el_open_name_end_char: ElementNameEndChar,
@@ -35,7 +35,7 @@ pub const ParseState = union(enum) {
     inside_char_data: InsideCharData,
     
     found_right_angle_bracket,
-    right_angle_bracket: RightAngleBracket,
+    @">": RightAngleBracket,
     
     eof,
     
@@ -136,7 +136,7 @@ pub fn next(self: *TokenStream) Token {
                 => {
                     self.index += 1;
                     self.parse_state = switch (current_char) {
-                        '<', => .left_angle_bracket,
+                        '<', => .@"<",
                         else => .start_whitespace,
                     };
                 },
@@ -152,7 +152,7 @@ pub fn next(self: *TokenStream) Token {
                 
                 '<',
                 => {
-                    self.parse_state = .left_angle_bracket;
+                    self.parse_state = .@"<";
                     result = .{ .empty_whitespace = Range.init(0, self.index) };
                     self.index += 1;
                     break :mainloop;
@@ -164,15 +164,15 @@ pub fn next(self: *TokenStream) Token {
             
             
             
-            .left_angle_bracket
+            .@"<"
             => switch (current_char) {
                 '!', '?', '/',
                 => {
                     self.index += 1;
                     self.parse_state = switch (current_char) {
-                        '!', => .left_angle_bracket_emark,
-                        '?', => .left_angle_bracket_qmark,
-                        '/', => .left_angle_bracket_fwd_slash,
+                        '!', => .@"<!",
+                        '?', => .@"<?",
+                        '/', => .@"</",
                         else => unreachable,
                     };
                 },
@@ -188,7 +188,7 @@ pub fn next(self: *TokenStream) Token {
                 } else break :mainloop,
             },
             
-            .left_angle_bracket_fwd_slash
+            .@"</"
             => if (self.currentIsValidNameStartChar()) {
                 self.parse_state = .{ .el_close_name_start_char = .{
                     .start = Index.init(self.index),
@@ -198,24 +198,24 @@ pub fn next(self: *TokenStream) Token {
                 catch unreachable;
             } else break :mainloop,
             
-            .left_angle_bracket_qmark
+            .@"<?"
             => if (self.currentIsValidNameStartChar()) {
                 self.parse_state = .{ .pi_target_name_start_char = Index.init(self.index) };
                 self.index += std.unicode.utf8ByteSequenceLength(current_char)
                 catch unreachable;
             } else break :mainloop,
             
-            .left_angle_bracket_emark
+            .@"<!"
             => switch (current_char) {
                 '-',
                 => {
-                    self.parse_state = .left_angle_bracket_emark_dash;
+                    self.parse_state = .@"<!-";
                     self.index += 1;
                 },
                 
                 '[',
                 => {
-                    self.parse_state = .{ .left_angle_bracket_emark_sbracket = .{ .match_index = 0 } };
+                    self.parse_state = .{ .@"<![" = .{ .match_index = 0 } };
                     self.index += 1;
                 },
                 
@@ -234,7 +234,7 @@ pub fn next(self: *TokenStream) Token {
                 => break :mainloop,
             },
             
-            .left_angle_bracket_emark_dash
+            .@"<!-"
             => switch (current_char) {
                 '-',
                 => {
@@ -249,15 +249,15 @@ pub fn next(self: *TokenStream) Token {
                 => break :mainloop,
             },
             
-            .left_angle_bracket_emark_sbracket
-            => |left_angle_bracket_emark_sbracket| {
+            .@"<!["
+            => |@"<!["| {
                 const token_string = "CDATA[";
-                switch (left_angle_bracket_emark_sbracket.match_index) {
+                switch (@"<![".match_index) {
                     0...(token_string.len - 1),
                     => {
-                        const is_match = current_char == token_string[left_angle_bracket_emark_sbracket.match_index];
+                        const is_match = current_char == token_string[@"<![".match_index];
                         if (!is_match) break :mainloop;
-                        self.parse_state.left_angle_bracket_emark_sbracket.match_index += 1;
+                        self.parse_state.@"<![".match_index += 1;
                     },
                     
                     token_string.len,
@@ -677,7 +677,7 @@ pub fn next(self: *TokenStream) Token {
             .found_right_angle_bracket
             => {
                 self.index += 1;
-                self.parse_state = .{ .right_angle_bracket = .{
+                self.parse_state = .{ .@">" = .{
                     .start = Index.init(self.index),
                     .non_whitespace_chars = false,
                 } };
@@ -688,10 +688,10 @@ pub fn next(self: *TokenStream) Token {
                 }
             },
             
-            .right_angle_bracket
-            => |right_angle_bracket| {
+            .@">"
+            => |@">"| {
                 const range = Range {
-                    .beg = right_angle_bracket.start.index,
+                    .beg = @">".start.index,
                     .end = self.index,
                 };
                 
@@ -699,15 +699,15 @@ pub fn next(self: *TokenStream) Token {
                     '<',
                     => {
                         const end_of_file_condition = self.index == self.buffer.len;
-                        const at_least_whitespace_found = self.index != right_angle_bracket.start.index;
+                        const at_least_whitespace_found = self.index != @">".start.index;
                         
                         if (at_least_whitespace_found) {
                             result =
-                            if (right_angle_bracket.non_whitespace_chars) .{ .text = range, }
+                            if (@">".non_whitespace_chars) .{ .text = range, }
                             else .{ .empty_whitespace = range };
                         }
                         
-                        self.parse_state = .left_angle_bracket;
+                        self.parse_state = .@"<";
                         self.index += 1;
                         
                         if (end_of_file_condition) {
@@ -730,7 +730,7 @@ pub fn next(self: *TokenStream) Token {
                     
                     else
                     => {
-                        self.parse_state.right_angle_bracket.non_whitespace_chars = true;
+                        self.parse_state.@">".non_whitespace_chars = true;
                         self.index += 1;
                         if (self.index == self.buffer.len) {
                             result = .eof;
