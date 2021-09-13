@@ -2,11 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 
 pub const TokenStream = @import("xml/TokenStream.zig");
-
-const token = @import("xml/token.zig");
-pub const Token = token.Token;
-pub const Range = token.Range;
-pub const Index = token.Index;
+pub const Token = @import("xml/Token.zig");
 
 pub fn isValidNameStartCharUtf8(char: u21) bool {
     return switch (char) {
@@ -48,6 +44,6 @@ pub fn isValidNameCharUtf8(char: u21) bool {
 }
 
 comptime {
-    _ = token;
     _ = TokenStream;
+    _ = Token;
 }
