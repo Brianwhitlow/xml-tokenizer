@@ -1,5 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
+const unicode = std.unicode;
 
 pub const TokenStream = @import("xml/TokenStream.zig");
 pub const Token = @import("xml/Token.zig");
@@ -43,7 +44,28 @@ pub fn isValidNameCharUtf8(char: u21) bool {
     };
 }
 
+pub usingnamespace struct {
+    pub fn isValidNameStartCharUtf8At(index: usize, src: []const u8) bool {
+        return isValidNameCharUtf8AtImpl(index, src, isValidNameStartCharUtf8);
+    }
+    
+    pub fn isValidNameCharUtf8At(index: usize, src: []const u8) bool {
+        return isValidNameCharUtf8AtImpl(index, src, isValidNameCharUtf8);
+    }
+    
+    fn isValidNameCharUtf8AtImpl(index: usize, src: []const u8, comptime constraint: (fn(u21)bool)) bool {
+        if (index >= src.len) return false;
+        const char = src[index];
+        const end = index + (unicode.utf8ByteSequenceLength(char) catch return false);
+        
+        if (end >= src.len) return false;
+        const utf8_cp = unicode.utf8Decode(src[index..end]) catch return false;
+        return constraint(utf8_cp);
+    }
+};
+
 comptime {
+    _ = @This();
     _ = TokenStream;
     _ = Token;
 }
