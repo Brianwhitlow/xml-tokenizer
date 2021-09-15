@@ -13,17 +13,12 @@ pub fn init(index: usize, info: Info) Token {
     };
 }
 
-pub fn initTag(index: usize, comptime tag: Info.Tag, value: Info.TagPayload(tag)) Token {
+pub fn initTag(index: usize, comptime tag: Info.Tag, value: Info.TagStrPayload(@tagName(tag))) Token {
     return Token.init(index, @unionInit(Info, @tagName(tag), value));
 }
 
 pub fn initTagStr(index: usize, comptime tag_name: []const u8, value: Info.TagStrPayload(tag_name)) Token {
     return Token.init(index, @unionInit(Info, tag_name, value));
-}
-
-pub fn toSpecific(self: Token, comptime tag: Info.Tag) Info.WithIndex(tag) {
-    std.debug.assert(@as(Info.Tag, self.info) == tag);
-    return .{ .index = self.index, .info = @field(self.info, @tagName(tag)) };
 }
 
 pub fn slice(self: Token, src: []const u8) []const u8 {
@@ -47,75 +42,15 @@ pub const Info = union(enum) {
     processing_instructions: ProcessingInstructions,
     doctype_declaration: DoctypeDeclaration,
     
-    pub fn WithIndex(comptime tag: Tag) type {
-        return struct {
-            const Self = @This();
-            index: usize,
-            info: TagPayload(tag),
-            
-            pub fn toToken(self: Self) Token {
-                return Token.initTag(self.index, tag, self.info);
-            }
-            
-            pub fn slice(self: Self, src: []const u8) []const u8 {
-                return self.toToken().slice(src);
-            }
-            
-            pub usingnamespace switch (TagPayload(tag)) {
-                ElementId => struct {
-                    pub fn name(self: Self, src: []const u8) []const u8 {
-                        return ElementId.name(self.info, self.index, src);
-                    }
-                    
-                    pub fn namespace(self: Self, src: []const u8, include_colon: bool) ?[]const u8 {
-                        return ElementId.namespace(self.info, self.index, src, include_colon);
-                    }
-                },
-                
-                Attribute => struct {
-                    pub fn prefix(self: Self, src: []const u8, include_colon: bool) ?[]const u8 {
-                        return Attribute.prefix(self.info, self.index, src, include_colon);
-                    }
-                    
-                    pub fn name(self: Self, src: []const u8) []const u8 {
-                        return Attribute.name(self.info, self.index, src);
-                    }
-                    
-                    pub fn prefixedName(self: Self, src: []const u8) ?[]const u8 {
-                        return Attribute.prefixedName(self.info, self.index, src);
-                    }
-                    
-                    pub fn value(self: Self, src: []const u8, include_quotes: bool) []const u8 {
-                        return Attribute.value(self.info, self.index, src, include_quotes);
-                    }
-                },
-                
-                CharData,
-                Comment,
-                ProcessingInstructions,
-                DoctypeDeclaration,
-                => struct {
-                    pub fn data(self: @This(), src: []const u8) []const u8 {
-                        return @field(self.info, @tagName(tag)).data(self.index, src);
-                    }
-                },
-                
-                else => struct {},
-            };
-        };
-    }
-    pub fn TagPayload(comptime tag: Tag) type {
-        return @TypeOf(@field(@unionInit(Info, @tagName(tag), undefined), @tagName(tag)));
-    }
     pub fn TagStrPayload(comptime tag_name: []const u8) type {
         return @TypeOf(@field(@unionInit(Info, tag_name, undefined), tag_name));
     }
-    pub const Tag = meta.Tag(Info);
+    pub const Tag = @TypeOf(Info.bof);
     
     pub fn slice(self: Info, index: usize, src: []const u8) []const u8 {
         inline for (std.meta.fields(Info)) |field| {
             const FieldType = blk: {
-                const MaybeOutput = meta.TagPayload(Info, @field(Tag, field.name));
+                const MaybeOutput = TagStrPayload(field.name);
                 break :blk if (MaybeOutput == void) struct {} else MaybeOutput;
             };
             const ExpectedFnType = fn(FieldType, usize, []const u8)[]const u8;
@@ -239,16 +174,13 @@ pub const Info = union(enum) {
 };
 
 test "Void" {
-    var token: Token = undefined;
-    
-    token.info = .bof;
-    try testing.expectEqualStrings(token.slice(""), "");
-    
-    token.info = .eof;
-    try testing.expectEqualStrings(token.slice(""), "");
-    
-    token.info = .invalid;
-    try testing.expectEqualStrings(token.slice(""), "");
+    inline for (.{
+        Token { .index = 0, .info = .bof },
+        Token { .index = 0, .info = .eof },
+        Token { .index = 0, .info = .invalid },
+    }) |token| {
+        try testing.expectEqualStrings(token.slice("foo bar baz"), "");
+    }
 }
 
 test "ElementId" {
@@ -262,12 +194,12 @@ test "ElementId" {
             const colon_idx = namespace.len - 1;
             
             const token = Token.init(0, @unionInit(Info, field_name, .{ .colon_offset = colon_idx, .len = src.len }));
-            const specific = token.toSpecific(comptime std.meta.stringToEnum(Info.Tag, field_name).?);
-            try testing.expectEqualStrings(specific.slice(src), src);
+            const specific = @field(token.info, field_name);
             
-            try testing.expectEqualStrings(specific.name(src), name);
-            try testing.expectEqualStrings(specific.namespace(src, false).?, namespace[0..colon_idx]);
-            try testing.expectEqualStrings(specific.namespace(src, true).?, namespace);
+            try testing.expectEqualStrings(specific.slice(0, src), src);
+            try testing.expectEqualStrings(specific.name(0, src), name);
+            try testing.expectEqualStrings(specific.namespace(0, src, false).?, namespace[0..colon_idx]);
+            try testing.expectEqualStrings(specific.namespace(0, src, true).?, namespace);
             
             break :with_namespace;
         }
@@ -275,8 +207,7 @@ test "ElementId" {
         without_namespace: {
             const src: []const u8 = "foo";
             
-            const token = Token.initTag(0, ); Token.init(0, @unionInit(Info, field_name, .{ .colon_offset = null, .len = src.len }));
-            const specific = ;
+            const token = Token.init(0, @unionInit(Info, field_name, .{ .colon_offset = null, .len = src.len }));
             try testing.expectEqualStrings(token.info.slice(0, src), src);
             
             const active_field = @field(token.info, field_name);

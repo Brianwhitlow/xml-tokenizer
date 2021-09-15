@@ -5,7 +5,7 @@ const unicode = std.unicode;
 pub const TokenStream = @import("xml/TokenStream.zig");
 pub const Token = @import("xml/Token.zig");
 
-pub fn isValidNameStartCharUtf8(char: u21) bool {
+pub fn isValidUtf8NameStartChar(char: u21) bool {
     return switch (char) {
         'A'...'Z',
         'a'...'z',
@@ -29,8 +29,8 @@ pub fn isValidNameStartCharUtf8(char: u21) bool {
     };
 }
 
-pub fn isValidNameCharUtf8(char: u21) bool {
-    return isValidNameStartCharUtf8(char) or switch (char) {
+pub fn isValidUtf8NameChar(char: u21) bool {
+    return isValidUtf8NameStartChar(char) or switch (char) {
         '0'...'9',
         '-',
         '.',
@@ -44,25 +44,24 @@ pub fn isValidNameCharUtf8(char: u21) bool {
     };
 }
 
-pub usingnamespace struct {
-    pub fn isValidNameStartCharUtf8At(index: usize, src: []const u8) bool {
-        return isValidNameCharUtf8AtImpl(index, src, isValidNameStartCharUtf8);
-    }
+pub fn isValidUtf8NameStartCharAt(index: usize, src: []const u8) bool {
+    return isValidUtf8ConstrainedAt(index, src, isValidUtf8NameStartChar);
+}
+
+pub fn isValidUtf8NameCharAt(index: usize, src: []const u8) bool {
+    return isValidUtf8ConstrainedAt(index, src, isValidUtf8NameChar);
+}
+
+fn isValidUtf8ConstrainedAt(index: usize, src: []const u8, comptime constraint: (fn(u21)bool)) bool {
+    if (index >= src.len) return false;
+    const char: u8 = src[index];
+    const len = unicode.utf8ByteSequenceLength(char) catch return false;
+    const end: usize = index + len;
     
-    pub fn isValidNameCharUtf8At(index: usize, src: []const u8) bool {
-        return isValidNameCharUtf8AtImpl(index, src, isValidNameCharUtf8);
-    }
-    
-    fn isValidNameCharUtf8AtImpl(index: usize, src: []const u8, comptime constraint: (fn(u21)bool)) bool {
-        if (index >= src.len) return false;
-        const char = src[index];
-        const end = index + (unicode.utf8ByteSequenceLength(char) catch return false);
-        
-        if (end >= src.len) return false;
-        const utf8_cp = unicode.utf8Decode(src[index..end]) catch return false;
-        return constraint(utf8_cp);
-    }
-};
+    if (end >= src.len) return false;
+    const utf8_cp = unicode.utf8Decode(src[index..end]) catch return false;
+    return constraint(utf8_cp);
+}
 
 comptime {
     _ = @This();

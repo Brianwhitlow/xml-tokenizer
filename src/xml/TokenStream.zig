@@ -1,4 +1,7 @@
 const std = @import("std");
+const mem = std.mem;
+const meta = std.meta;
+const debug = std.debug;
 const testing = std.testing;
 const unicode = std.unicode;
 
@@ -10,318 +13,204 @@ index: usize,
 buffer: []const u8,
 state: ParseState,
 
-pub fn init(buffer: []const u8) TokenStream {
-    return TokenStream {
+pub fn init(src: []const u8) TokenStream {
+    return TokenStream{
         .index = 0,
-        .buffer = buffer,
-        .state = ParseState {},
+        .buffer = src,
+        .state = .{},
     };
 }
 
-pub fn reset(self: *TokenStream, new_buffer: ?[]const u8) void {
-    self.* = TokenStream.init(new_buffer orelse self.buffer);
+pub fn reset(self: *TokenStream, new_src: ?[]const u8) void {
+    self.* = TokenStream.init(new_src orelse self.buffer);
 }
 
 pub fn next(self: *TokenStream) ?Token {
-    while (true) : (self.index += 1) {
-        if (self.index >= self.buffer.len) break;
-        defer self.index += 1;
-        
-        const char = self.buffer[self.index];
-        switch (self.state) {
-            .invalid => break,
+    while (true) {
+        switch (self.state.specific) {
+            .end => return null,
             
-            .start => switch (char) {
-                ' ', '\t', '\n', '\r',  => self.state = .start_whitespace,
-                '<',                    => self.state = .@"<",
-                else                    => {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                }
+            .eof => {
+                debug.assert(self.index + 1 == self.buffer.len);
+                self.state.specific = .end;
+                return Token.init(self.index, .eof);
             },
             
-            .start_whitespace => switch (char) {
-                ' ', '\t', '\n', '\r',
-                => continue,
-                
-                '<', => {
-                    self.state = .@"<";
-                    return Token.init(0, .{ .empty_whitespace = .{ .len = self.index } });
-                },
-                
-                else => {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                }
-            },
-            
-            .@"<" => switch (char) {
-                '?', => self.state = .@"<?",
-                '!', => self.state = .@"<!",
-                '[', => self.state = .@"<[",
-                '/', => self.state = .@"</",
-                else => if (!xml.isValidNameStartCharUtf8At(self.index, self.buffer)) {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                } else {
-                    self.state = .{ .@"<{name_start_char}" = .{ .index = self.index} };
-                },
-            },
-            
-            .@"<?" => unreachable,
-            .@"<!" => unreachable,
-            .@"<[" => unreachable,
-            .@"</" => unreachable,
-            
-            .@"<{name_start_char}" => |info| switch (char) {
-                ' ', '\t', '\n', '\r',
-                => {
-                    const result = Token.init(info.index, .{ .element_open = .{ .colon_offset = null, .len = (self.index - info.index) } });
-                    self.state = .{ .@"<{element_id}" = .{ .index = info.index, .element_id = result.info.element_open } };
-                    return result;
-                },
-                
-                ':',
-                => self.state = .{ .@"<{ns}:" = .{ .index = info.index, .colon_offset = (self.index - info.index) } },
-                
-                else
-                => if (!xml.isValidNameCharUtf8At(self.index, self.buffer)) {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                }
-            },
-            
-            .@"<{ns}:" => |info| switch (char) {
-                ' ', '\t', '\n', '\r',
-                => {
-                    const result = Token.init(info.index, .{ .element_open = .{ .colon_offset = info.colon_offset, .len = (self.index - info.index) } });
-                    self.state = .{ .@"<{element_id}" = .{ .index = info.index, .element_id = result.info.element_open } };
-                    return result;
-                },
-                
-                else
-                => if (!xml.isValidNameCharUtf8At(self.index, self.buffer)) {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                }
-            },
-            
-            .@"<{element_id}" => |elem_id_with_index| switch (char) {
-                ' ', '\t', '\n', '\r',  => continue,
-                '/',                    => self.state = .{ .@"<{element_id}/" = elem_id_with_index },
-                '>',                    => self.state = .{ .@">" = .{ .index = self.index } },
-                else                    => if (!xml.isValidNameStartCharUtf8At(self.index, self.buffer)) {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                } else {
-                    self.state = .{ .@"{attr_name_start_char}" = .{
-                        .index = self.index,
-                        .elem_id_with_index = elem_id_with_index,
-                    } };
-                }
-            },
-            
-            .@"<{element_id}/" => |elem_id_with_index| switch (char) {
-                '>',
-                => {
-                    self.state = .{ .@">" = .{ .index = self.index } };
-                    return Token.init(elem_id_with_index.index, .{ .element_close = elem_id_with_index.element_id });
-                },
-                
-                else
-                => return Token.init(self.index, .invalid)
-            },
-            
-            .@">" => |begin| switch (char) {
-                ' ', '\t', '\n', '\r',  => self.state = .{ .@">{whitespace}" = begin },
-                '<',                    => self.state = .@"<",
-                else                    => self.state = .{ .@">{text}" = begin }
-            },
-            
-            .@">{whitespace}" => |begin| switch (char) {
-                '<', => {
-                    self.state = .@"<";
-                    return Token.init(begin.index + 1, .{ .empty_whitespace = .{ .len = self.index - (begin.index + 1) } });
-                },
-                
-                ' ', '\t', '\n', '\r',
-                => continue,
-                
-                else
-                => self.state = .{ .@">{text}" = begin }
-            },
-            
-            .@">{text}" => |begin| switch (char) {
-                '<', => {
-                    self.state = .@"<";
-                    return Token.init(begin.index + 1, .{ .text = .{ .len = self.index - (begin.index + 1) } });
-                },
-                
-                else
-                => continue,
-            },
-            
-            .@"{attr_name_start_char}" => |at| switch (char) {
-                ' ', '\t', '\n', '\r',
-                '=',
-                => {
-                    const attr_name_info: ParseState.AttrNameInfo = .{
-                        .elem_id_with_index = at.elem_id_with_index,
-                        .index = at.index,
-                        .colon_offset = null,
-                        .prefixed_name_len = (self.index - at.index),
-                    };
-                    
-                    self.state = switch (char) {
-                        '=', => .{ .@"{attr_name}=" = attr_name_info },
-                        else => .{ .@"{attr_name}" = attr_name_info },
-                    };
-                },
-                
-                ':',
-                => self.state = .{ .@"{attr_pre}:" = .{
-                    .elem_id_with_index = at.elem_id_with_index,
-                    .index = at.index,
-                    .colon_offset = (self.index - at.index),
-                } },
-                
-                else => if (!xml.isValidNameCharUtf8At(self.index, self.buffer)) {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                }
-            },
-            
-            // TODO: Look into whether the character after a colon has to be a valid name start character, or if any valid name character is fine.
-            .@"{attr_pre}:" => |info| if (!xml.isValidNameCharUtf8At(self.index, self.buffer)) {
-                self.state = .invalid;
+            .invalid => {
+                self.state.specific = .end;
                 return Token.init(self.index, .invalid);
-            } else {
-                self.state = .{ .@"{attr_pre}:{start_char}" = info };
             },
             
-            .@"{attr_pre}:{start_char}" => |info| switch (char) {
-                ' ', '\t', '\n', '\r',
-                '=',
-                => {
-                    const attr_name_info: ParseState.AttrNameInfo = .{
-                        .elem_id_with_index = info.elem_id_with_index,
-                        .index = info.index,
-                        .colon_offset = info.colon_offset,
-                        .prefixed_name_len = (self.index - info.index),
-                    };
+            .start => {
+                debug.assert(self.index == 0);
+                return switch (self.buffer[self.index]) {
+                    ' ',
+                    '\t',
+                    '\n',
+                    '\r',
+                    => blk: {
+                        debug.assert(self.index == 0);
+                        var whitespace_len: usize = 0;
+                        self.state.specific = new_specific: for (self.buffer[self.index..]) |c| switch (c) {
+                            ' ',
+                            '\t',
+                            '\n',
+                            '\r',
+                            => whitespace_len += 1,
+                            
+                            '<' => break :new_specific .@"<",
+                            else => break :new_specific .invalid,
+                        } else .eof;
+                        
+                        self.index += whitespace_len;
+                        break :blk Token.initTag(0, .empty_whitespace, .{ .len = whitespace_len });
+                    },
                     
-                    self.state = switch (char) {
-                        '=', => .{ .@"{attr_name}=" = attr_name_info },
-                        else => .{ .@"{attr_name}" = attr_name_info },
-                    };
-                },
-                
-                else
-                => if (!xml.isValidNameCharUtf8At(self.index, self.buffer)) {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                },
+                    '<' => self.onTagOpen(),
+                    else => self.returnInvalid(),
+                };
             },
             
-            .@"{attr_name}" => |info| switch (char) {
-                ' ', '\t', '\n', '\r',  => continue,
-                '=',                    => self.state = .{ .@"{attr_name}=" = info },
-                else                    => {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                },
+            .@"<" => return self.onTagOpen(),
+            
+            .@"<{name}" => unreachable,
+            .@">" => unreachable,
+            
+            .@"<{name}/>" => |tok| {
+                self.index += 1;
+                debug.assert(self.buffer[(self.index - 1)] == '/');
+                debug.assert(self.buffer[self.index] == '>');
+                debug.assert(self.index < self.buffer.len);
+                self.state.specific = .@"</>";
+                return tok;
             },
             
-            .@"{attr_name}=" => |info| switch (char) {
-                ' ', '\t', '\n', '\r',
-                => continue,
+            .@"</>" => {
+                if (self.index + 1 == self.buffer.len) {
+                    self.state.specific = .end;
+                    return Token.init(self.index, .eof);
+                }
+                self.index += 1;
+                debug.assert(self.index < self.buffer.len); // Definitely want to enforce this invariant.
                 
-                '"', '\'',
-                => {
-                    const attr_name_eql_info: ParseState.AttrNameEqlInfo = .{
-                        .elem_id_with_index = info.elem_id_with_index,
-                        .index = info.index,
-                        .colon_offset = info.colon_offset,
-                        .prefixed_name_len = info.prefixed_name_len,
-                        .sep = (self.index - (info.index + info.prefixed_name_len)),
-                    };
-                    
-                    self.state = switch (char) {
-                        '"',  => .{ .@"{attr_name}=\"" = attr_name_eql_info, },
-                        '\'', => .{ .@"{attr_name}='" = attr_name_eql_info, },
-                        else  => unreachable,
-                    };
-                },
-                
-                else
-                => {
-                    self.state = .invalid;
-                    return Token.init(self.index, .invalid);
-                },
-            },
-            
-            .@"{attr_name}=\"",
-            .@"{attr_name}='", => |info| switch (char) {
-                '"', '\''
-                => {
-                    switch (self.state) {
-                        .@"{attr_name}=\"" => switch (char) { '"' => {}, else => continue },
-                        .@"{attr_name}='" => switch (char) { '\'' => {}, else => continue },
-                        else => unreachable,
+                const start_idx = self.index;
+                for (self.buffer[self.index..]) |char, idx| {
+                    switch (char) {
+                        
                     }
-                    
-                    self.state = .{ .@"<{element_id}" = info.elem_id_with_index };
-                    return Token.init(info.index, .{ .attribute = .{
-                        .colon_offset = info.colon_offset,
-                        .prefixed_name_len = info.prefixed_name_len,
-                        .separation = info.sep,
-                        .value_len = ((self.index + 1) - (info.index + info.prefixed_name_len + info.sep)),
-                    } });
-                },
+                }
                 
-                else
-                => continue,
             },
         }
     }
-    
-    return null;
 }
 
-const ParseState = union(enum) {
-    invalid,
-    start,
-    start_whitespace,
-    @"<",
-    @"</",
-    @"<?",
-    @"<!",
-    @"<[",
-    @"<{name_start_char}": Index,
-    @"<{ns}:": struct { index: usize, colon_offset: usize },
-    @"<{element_id}": ElemIdWithIndex,
-    @"<{element_id}/": ElemIdWithIndex,
-    @">": Index,
-    @">{whitespace}": Index,
-    @">{text}": Index,
+/// Should be invoked after a tag closes to parse content.
+fn onBetweenTags(self: *TokenStream, comptime only_accept_whitespace: bool) Token {
+    _ = self;
+    _ = only_accept_whitespace;
+}
+
+/// Should be invoked when a tag opens (e.g, after some text content, when a '<' is encountered).
+/// Asserts that the current index has not changed since the left angle bracket was encountered (by asserting that buffer[index] == '<')
+fn onTagOpen(self: *TokenStream) Token {
     
-    @"{attr_name_start_char}":  struct { elem_id_with_index: ElemIdWithIndex, index: usize },
-    @"{attr_pre}:":             AttrPrefixInfo,
-    @"{attr_pre}:{start_char}": AttrPrefixInfo,
-    @"{attr_name}":             AttrNameInfo,
-    @"{attr_name}=":            AttrNameInfo,
-    @"{attr_name}=\"":          AttrNameEqlInfo,
-    @"{attr_name}='":           AttrNameEqlInfo,
-    //@"{attr_name}='{content}'": struct { elem_id_with_index: ElemIdWithIndex, index: usize, colon_offset: ?usize, prefixed_name_len: usize, sep: usize, value_len: usize, },
+    const on_entry = self.*;
+    defer debug.assert(!std.meta.eql(self.state.specific, on_entry.state.specific));
     
+    debug.assert(self.buffer[self.index] == '<');
+    self.index += 1;
+    switch (self.buffer[self.index]) {
+        '?' => unreachable,
+        '!' => unreachable,
+        '/' => unreachable,
+        else => {
+            if (!xml.isValidUtf8NameStartCharAt(self.index, self.buffer)) return self.returnInvalid();
+            
+            var tok = Token.initTag(self.index, .element_open, .{ .len = 1, .colon_offset = null });
+            const element_open = &tok.info.element_open;
+            
+            self.state.specific = blk: for (self.buffer[self.index + 1..]) |char| {
+                switch (char) {
+                    ' ',
+                    '\t',
+                    '\n',
+                    '\r',
+                    => break :blk .@"<{name}",
+                    
+                    ':' => if (element_open.colon_offset == null) {
+                        element_open.colon_offset = element_open.len;
+                    } else break :blk .invalid,
+                    
+                    '/' => break :blk self.checkIfValidInlineCloseGetState(tok.index, element_open.*),
+                    '>' => break :blk .@">",
+                    else => if (!xml.isValidUtf8NameCharAt(self.index + element_open.len, self.buffer))
+                        break :blk .invalid
+                }
+                
+                element_open.len += 1;
+            } else .invalid;
+            
+            self.index += element_open.len;
+            return tok;
+        },
+    }
     
-    pub const Index = struct { index: usize };
-    pub const ElemIdWithIndex = struct { element_id: Token.Info.ElementId, index: usize };
-    pub const AttrPrefixInfo  = struct { elem_id_with_index: ElemIdWithIndex, index: usize, colon_offset: usize };
-    pub const AttrNameInfo    = struct { elem_id_with_index: ElemIdWithIndex, index: usize, colon_offset: ?usize, prefixed_name_len: usize };
-    pub const AttrNameEqlInfo = struct { elem_id_with_index: ElemIdWithIndex, index: usize, colon_offset: ?usize, prefixed_name_len: usize, sep: usize };
+}
+
+/// Returns the specific state pertaining to whether the character following '/' is '>',
+/// and whether the file ends before a '>' could exist in the first place.
+fn checkIfValidInlineCloseGetState(self: *TokenStream, start_index: usize, element: Token.Info.ElementId) ParseState.Specific {
+    const next_idx = self.index + element.len + 1;
+    const valid_close = (next_idx < self.buffer.len) and (self.buffer[next_idx] == '>');
+    return if (valid_close)
+        ParseState.Specific { .@"<{name}/>" = Token.initTag(start_index, .element_close, element) }
+    else
+        .invalid;
+}
+
+/// Should be invoked when an invalid character is encountered, and there is no tokenized information to return.
+fn returnInvalid(self: *TokenStream) Token {
+    self.state.specific = .end;
+    return Token.init(self.index, .invalid);
+}
+
+const ParseState = struct {
+    specific: Specific = .start,
+    const Specific = union(enum) {
+        end,
+        eof,
+        invalid,
+        start,
+        @"<",
+        @"<{name}",
+        @">",
+        @"<{name}/>": Token,
+        @"</>",
+    };
 };
 
 comptime {
     _ = TokenStream.next;
+}
+
+test "Valid Empty Tags" {
+    inline for (.{"<empty/>"}) |src| {
+        var ts = TokenStream.init(src);
+        var current: Token = undefined;
+        
+        current = ts.next().?;
+        try testing.expectEqual(std.meta.activeTag(current.info), .element_open);
+        try testing.expectEqualStrings("empty", current.slice(src));
+        
+        current = ts.next().?;
+        try testing.expectEqual(std.meta.activeTag(current.info), .element_close);
+        try testing.expectEqualStrings("empty", current.slice(src));
+        
+        current = ts.next().?;
+        try testing.expectEqual(std.meta.activeTag(current.info), .eof);
+        try testing.expectEqualStrings("", current.slice(src));
+        
+        try testing.expectEqual(ts.next(), null);
+    }
 }
