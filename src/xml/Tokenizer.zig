@@ -42,8 +42,6 @@ pub const Token = struct {
         bof,
         eof,
         
-        name: Length,
-        string: Length,
         text: Length,
         entity_ref: Length,
         whitespace: Length,
@@ -52,7 +50,9 @@ pub const Token = struct {
         @"</{name}": Length,
         @"<?{name}": Length,
         
+        name: Length,
         @"=",
+        string: Length,
         
         @">",
         @"/>",
@@ -134,7 +134,11 @@ pub fn next(self: *Tokenizer) ?Token {
             else => return self.returnInvalid(null)
         },
         
-        .name => unreachable,
+        .name => {
+            std.debug.assert(self.getUtf8().? == '=');
+            self.incrByUtf8();
+        },
+        
         .string => unreachable,
         .text => unreachable,
         .entity_ref => unreachable,
@@ -154,24 +158,35 @@ pub fn next(self: *Tokenizer) ?Token {
             '\t',
             '\n',
             '\r',
-            => unreachable,
-            
-            '/' => {
-                std.debug.assert(self.getUtf8().? == '/');
-                const start_index = self.getIndex().?;
+            => {
+                self.incrementUtf8UntilNonWhitespace();
+                if (self.getUtf8()) |codepoint| switch (codepoint) {
+                    '/' => return self.getInlineClose(),
+                    '>' => return self.getTagEnd(),
+                    else => if (!xml.isValidUtf8NameStartChar(codepoint)) return self.returnInvalid(null)
+                } else return self.returnInvalid(null);
                 
-                self.incrByUtf8();
-                const codepoint = self.getUtf8() orelse return self.returnInvalid(null);
+                var output = Token.initTag(self.getIndex().?, .name, .{ .len = 0 });
+                self.incrByUtf8UntilFalse(xml.isValidUtf8NameCharOrColon);
                 
-                const result = if (codepoint == '>')
-                    self.returnToken(Token.init(start_index, .@"/>"))
-                else
-                    self.returnInvalid(null);
-                return result;
+                switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+                    ' ',
+                    '\t',
+                    '\n',
+                    '\r',
+                    => {
+                        output.info.name.len = (self.getIndex().? - output.index);
+                        self.incrByUtf8UntilFalse(struct { fn func(c: u21) bool { return c != '='; } }.func);
+                    },
+                    '=' => output.info.name.len = (self.getIndex().? - output.index),
+                    else => unreachable,
+                }
+                
+                return self.returnToken(output);
             },
             
-            '>' => return self.returnToken(Token.init(self.getIndex().?, .@">")),
-            
+            '/' => return self.getInlineClose(),
+            '>' => return self.getTagEnd(),
             else => std.debug.assert(false),
         },
         .@"</{name}" => unreachable,
@@ -179,8 +194,16 @@ pub fn next(self: *Tokenizer) ?Token {
         
         .@"=" => unreachable,
         
-        .@">" => unreachable,
-        .@"/>" => {
+        
+        .@"<!--" => unreachable,
+        .@"<![CDATA[" => unreachable,
+        
+        .@"]]>",
+        .@"-->",
+        .@"?>",
+        .@">",
+        .@"/>",
+        => {
             std.debug.assert(self.getUtf8().? == '>');
             self.incrByUtf8();
             const start_index = self.getIndex() orelse return self.returnEof();
@@ -188,13 +211,6 @@ pub fn next(self: *Tokenizer) ?Token {
             
             unreachable;
         },
-        .@"?>" => unreachable,
-        
-        .@"<!--" => unreachable,
-        .@"-->" => unreachable,
-        
-        .@"<![CDATA[" => unreachable,
-        .@"]]>" => unreachable,
         
         .@"%" => unreachable,
         
@@ -215,6 +231,21 @@ pub fn next(self: *Tokenizer) ?Token {
     unreachable;
 }
 
+fn getTagEnd(self: *Tokenizer) Token {
+    return self.returnToken(Token.init(self.getIndex().?, .@">"));
+}
+
+fn getInlineClose(self: *Tokenizer) Token {
+    std.debug.assert(self.getUtf8().? == '/');
+    const start_index = self.getIndex().?;
+    
+    self.incrByUtf8();
+    const codepoint = self.getUtf8() orelse return self.returnInvalid(null);
+    
+    const result = if (codepoint == '>') self.returnToken(Token.init(start_index, .@"/>")) else self.returnInvalid(null);
+    return result;
+}
+
 fn afterTagOpen(self: *Tokenizer) Token {
     std.debug.assert(self.getUtf8() orelse 0 == '<');
     const start_index = self.getIndex().?;
@@ -228,22 +259,32 @@ fn afterTagOpen(self: *Tokenizer) Token {
             if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) return self.returnInvalid(null);
             
             self.incrByUtf8();
-            while (self.getUtf8()) |codepoint| : (self.incrByUtf8()) switch (codepoint) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                '/',
-                '>',
-                => break,
-                ':' => continue,
-                else => if (!xml.isValidUtf8NameChar(codepoint)) return self.returnInvalid(null)
-            };
+            self.incrByUtf8UntilFalse(xml.isValidUtf8NameCharOrColon);
             
             const len = (self.getIndexOrLen().? - start_index);
             return self.returnToken(Token.initTag(start_index, .@"<{name}", .{ .len = len }));
         },
     }
+}
+
+
+
+fn incrementUtf8UntilNonWhitespace(self: *Tokenizer) void {
+    self.incrByUtf8UntilFalse(struct { fn func(c: u21) bool {
+        return switch (c) {
+            ' ',
+            '\t',
+            '\n',
+            '\r',
+            => true,
+            else => false
+        };
+    } }.func);
+}
+
+fn incrByUtf8UntilFalse(self: *Tokenizer, comptime constraint: fn(u21)bool) void {
+    while (self.getUtf8()) |codepoint| : (self.incrByUtf8())
+        if (!constraint(codepoint)) break;
 }
 
 
@@ -299,7 +340,7 @@ test {
     std.debug.print("\n", .{});
     
     const xml_text =
-        \\  <elema42da/>
+        \\  <elema42da foo= />
     ;
     
     var tokenizer = Tokenizer.init(xml_text);
