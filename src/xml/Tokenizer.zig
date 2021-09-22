@@ -5,7 +5,7 @@ const xml = @import("../xml.zig");
 
 const Tokenizer = @This();
 buffer: []const u8,
-state: Sate,
+state: State,
 
 pub fn init(source: []const u8) Tokenizer {
     return Tokenizer {
@@ -20,7 +20,7 @@ pub fn reset(self: *Tokenizer, new_source: ?[]const u8) void {
 
 pub const Token = struct {
     index: usize = 0,
-    info: Info = .invalid,
+    info: Info = .bof,
     
     pub fn init(index: usize, info: Info) Token {
         return Token {
@@ -29,7 +29,7 @@ pub const Token = struct {
         };
     }
     
-    pub fn initTag(index: usize, tag: meta.Tag(Info), info_value: meta.TagPayload(Info, tag)) Token {
+    pub fn initTag(index: usize, comptime tag: meta.Tag(Info), info_value: meta.TagPayload(Info, tag)) Token {
         return Token.init(index, @unionInit(Info, @tagName(tag), info_value));
     }
     
@@ -39,15 +39,23 @@ pub const Token = struct {
     
     pub const Info = union(enum) {
         invalid,
+        bof,
         eof,
         
-        @"<",
+        name: Length,
+        string: Length,
+        text: Length,
+        entity_ref: Length,
+        whitespace: Length,
+        
+        @"<{name}": Length,
+        @"</{name}": Length,
+        @"<?{name}": Length,
+        
+        @"=",
+        
         @">",
-        
-        @"</",
         @"/>",
-        
-        @"<?",
         @"?>",
         
         @"<!--",
@@ -55,11 +63,6 @@ pub const Token = struct {
         
         @"<![CDATA[",
         @"]]>", // may also appear within the context of a dtd
-        
-        name: Length,
-        text: Length,
-        whitespace: Length,
-        entity_ref: Length,
         
         // exclusive to the context of a dtd:
         
@@ -77,40 +80,25 @@ pub const Token = struct {
         @"]>",
         
         pub const Length = struct { len: usize };
+        pub const Tag = meta.TagType(Info);
         
         pub fn slice(self: Info, index: usize, src: []const u8) []const u8 {
             const beg = index;
             const end = beg + switch (self) {
                 .invalid => 1,
+                .bof,
                 .eof => 0,
-                .@"<",
-                .@">",
-                .@"</",
-                .@"/>",
-                .@"<?",
-                .@"?>",
-                .@"<!--",
-                .@"-->",
-                .@"<![CDATA[",
-                .@"]]>",
-                .@"(",
-                .@")",
-                .@"%",
-                .@"*",
-                .@",",
-                .@"<!DOCTYPE",
-                .@"<!ENTITY",
-                .@"<!ELEMENT",
-                .@"<!ATTLIST",
-                .@"<!NOTATION",
-                .@"]>",
-                => @tagName(self).len,
                 
-                name,
-                text,
-                whitespace,
-                entity_ref,
-                => |lengthed| lengthed.len,
+                .name,
+                .text,
+                .whitespace,
+                .entity_ref,
+                .@"<{name}",
+                .@"</{name}",
+                .@"<?{name}",
+                => |variable| variable.len,
+                
+                else => @tagName(self).len,
             };
             
             return src[beg..end];
@@ -119,71 +107,162 @@ pub const Token = struct {
 };
 
 pub fn next(self: *Tokenizer) ?Token {
-    switch (self.state.info) {
-        .end => return null,
-        
-        .invalid => {
-            self.state.info = .end;
-            return Token.init(self.state.index, .invalid);
-        },
-        
-        .start => if (self.getUtf8()) |codepoint0| switch (codepoint0) {
+    switch (self.state.prev) {
+        .invalid => return null,
+        .eof => return null,
+        .bof => switch (self.getUtf8() orelse return self.returnInvalid(null)) {
             ' ',
             '\t',
             '\n',
             '\r',
             => {
-                self.state.index += 1;
-                while (self.getUtf8()) |cp| switch (cp) {
+                const start_index = self.getIndex().?;
+                self.incrByUtf8();
+                while (self.getUtf8()) |codepoint| : (self.incrByUtf8()) switch (codepoint) {
                     ' ',
                     '\t',
                     '\n',
                     '\r',
-                    => self.incrByUtf8(),
-                    '<' => {
-                        self.incrByUtf8();
-                        self.state.info = .@"<";
-                        break;
-                    },
-                    else => {
-                        self.incrByUtf8();
-                        self.state.info = .invalid;
-                        break;
-                    },
-                } else {
-                    self.state.info = .end;
-                }
-                
-                return Token.initTag(0, .whitespace, .{ .len = self.state.index });
+                    => continue,
+                    // including '<'
+                    else => break,
+                };
+                return self.returnToken(Token.initTag(start_index, .whitespace, .{ .len = (self.getIndex().? - start_index) }));
             },
             
-            '<' => {
+            '<' => return self.afterTagOpen(),
+            else => return self.returnInvalid(null)
+        },
+        
+        .name => unreachable,
+        .string => unreachable,
+        .text => unreachable,
+        .entity_ref => unreachable,
+        
+        .whitespace => switch (self.getUtf8() orelse return self.returnEof()) {
+            ' ',
+            '\t',
+            '\n',
+            '\r',
+            => std.debug.assert(false),
+            '<' => return self.afterTagOpen(),
+            else => return self.returnInvalid(null),
+        },
+        
+        .@"<{name}" => switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+            ' ',
+            '\t',
+            '\n',
+            '\r',
+            => unreachable,
+            
+            '/' => {
+                std.debug.assert(self.getUtf8().? == '/');
+                const start_index = self.getIndex().?;
+                
                 self.incrByUtf8();
-                if (self.getUtf8()) |cp| switch (cp) {
-                    '!' => unreachable,
-                    '?' => unreachable,
-                    else => if (xml.isValidUtf8NameChar(cp)) {
-                        
-                    },
-                } else return Token.init(self.state.index, .invalid);
+                const codepoint = self.getUtf8() orelse return self.returnInvalid(null);
+                
+                const result = if (codepoint == '>')
+                    self.returnToken(Token.init(start_index, .@"/>"))
+                else
+                    self.returnInvalid(null);
+                return result;
             },
-        }
+            
+            '>' => return self.returnToken(Token.init(self.getIndex().?, .@">")),
+            
+            else => std.debug.assert(false),
+        },
+        .@"</{name}" => unreachable,
+        .@"<?{name}" => unreachable,
+        
+        .@"=" => unreachable,
+        
+        .@">" => unreachable,
+        .@"/>" => {
+            std.debug.assert(self.getUtf8().? == '>');
+            self.incrByUtf8();
+            const start_index = self.getIndex() orelse return self.returnEof();
+            _ = start_index;
+            
+            unreachable;
+        },
+        .@"?>" => unreachable,
+        
+        .@"<!--" => unreachable,
+        .@"-->" => unreachable,
+        
+        .@"<![CDATA[" => unreachable,
+        .@"]]>" => unreachable,
+        
+        .@"%" => unreachable,
+        
+        .@"(" => unreachable,
+        .@")" => unreachable,
+        .@"," => unreachable,
+        .@"*" => unreachable,
+        
+        .@"<!DOCTYPE" => unreachable,
+        .@"<!ENTITY" => unreachable,
+        .@"<!ELEMENT" => unreachable,
+        .@"<!ATTLIST" => unreachable,
+        .@"<!NOTATION" => unreachable,
+        .@"]>" => unreachable,
+
     }
     
     unreachable;
 }
 
-const State = struct {
-    index: usize = 0,
-    info: Info,
+fn afterTagOpen(self: *Tokenizer) Token {
+    std.debug.assert(self.getUtf8() orelse 0 == '<');
+    const start_index = self.getIndex().?;
     
-    const Info = union(enum) {
-        end,
-        invalid,
-        start,
-        @"<",
-    };
-};
+    self.incrByUtf8();
+    switch (self.getUtf8() orelse return self.returnInvalid(self.state.index - 1)) {
+        '?' => unreachable,
+        '!' => unreachable,
+        '/' => unreachable,
+        else => {
+            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) return self.returnInvalid(null);
+            
+            self.incrByUtf8();
+            while (self.getUtf8()) |codepoint| : (self.incrByUtf8()) switch (codepoint) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                '/',
+                '>',
+                => break,
+                ':' => continue,
+                else => if (!xml.isValidUtf8NameChar(codepoint)) return self.returnInvalid(null)
+            };
+            
+            const len = (self.getIndexOrLen().? - start_index);
+            return self.returnToken(Token.initTag(start_index, .@"<{name}", .{ .len = len }));
+        },
+    }
+}
+
+
+
+fn returnEof(self: *Tokenizer) Token {
+    std.debug.assert((self.getIndexOrLen() orelse self.buffer.len - 1) == self.buffer.len);
+    return self.returnToken(Token.init(self.getIndexOrLen().?, .eof));
+}
+
+fn returnInvalid(self: *Tokenizer, index: ?usize) Token {
+    return self.returnToken(Token.init(index orelse self.state.index, .invalid));
+}
+
+fn returnToken(self: *Tokenizer, tok: Token) Token {
+    self.state.prev = tok.info;
+    return tok;
+}
+
+
 
 fn incrByUtf8(self: *Tokenizer) void {
     self.state.index += if (self.getUtf8()) |cp| (unicode.utf8CodepointSequenceLength(cp) catch unreachable) else 0;
@@ -191,13 +270,40 @@ fn incrByUtf8(self: *Tokenizer) void {
 
 fn getUtf8(self: Tokenizer) ?u21 {
     const start_byte = self.getByte() orelse return null;
-    const codepoint_len = unicode.utf8CodepointSequenceLength(start_byte) catch return null;
+    const codepoint_len = unicode.utf8ByteSequenceLength(start_byte) catch return null;
     const end = self.state.index + codepoint_len;
     if (end > self.buffer.len) return null;
     return unicode.utf8Decode(self.buffer[self.state.index..end]) catch null;
 }
 
 fn getByte(self: Tokenizer) ?u8 {
-    if (self.state.index >= self.buffer.len) return self.buffer[self.state.index];
+    return if (self.getIndex()) |index| self.buffer[index] else null;
+}
+
+fn getIndexOrLen(self: Tokenizer) ?usize {
+    if (self.state.index <= self.buffer.len) return self.state.index;
     return null;
+}
+
+fn getIndex(self: Tokenizer) ?usize {
+    if (self.state.index < self.buffer.len) return self.state.index;
+    return null;
+}
+
+const State = struct {
+    index: usize = 0,
+    prev: Token.Info.Tag = .bof,
+};
+
+test {
+    std.debug.print("\n", .{});
+    
+    const xml_text =
+        \\  <elema42da/>
+    ;
+    
+    var tokenizer = Tokenizer.init(xml_text);
+    while (tokenizer.next()) |tok| {
+        std.debug.print("'{s}': '{s}'\n", .{@tagName(tok.info), tok.slice(xml_text)});
+    }
 }
