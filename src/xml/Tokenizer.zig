@@ -50,19 +50,23 @@ pub const Token = struct {
         @"</{name}": Length,
         @"<?{name}": Length,
         
-        name: Length,
+        attribute_name: Length,
         @"=",
         quoted_entity_ref: Length,
         quoted_text: Length,
+        empty_quotes,
+        
         
         @">",
         @"/>",
         @"?>",
         
         @"<!--",
+        commented_text: Length,
         @"-->",
         
         @"<![CDATA[",
+        cdata_text: Length,
         @"]]>", // may also appear within the context of a dtd
         
         // exclusive to the context of a dtd:
@@ -84,27 +88,55 @@ pub const Token = struct {
         pub const Tag = meta.TagType(Info);
         
         pub fn slice(self: Info, index: usize, src: []const u8) []const u8 {
-            const beg = index;
+            const beg = if (self == .invalid and index == src.len) 0 else index;
             const end = beg + switch (self) {
-                .bof,
-                .eof,
-                => 0,
+                .invalid => 1,
+                .bof => 0,
+                .eof => 0,
                 
-                .invalid,
-                => 1,
-                
-                .name,
                 .text,
-                .whitespace,
                 .entity_ref,
-                .quoted_text,
-                .quoted_entity_ref,
+                .whitespace,
+                => |info| info.len,
+                
                 .@"<{name}",
                 .@"</{name}",
                 .@"<?{name}",
-                => |variable| variable.len,
+                => |info| info.len,
                 
-                else => @tagName(self).len,
+                .attribute_name => |info| info.len,
+                .@"=" => 1,
+                .quoted_entity_ref => |info| info.len,
+                .quoted_text => |info| info.len,
+                .empty_quotes => 0,
+                
+                .@">",
+                .@"/>",
+                .@"?>",
+                => @tagName(self).len,
+                
+                .@"<!--" => @tagName(self).len,
+                .commented_text => |info| info.len,
+                .@"-->" => @tagName(self).len,
+                
+                .@"<![CDATA[" => @tagName(self).len,
+                .cdata_text => |info| info.len,
+                .@"]]>" => @tagName(self).len,
+                
+                .@"%",
+                .@"*",
+                .@",",
+                .@"(",
+                .@")",
+                => @tagName(self).len,
+                
+                .@"<!DOCTYPE",
+                .@"<!ENTITY",
+                .@"<!ELEMENT",
+                .@"<!ATTLIST",
+                .@"<!NOTATION",
+                .@"]>",
+                => @tagName(self).len,
             };
             
             std.debug.print("\n{}\n", .{self});
@@ -134,15 +166,20 @@ pub fn next(self: *Tokenizer) ?Token {
             else => return self.returnInvalid(null)
         },
         
-        .name => {
+        .attribute_name => {
             std.debug.assert(self.getUtf8().? == '=');
             const start_index = self.getIndex().?;
             _ = self.incrementUtf8UntilNonWhitespace();
             return self.returnToken(Token.init(start_index, .@"="));
         },
         
-        .text => todo(),
-        .entity_ref => todo(),
+        .text => switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+            '<' => return self.afterTagOpen(),
+            '&' => return self.getEntityReference(false),
+            else => return self.returnInvalid(null),
+        },
+        
+        .entity_ref => return self.getContent(false),
         
         .whitespace => switch (self.getUtf8() orelse return self.returnEof()) {
             '<' => return self.afterTagOpen(),
@@ -151,29 +188,58 @@ pub fn next(self: *Tokenizer) ?Token {
         
         .@"<{name}" => return self.getNextAttributeNameOrTagEnd(),
         
-        .@"</{name}" => todo(),
+        .@"</{name}" => {
+            if (self.getUtf8() orelse 0 != '>') return self.returnInvalid(null);
+            return self.getTagEnd();
+        },
+        
         .@"<?{name}" => todo(),
-        
-        
         
         .@"=" => {
             self.incrByUtf8();
             _ = self.incrementUtf8UntilNonWhitespace();
             
             switch (self.getUtf8() orelse return self.returnInvalid(null)) {
-                '"' => {
-                    self.state.last_quote = .double;
+                '"',
+                '\'',
+                => {
+                    const quote_type = QuoteType.from(@intCast(u8, self.getUtf8().?));
                     self.incrByUtf8();
-                    return self.getQuotedTextOrEntityRef(.double);
-                },
-                '\'' => {
-                    self.state.last_quote = .single;
-                    self.incrByUtf8();
-                    return self.getQuotedTextOrEntityRef(.single);
+                    self.state.last_quote = quote_type;
+                    return switch (quote_type) {
+                        .double => self.getQuotedTextOrEntityRef(.double),
+                        .single => self.getQuotedTextOrEntityRef(.single),
+                    };
                 },
                 else => return self.returnInvalid(null),
             }
         },
+        
+        .empty_quotes => return self.getQuotedTextContinuation(),
+        
+        .commented_text => {
+            std.debug.assert(self.getUtf8() orelse 0 == '-');
+            const start_index = self.getIndex().?;
+            var self_copy: Tokenizer = self.*;
+            self_copy.incrByUtf8();
+            switch (self_copy.getUtf8() orelse {
+                self.* = self_copy;
+                return self.returnInvalid(null);
+            }) {
+                '-' => {
+                    self_copy.incrByUtf8();
+                    self.* = self_copy;
+                    return switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+                        '>' => self.returnToken(Token.init(start_index, .@"-->")),
+                        else => self.returnInvalid(null)
+                    };
+                },
+                
+                else => {},
+            }
+        },
+        
+        .cdata_text => todo(),
         
         .quoted_entity_ref => {
             std.debug.assert(self.getUtf8().? == ';');
@@ -193,22 +259,76 @@ pub fn next(self: *Tokenizer) ?Token {
         
         .quoted_text => return self.getQuotedTextContinuation(),
         
-        .@"<!--" => todo(),
         .@"<![CDATA[" => todo(),
         
-        .@"]]>",
+        .@"]]>" => todo(),
+        .@"<!--" => {
+            std.debug.assert(self.getUtf8().? == '-');
+            self.incrByUtf8();
+            const start_index = self.getIndex() orelse return self.returnInvalid(null);
+            switch (self.getUtf8().?) {
+                '-' => {
+                    var self_copy: Tokenizer = self.*;
+                    self_copy.incrByUtf8();
+                    switch (self_copy.getUtf8() orelse {
+                        self.* = self_copy;
+                        return self.returnInvalid(null);
+                    }) {
+                        '-' => {
+                            self_copy.incrByUtf8();
+                            self.* = self_copy;
+                            return switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+                                '>' => self.returnToken(Token.init(start_index, .@"-->")),
+                                else => self.returnInvalid(null)
+                            };
+                        },
+                        
+                        else => {},
+                    }
+                },
+                
+                else => {},
+            }
+            
+            var len: usize = 0;
+            while (true) {
+                len += self.incrByUtf8UntilFalse(struct {
+                    fn func(c: u21) bool { return c != '-'; }
+                }.func);
+                
+                if (self.getUtf8() orelse 0 != '-') return self.returnInvalid(null);
+                
+                var self_copy = self.*;
+                self_copy.incrByUtf8();
+                
+                switch (self_copy.getUtf8() orelse {
+                    self.* = self_copy;
+                    return self.returnInvalid(null);
+                }) {
+                    '-' => {
+                        self_copy.incrByUtf8();
+                        switch (self_copy.getUtf8() orelse {
+                            self.* = self_copy;
+                            return self.returnInvalid(null);
+                        }) {
+                            '>' => return self.returnToken(Token.initTag(start_index, .commented_text, .{ .len = len })),
+                            else => {
+                                self.* = self_copy;
+                                return self.returnInvalid(null);
+                            }
+                        }
+                    },
+                    
+                    else => {}
+                }
+            }
+        },
+        
         .@"-->",
         .@"?>",
-        .@">",
         .@"/>",
-        => {
-            std.debug.assert(self.getUtf8().? == '>');
-            self.incrByUtf8();
-            const start_index = self.getIndex() orelse return self.returnEof();
-            _ = start_index;
-            
-            todo();
-        },
+        .@">",
+        => return self.getContent(true),
         
         .@"%" => todo(),
         
@@ -223,7 +343,6 @@ pub fn next(self: *Tokenizer) ?Token {
         .@"<!ATTLIST" => todo(),
         .@"<!NOTATION" => todo(),
         .@"]>" => todo(),
-
     }
     
     unreachable;
@@ -233,8 +352,35 @@ inline fn todo() noreturn {
     unreachable;
 }
 
-fn getQuotedTextOrEntityRef(self: *Tokenizer, comptime quote_type: State.QuoteType) Token {
-    const quote = @enumToInt(quote_type);
+fn getContent(self: *Tokenizer, comptime enable_eof: bool) Token {
+    std.debug.assert(self.getUtf8().? == '>' or self.getUtf8().? == ';');
+    self.incrByUtf8();
+    const start_index = self.getIndex() orelse return if (enable_eof) self.returnEof() else self.returnInvalid(null);
+    const whitespace_len = self.incrementUtf8UntilNonWhitespace();
+    
+    const maybe_whitespace_result = Token.initTag(start_index, .whitespace, .{ .len = whitespace_len });
+    
+    switch (self.getUtf8() orelse return self.returnToken(maybe_whitespace_result)) {
+        '&',
+        '<',
+        => return if (whitespace_len == 0) self.afterTagOpen() else self.returnToken(maybe_whitespace_result),
+        
+        else => {
+            const remaining_len = self.incrByUtf8UntilFalse(struct {
+                fn func(c: u21) bool {
+                    return c != '<' and c != '&';
+                }
+            }.func);
+            
+            const len = whitespace_len + remaining_len;
+            const result = Token.initTag(start_index, .text, .{ .len = len });
+            return self.returnToken(result);
+        },
+    }
+}
+
+fn getQuotedTextOrEntityRef(self: *Tokenizer, comptime quote_type: QuoteType) Token {
+    const quote = comptime quote_type.value();
     const start_index = self.getIndex() orelse return self.returnInvalid(null);
     
     const len = self.incrByUtf8UntilFalse(struct {
@@ -242,11 +388,15 @@ fn getQuotedTextOrEntityRef(self: *Tokenizer, comptime quote_type: State.QuoteTy
     }.func);
     
     const maybe_result = Token.initTag(start_index, .quoted_text, .{ .len = len });
-    
-    return switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+    const actual_result_before_check = switch (self.getUtf8() orelse return self.returnInvalid(null)) {
         quote => self.returnToken(maybe_result),
-        '&' => return if (len == 0) self.getQuotedEntityReference() else self.returnToken(maybe_result),
+        '&' => return if (len == 0) self.getEntityReference(true) else self.returnToken(maybe_result),
         else => unreachable,
+    };
+    
+    return switch (actual_result_before_check.info) {
+        .quoted_text => |info| self.returnToken(if (info.len == 0) Token.init(actual_result_before_check.index, .empty_quotes) else actual_result_before_check),
+        else => actual_result_before_check,
     };
 }
 
@@ -254,7 +404,7 @@ fn getQuotedTextOrEntityRef(self: *Tokenizer, comptime quote_type: State.QuoteTy
 
 fn getQuotedTextContinuation(self: *Tokenizer) Token {
     switch (self.getUtf8() orelse return self.returnInvalid(null)) {
-        '&' => return self.getQuotedEntityReference(),
+        '&' => return self.getEntityReference(true),
         '"', '\'' => {
             if (self.state.last_quote) |last_quote| {
                 if (@enumToInt(last_quote) != self.getUtf8().?)
@@ -269,6 +419,23 @@ fn getQuotedTextContinuation(self: *Tokenizer) Token {
     }
 }
 
+fn getEntityReference(self: *Tokenizer, comptime quoted: bool) Token {
+    std.debug.assert(self.getUtf8().? == '&');
+    
+    const start_index = self.getIndex().?;
+    self.incrByUtf8();
+    const len = self.incrByUtf8UntilFalse(struct {
+        fn func(c: u21) bool {
+            return c != ';';
+        }
+    }.func);
+    
+    const maybe_result = Token.initTag(start_index, if (quoted) .quoted_entity_ref else .entity_ref, .{ .len = len + 2 });
+    
+    if (self.getUtf8() orelse 0 != ';') return self.returnInvalid(null);
+    return self.returnToken(maybe_result);
+}
+
 fn getQuotedEntityReference(self: *Tokenizer) Token {
     std.debug.assert(self.getUtf8().? == '&');
     
@@ -280,10 +447,10 @@ fn getQuotedEntityReference(self: *Tokenizer) Token {
         }
     }.func);
     
-    switch (self.getUtf8() orelse return self.returnInvalid(null)) {
-        ';' => return self.returnToken(Token.initTag(start_index, .quoted_entity_ref, .{ .len = len + 2 })),
-        else => unreachable,
-    }
+    const maybe_result = Token.initTag(start_index, .quoted_entity_ref, .{ .len = len + 2 });
+    
+    if (self.getUtf8() orelse 0 != ';') return self.returnInvalid(null);
+    return self.returnToken(maybe_result);
 }
 
 fn getNextAttributeNameOrTagEnd(self: *Tokenizer) Token {
@@ -308,7 +475,7 @@ fn getNextAttributeNameOrTagEnd(self: *Tokenizer) Token {
             const start_index = self.getIndex().?;
             const len = self.incrByUtf8UntilFalse(xml.isValidUtf8NameCharOrColon);
             
-            const output = Token.initTag(start_index, .name, .{ .len = len });
+            const output = Token.initTag(start_index, .attribute_name, .{ .len = len });
             return self.returnToken(output);
         },
         
@@ -323,6 +490,7 @@ fn getNextAttributeNameOrTagEnd(self: *Tokenizer) Token {
 
 
 fn getTagEnd(self: *Tokenizer) Token {
+    std.debug.assert(self.getUtf8().? == '>');
     return self.returnToken(Token.init(self.getIndex().?, .@">"));
 }
 
@@ -342,9 +510,41 @@ fn afterTagOpen(self: *Tokenizer) Token {
     
     self.incrByUtf8();
     switch (self.getUtf8() orelse return self.returnInvalid(self.state.index - 1)) {
-        '?' => unreachable,
-        '!' => unreachable,
-        '/' => unreachable,
+        '?' => todo(),
+        '!' => {
+            self.incrByUtf8();
+            switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+                '-' => {
+                    self.incrByUtf8();
+                    switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+                        '-' => return self.returnToken(Token.init(start_index, .@"<!--")),
+                        else => return self.returnInvalid(null)
+                    }
+                },
+                'D' => todo(),
+                else => return self.returnInvalid(null)
+            }
+        },
+        '/' => {
+            self.incrByUtf8();
+            const name_len = self.incrByUtf8UntilFalse(struct {
+                fn func(c: u21) bool {
+                    return switch (c) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        '>',
+                        => false,
+                        else => true,
+                    };
+                }
+            }.func);
+            _ = self.incrementUtf8UntilNonWhitespace();
+            
+            const maybe_result = Token.initTag(start_index, .@"</{name}", .{ .len = ("</".len) + name_len });
+            return if (name_len == 0) self.returnInvalid(null) else self.returnToken(maybe_result);
+        },
         else => {
             if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) return self.returnInvalid(null);
             
@@ -431,15 +631,31 @@ const State = struct {
     index: usize = 0,
     last_quote: ?QuoteType = null,
     prev: Token.Info.Tag = .bof,
+};
+
+const QuoteType = enum(u8) {
+    single = '\'',
+    double = '"',
     
-    const QuoteType = enum(u8) { single = '\'', double = '"' };
+    pub fn from(char: u8) @This() {
+        return switch (char) {
+            '\'',
+            '"',
+            => @intToEnum(@This(), char),
+            else => unreachable
+        };
+    }
+    
+    pub fn value(self: QuoteType) u8 {
+        return @enumToInt(self);
+    }
 };
 
 test {
     std.debug.print("\n", .{});
     
     const xml_text =
-        \\  <elema42da foo="do&quot;re&amp;&quot;fa"/>
+        \\ <!-- COMMENT TEXT --> <empty /> <!----> 
     ;
     
     var tokenizer = Tokenizer.init(xml_text);
