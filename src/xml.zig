@@ -1,9 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const unicode = std.unicode;
 
-pub const TokenStream = @import("xml/TokenStream.zig");
-pub const Token = @import("xml/Token.zig");
+pub const Tokenizer = @import("xml/Tokenizer.zig");
 
 pub fn isValidUtf8NameStartChar(char: u21) bool {
     return switch (char) {
@@ -44,27 +42,11 @@ pub fn isValidUtf8NameChar(char: u21) bool {
     };
 }
 
-pub fn isValidUtf8NameStartCharAt(index: usize, src: []const u8) bool {
-    return isValidUtf8ConstrainedAt(index, src, isValidUtf8NameStartChar);
-}
-
-pub fn isValidUtf8NameCharAt(index: usize, src: []const u8) bool {
-    return isValidUtf8ConstrainedAt(index, src, isValidUtf8NameChar);
-}
-
-fn isValidUtf8ConstrainedAt(index: usize, src: []const u8, comptime constraint: (fn(u21)bool)) bool {
-    if (index >= src.len) return false;
-    const char: u8 = src[index];
-    const len = unicode.utf8ByteSequenceLength(char) catch return false;
-    const end: usize = index + len;
-    
-    if (end >= src.len) return false;
-    const utf8_cp = unicode.utf8Decode(src[index..end]) catch return false;
-    return constraint(utf8_cp);
+pub fn isValidUtf8NameCharOrColon(char: u21) bool {
+    return (char == ':') or isValidUtf8NameChar(char);
 }
 
 comptime {
-    _ = @This();
-    _ = TokenStream;
-    _ = Token;
+    testing.refAllDecls(@This());
+    _ = Tokenizer;
 }
