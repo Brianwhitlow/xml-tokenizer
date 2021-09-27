@@ -239,7 +239,18 @@ pub fn next(self: *Tokenizer) ?Token {
             }
         },
         
-        .cdata_text => todo(),
+        .cdata_text => {
+            const start_index = self.getIndex().?;
+            std.debug.assert(self.getUtf8().? == ']');
+            
+            self.incrByUtf8();
+            std.debug.assert(self.getUtf8().? == ']');
+            
+            self.incrByUtf8();
+            std.debug.assert(self.getUtf8() orelse 0 == '>');
+            
+            return self.returnToken(Token.init(start_index, .@"]]>"));
+        },
         
         .quoted_entity_ref => {
             std.debug.assert(self.getUtf8().? == ';');
@@ -259,9 +270,62 @@ pub fn next(self: *Tokenizer) ?Token {
         
         .quoted_text => return self.getQuotedTextContinuation(),
         
-        .@"<![CDATA[" => todo(),
+        .@"<![CDATA[" => {
+            std.debug.assert(self.getUtf8() orelse 0 == '[');
+            self.incrByUtf8();
+            const start_index = self.getIndex() orelse return self.returnInvalid(null);
+            switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+                ']' => {
+                    self.incrByUtf8();
+                    switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+                        ']' => {
+                            self.incrByUtf8();
+                            switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+                                '>' => return self.returnToken(Token.init(start_index, .@"]]>")),
+                                else => {}
+                            }
+                        },
+                        else => {}
+                    }
+                },
+                
+                else => {}
+            }
+            
+            while (self.getUtf8() != null) {
+                
+                _ = self.incrByUtf8UntilFalse(struct {
+                    fn func(c: u21) bool { return c != ']'; }
+                }.func);
+                
+                std.debug.assert(self.getUtf8() orelse 0 == ']');
+                
+                var self_copy: Tokenizer = self.*;
+                self_copy.incrByUtf8();
+                
+                switch (self_copy.getUtf8() orelse {
+                    self.* = self_copy;
+                    return self.returnInvalid(null);
+                }) {
+                    ']' => {
+                        self_copy.incrByUtf8();
+                        switch (self_copy.getUtf8() orelse {
+                            self.* = self_copy;
+                            return self.returnInvalid(null);
+                        }) {
+                            '>' => return self.returnToken(Token.initTag(start_index, .cdata_text, .{ .len = self.getIndex().? - start_index })),
+                            else => {},
+                        }
+                    },
+                    
+                    else => {},
+                }
+                
+                self.* = self_copy;
+            }
+        },
         
-        .@"]]>" => todo(),
+        .@"]]>" => return self.getContent(false),
         .@"<!--" => {
             std.debug.assert(self.getUtf8().? == '-');
             self.incrByUtf8();
@@ -296,7 +360,7 @@ pub fn next(self: *Tokenizer) ?Token {
                     fn func(c: u21) bool { return c != '-'; }
                 }.func);
                 
-                if (self.getUtf8() orelse 0 != '-') return self.returnInvalid(null);
+                std.debug.assert(self.getUtf8() orelse 0 == '-');
                 
                 var self_copy = self.*;
                 self_copy.incrByUtf8();
@@ -516,10 +580,18 @@ fn afterTagOpen(self: *Tokenizer) Token {
             switch (self.getUtf8() orelse return self.returnInvalid(null)) {
                 '-' => {
                     self.incrByUtf8();
-                    switch (self.getUtf8() orelse return self.returnInvalid(null)) {
-                        '-' => return self.returnToken(Token.init(start_index, .@"<!--")),
-                        else => return self.returnInvalid(null)
+                    return switch (self.getUtf8() orelse return self.returnInvalid(null)) {
+                        '-' => self.returnToken(Token.init(start_index, .@"<!--")),
+                        else => self.returnInvalid(null)
+                    };
+                },
+                
+                '[' => {
+                    for ("CDATA[") |char| {
+                        self.incrByUtf8();
+                        if (self.getUtf8() orelse (char +% 1) != char) return self.returnInvalid(null);
                     }
+                    return self.returnToken(Token.init(start_index, .@"<![CDATA["));
                 },
                 'D' => todo(),
                 else => return self.returnInvalid(null)
@@ -556,8 +628,6 @@ fn afterTagOpen(self: *Tokenizer) Token {
         },
     }
 }
-
-
 
 fn incrementUtf8UntilNonWhitespace(self: *Tokenizer) usize {
     return self.incrByUtf8UntilFalse(struct { fn func(c: u21) bool {
@@ -627,7 +697,7 @@ fn getIndex(self: Tokenizer) ?usize {
     return null;
 }
 
-const State = struct {
+pub const State = struct {
     index: usize = 0,
     last_quote: ?QuoteType = null,
     prev: Token.Info.Tag = .bof,
@@ -655,11 +725,11 @@ test {
     std.debug.print("\n", .{});
     
     const xml_text =
-        \\ <!-- COMMENT TEXT --> <empty /> <!----> 
+        \\ <!-- COMMENT TEXT --> <elem> <![CDATA[]]> </elem>
     ;
     
-    var tokenizer = Tokenizer.init(xml_text);
     
+    var tokenizer = Tokenizer.init(xml_text);
     while (tokenizer.next()) |tok| {
         std.debug.print("'{s}': '{s}'\n", .{@tagName(tok.info), tok.slice(xml_text)});
     }
