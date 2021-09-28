@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 
 pub const Tokenizer = @import("xml/Tokenizer.zig");
+pub const TokenStream = @import("xml/TokenStream.zig");
 
 pub fn isValidUtf8NameStartChar(char: u21) bool {
     return switch (char) {
@@ -49,4 +50,5 @@ pub fn isValidUtf8NameCharOrColon(char: u21) bool {
 comptime {
     testing.refAllDecls(@This());
     _ = Tokenizer;
+    _ = TokenStream;
 }

@@ -731,6 +731,7 @@ test {
     
     var tokenizer = Tokenizer.init(xml_text);
     while (tokenizer.next()) |tok| {
-        std.debug.print("'{s}': '{s}'\n", .{@tagName(tok.info), tok.slice(xml_text)});
+        _ = tok;
+        //std.debug.print("'{s}': '{s}'\n", .{@tagName(tok.info), tok.slice(xml_text)});
     }
 }
