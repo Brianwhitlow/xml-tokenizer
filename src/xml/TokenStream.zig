@@ -17,6 +17,50 @@ pub fn reset(self: *TokenStream, new_src: ?[]const u8) void {
     self.* = TokenStream.init(new_src orelse self.buffer);
 }
 
+const allVariantsHaveFunction = struct {
+    const MaybeSelf = union(enum) {
+        self,
+        other: type,
+    };
+    
+    fn allVariantsHaveFunction(
+        comptime Union: type,
+        comptime name: []const u8,
+        comptime params: []const MaybeSelf,
+        comptime return_type: MaybeSelf,
+    ) bool {
+        std.debug.assert(std.meta.trait.is(.Union)(Union));
+        
+        comptime {
+            var output: bool = false;
+            for (std.meta.fields(Union)) |field_info| {
+                const FieldType = field_info.field_type;
+                
+                const real_params: []const type = blk: {
+                    var blk_out: [params.len]type = .{void} ** params.len;
+                    for (params) |param, idx| {
+                        blk_out[idx] = switch (param) {
+                            .self => FieldType,
+                            .other => |other| other,
+                        };
+                    }
+                    break :blk real_params[0..];
+                };
+                
+                const has_decl = std.meta.trait.hasFn(name);
+                if () {
+                    output = true;
+                }
+                
+                const FunctionType = @TypeOf(@field(FieldType, name));
+                
+                if () return false;
+            };
+            
+        }
+    }
+}.allVariantsHaveFunction;
+
 pub const Token = struct {
     index: usize,
     info: Info,
@@ -42,22 +86,25 @@ pub const Token = struct {
         unreachable;
     }
     
-    pub fn get(self: Token, comptime field: std.meta.Tag(Info), comptime func_name: []const u8, src: []const u8) GetReturnType(field, func_name) {
+    pub fn get(self: Token, comptime field: std.meta.Tag(Info), comptime func_name: []const u8, src: []const u8) blk_type: {
+        const tag_name = @tagName(field);
+        const FieldType = @TypeOf(@field(@unionInit(Info, tag_name, undefined), tag_name));
+        const func = @field(FieldType, func_name);
+        break :blk_type @TypeOf(func(std.mem.zeroes(FieldType), 0, ""));
+    } {
         std.debug.assert(std.meta.activeTag(self.info) == field);
         
         const tag_name = @tagName(field);
         const FieldType = @TypeOf(@field(@unionInit(Info, tag_name, undefined), tag_name));
         
-        const ObligateReturn = fn(FieldType, usize, []const u8) []const u8;
-        const OptionalReturn = fn(FieldType, usize, []const u8) ?[]const u8;
-        
         const func = @field(FieldType, func_name);
         comptime std.debug.assert(switch (@TypeOf(func)) {
-            ObligateReturn,
-            OptionalReturn,
+            fn(FieldType, usize, []const u8) []const u8,
+            fn(FieldType, usize, []const u8) ?[]const u8,
             => true,
             else => false
         });
+        
         return func(@field(self.info, tag_name), self.index, src);
     }
     
@@ -66,16 +113,40 @@ pub const Token = struct {
         element_close_tag: ElementCloseTag,
         element_close_inline: ElementCloseInline,
         
-        processing_instructions: ProcessingInstructions,
         comment: Comment,
+        cdata: CharDataSection,
+        
+        pi_target: ProcessingInstructionsTarget,
+        pi_token: ProcessingInstructionsToken,
         
         // Assert that all info variants have a `slice` method
         comptime {
-            inline for (std.meta.fields(@This())) |field_info|
-                std.debug.assert(@hasDecl(field_info.field_type, "slice"));
+            inline for (std.meta.fields(@This())) |field_info| {
+                const FieldType = field_info.field_type;
+                std.debug.assert(@hasDecl(FieldType, "slice"));
+                
+                const FuncType = @TypeOf(@field(FieldType, "slice"));
+                
+                std.debug.assert(switch (FuncType) {
+                    fn(FieldType, usize, []const u8) []const u8,
+                    fn(FieldType, usize, []const u8) ?[]const u8,
+                    => true,
+                    else => false,
+                });
+            }
         }
         
-        pub const ElementId = struct {
+        pub const Length = struct {
+            len: usize,
+            
+            pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+                const beg = index;
+                const end = index + self.len;
+                return src[beg..end];
+            }
+        };
+        
+        const ElementId = struct {
             const TagType = enum { @"<", @"</" };
             fn ElementIdImpl(comptime tag: TagType) type {
                 return struct {
@@ -105,6 +176,25 @@ pub const Token = struct {
             }
         }.ElementIdImpl;
         
+        fn DataSection(comptime start_tag: []const u8, comptime end_tag: []const u8) type {
+            return struct {
+                full_len: usize,
+                
+                pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+                    const beg = index;
+                    const end = beg + self.full_len;
+                    return src[beg..end];
+                }
+                
+                pub fn data(self: @This(), index: usize, src: []const u8) []const u8 {
+                    const sliced = self.slice(index, src);
+                    const beg = start_tag.len;
+                    const end = sliced.len - end_tag.len;
+                    return sliced[beg..end];
+                }
+            };
+        }
+        
         pub const ElementOpen = ElementId(.@"<");
         pub const ElementCloseTag = ElementId(.@"</");
         pub const ElementCloseInline = struct {
@@ -115,59 +205,97 @@ pub const Token = struct {
             }
         };
         
-        pub const ProcessingInstructions = struct {
+        pub const Comment = DataSection("<!--", "-->");
+        pub const CharDataSection = DataSection("<![CDATA[", "]]>");
+        
+        pub const ProcessingInstructionsTarget = struct {
             target_len: usize,
-            full_len: usize,
             
             pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
                 const beg = index;
-                const end = beg + self.full_len;
+                const end = beg + ("<?".len) + self.target_len;
                 return src[beg..end];
             }
             
-            pub fn target(self: @This(), index: usize, src: []const u8) []const u8 {
+            pub fn name(self: @This(), index: usize, src: []const u8) []const u8 {
                 const sliced = self.slice(index, src);
                 const beg = ("<?".len);
                 const end = beg + self.target_len;
                 return sliced[beg..end];
             }
-            
-            pub fn instructions(self: @This(), index: usize, src: []const u8) ?[]const u8 {
-                const sliced = self.slice(index, src);
-                const beg = self.target(index, src).len;
-                const end = self.full_len - ("?>".len);
-                return sliced[beg..end];
-            }
         };
         
-        pub const Comment = struct {
-            full_len: usize,
+        pub const ProcessingInstructionsToken = union(enum) {
+            name: Length,
+            eql: Eql,
+            string: QuotedString,
+            end_tag: EndTag,
+            
+            // Assert that all info variants have a `slice` method
+            comptime {
+                inline for (std.meta.fields(@This())) |field_info| {
+                    const FieldType = field_info.field_type;
+                    
+                    std.debug.assert(@hasDecl(FieldType, "slice"));
+                    const FuncType = @TypeOf(@field(FieldType, "slice"));
+                    
+                    std.debug.assert(switch (FuncType) {
+                        fn(FieldType, usize, []const u8) []const u8,
+                        fn(FieldType, usize, []const u8) ?[]const u8,
+                        => true,
+                        else => false,
+                    });
+                }
+            }
+            
+            pub const Eql = struct {
+                pub fn slice(_: @This(), index: usize, src: []const u8) []const u8 {
+                    const beg = index;
+                    const end = beg + ("=".len);
+                    return src[beg..end];
+                }
+            };
+            
+            pub const QuotedString = struct {
+                content_len: usize,
+                
+                pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+                    const beg = index;
+                    const end = beg + ("'".len) + self.content_len + ("'".len);
+                    return src[beg..end];
+                }
+                
+                pub fn data(self: @This(), index: usize, src: []const u8) []const u8 {
+                    const sliced = self.slice(index, src);
+                    const beg = ("'".len);
+                    const end = beg + self.content_len;
+                    return src[beg..end];
+                }
+            };
+            
+            pub const EndTag = struct {
+                pub fn slice(_: @This(), index: usize, src: []const u8) []const u8 {
+                    const beg = index;
+                    const end = beg + ("?>".len);
+                    return src[beg..end];
+                }
+            };
             
             pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-                const beg = index;
-                const end = beg + self.full_len;
-                return src[beg..end];
-            }
-            
-            pub fn data(self: @This(), index: usize, src: []const u8) []const u8 {
-                const sliced = self.slice(index, src);
-                const beg = ("<!--".len);
-                const end = sliced.len - ("-->".len);
-                return sliced[beg..end];
+                inline for (comptime std.meta.fieldNames(@This())) |name| {
+                    if (@field(@This(), name) == self)
+                        return @field(self, name).slice(index, src);
+                }
+                
+                //return switch (self) {
+                //    .name => |name| name.slice(index, src),
+                //    .eql => |eql| eql.slice(index, src),
+                //    .string => |string| string.slice(index, src),
+                //    .end_Tag => |end_tag| end_tag.slice(index, src),
+                //};
             }
         };
-        
-        
     };
-    
-    
-    fn GetReturnType(comptime field: std.meta.Tag(Info), comptime func_name: []const u8) type {
-        const tag_name = @tagName(field);
-        const FieldType = @TypeOf(@field(@unionInit(Info, tag_name, undefined), tag_name));
-        
-        const func = @field(FieldType, func_name);
-        return @TypeOf(func(std.mem.zeroes(FieldType), 0, ""));
-    }
 };
 
 pub const Error = error {
