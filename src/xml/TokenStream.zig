@@ -17,50 +17,6 @@ pub fn reset(self: *TokenStream, new_src: ?[]const u8) void {
     self.* = TokenStream.init(new_src orelse self.buffer);
 }
 
-const allVariantsHaveFunction = struct {
-    const MaybeSelf = union(enum) {
-        self,
-        other: type,
-    };
-    
-    fn allVariantsHaveFunction(
-        comptime Union: type,
-        comptime name: []const u8,
-        comptime params: []const MaybeSelf,
-        comptime return_type: MaybeSelf,
-    ) bool {
-        std.debug.assert(std.meta.trait.is(.Union)(Union));
-        
-        comptime {
-            var output: bool = false;
-            for (std.meta.fields(Union)) |field_info| {
-                const FieldType = field_info.field_type;
-                
-                const real_params: []const type = blk: {
-                    var blk_out: [params.len]type = .{void} ** params.len;
-                    for (params) |param, idx| {
-                        blk_out[idx] = switch (param) {
-                            .self => FieldType,
-                            .other => |other| other,
-                        };
-                    }
-                    break :blk real_params[0..];
-                };
-                
-                const has_decl = std.meta.trait.hasFn(name);
-                if () {
-                    output = true;
-                }
-                
-                const FunctionType = @TypeOf(@field(FieldType, name));
-                
-                if () return false;
-            };
-            
-        }
-    }
-}.allVariantsHaveFunction;
-
 pub const Token = struct {
     index: usize,
     info: Info,
@@ -108,6 +64,18 @@ pub const Token = struct {
         return func(@field(self.info, tag_name), self.index, src);
     }
     
+    fn allVariantsHaveSliceFunc(comptime Union: type) bool {
+        inline for (std.meta.fields(Union)) |field_info| {
+            const FieldType = field_info.field_type;
+            return @hasDecl(FieldType, "slice") and switch (@TypeOf(@field(FieldType, "slice"))) {
+                fn (FieldType, usize, []const u8) []const u8,
+                fn (FieldType, usize, []const u8) ?[]const u8,
+                => true,
+                else => false,
+            };
+        }
+    }
+    
     pub const Info = union(enum) {
         element_open: ElementOpen,
         element_close_tag: ElementCloseTag,
@@ -121,19 +89,21 @@ pub const Token = struct {
         
         // Assert that all info variants have a `slice` method
         comptime {
-            inline for (std.meta.fields(@This())) |field_info| {
-                const FieldType = field_info.field_type;
-                std.debug.assert(@hasDecl(FieldType, "slice"));
+            std.debug.assert(allVariantsHaveSliceFunc(@This()));
+            //inline for (std.meta.fields(@This())) |field_info| {
+            //    const FieldType = field_info.field_type;
+            //    std.debug.assert(@hasDecl(FieldType, "slice"));
                 
-                const FuncType = @TypeOf(@field(FieldType, "slice"));
+            //    const FuncType = @TypeOf(@field(FieldType, "slice"));
                 
-                std.debug.assert(switch (FuncType) {
-                    fn(FieldType, usize, []const u8) []const u8,
-                    fn(FieldType, usize, []const u8) ?[]const u8,
-                    => true,
-                    else => false,
-                });
-            }
+            //    std.debug.assert(switch (FuncType) {
+            //        fn(FieldType, usize, []const u8) []const u8,
+            //        fn(FieldType, usize, []const u8) ?[]const u8,
+            //        => true,
+            //        else => false,
+            //    });
+            //}
+            
         }
         
         pub const Length = struct {
@@ -233,19 +203,20 @@ pub const Token = struct {
             
             // Assert that all info variants have a `slice` method
             comptime {
-                inline for (std.meta.fields(@This())) |field_info| {
-                    const FieldType = field_info.field_type;
+                std.debug.assert(allVariantsHaveSliceFunc(@This()));
+                //inline for (std.meta.fields(@This())) |field_info| {
+                //    const FieldType = field_info.field_type;
                     
-                    std.debug.assert(@hasDecl(FieldType, "slice"));
-                    const FuncType = @TypeOf(@field(FieldType, "slice"));
+                //    std.debug.assert(@hasDecl(FieldType, "slice"));
+                //    const FuncType = @TypeOf(@field(FieldType, "slice"));
                     
-                    std.debug.assert(switch (FuncType) {
-                        fn(FieldType, usize, []const u8) []const u8,
-                        fn(FieldType, usize, []const u8) ?[]const u8,
-                        => true,
-                        else => false,
-                    });
-                }
+                //    std.debug.assert(switch (FuncType) {
+                //        fn(FieldType, usize, []const u8) []const u8,
+                //        fn(FieldType, usize, []const u8) ?[]const u8,
+                //        => true,
+                //        else => false,
+                //    });
+                //}
             }
             
             pub const Eql = struct {
@@ -269,7 +240,7 @@ pub const Token = struct {
                     const sliced = self.slice(index, src);
                     const beg = ("'".len);
                     const end = beg + self.content_len;
-                    return src[beg..end];
+                    return sliced[beg..end];
                 }
             };
             
@@ -287,6 +258,7 @@ pub const Token = struct {
                         return @field(self, name).slice(index, src);
                 }
                 
+                unreachable;
                 //return switch (self) {
                 //    .name => |name| name.slice(index, src),
                 //    .eql => |eql| eql.slice(index, src),
@@ -304,12 +276,26 @@ pub const Error = error {
 
 pub fn next(self: *TokenStream) ?(Error!Token) {
     switch (self.state.info) {
-        .start => todo(),
+        .start => {
+            std.debug.assert(self.state.index == 0);
+            
+        },
     }
 }
 
 inline fn todo() noreturn {
     unreachable;
+}
+
+inline fn getUtf8(self: TokenStream) ?u21 {
+    
+}
+
+inline fn getByte(self: TokenStream) ?u8 {
+    const index = self.state.index;
+    const buffer = self.buffer;
+    const in_range = (index < buffer.len);
+    return if (in_range) buffer[index] else null;
 }
 
 const State = struct {
@@ -331,11 +317,11 @@ test {
     _ = ts;
     
     var token = Token.initTag(0, .element_open, .{ .full_len = 0, .prefix_len = 0 });
-    _ = token.get(.element_open, "prefix", src);
-    _ = token.slice(src);
+        _ = token.get(.element_open, "prefix", src);
+        _ = token.slice(src);
     
-    //while (ts.next()) |tok_err_union| {
-    //    const tok = tok_err_union catch continue;
-    //    std.debug.print("{}\n", .{tok});
-    //}
+    while (ts.next()) |tok_err_union| {
+        const tok = tok_err_union catch continue;
+        std.debug.print("{}\n", .{tok});
+    }
 }
