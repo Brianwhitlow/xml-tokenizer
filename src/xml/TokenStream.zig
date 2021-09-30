@@ -33,13 +33,12 @@ pub const NextRet = ?(Error!Token);
 
 /// Returns null if there are no more tokens to parse.
 pub fn next(self: *TokenStream) NextRet {
-    const on_start = self.state;
-    defer std.debug.assert(std.meta.activeTag(on_start.info) != self.state.info or switch (self.state.info) {
-        .err,
-        => true,
-        
-        else => false,
-    });
+    // const on_start = self.state;
+    // defer std.debug.assert(std.meta.activeTag(on_start.info) != self.state.info or switch (self.state.info) {
+    //     .start => false,
+    //     .err => true,
+    //     .last_tok => |tok| (tok == .element_open)
+    // });
     
     errdefer std.debug.assert(self.state.info == .err);
     switch (self.state.info) {
@@ -61,18 +60,30 @@ pub fn next(self: *TokenStream) NextRet {
         
         .last_tok => |last_tok| {
             switch (last_tok) {
-                .element_open => |element_open| {
-                    _ = element_open;
-                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                        ' ',
-                        '\t',
-                        '\n',
-                        '\r',
-                        => todo(),
-                        '/' => todo(),
-                        '>' => todo(),
-                        else => unreachable,
-                    }
+                .element_open => switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                    ' ',
+                    '\t',
+                    '\n',
+                    '\r',
+                    => todo(),
+                    '/' => {
+                        const start_index = self.getIndex();
+                        self.incrByByte();
+                        
+                        switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                            '>' => return self.returnToken(Token.init(start_index, .element_close_inline)),
+                            else => return self.returnError(Error.ExpectedClosingTag),
+                        }
+                    },
+                    
+                    '>' => {
+                        self.incrByByte();
+                        switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                            '<' => return self.tokenizeAfterLeftAngleBracket(),
+                            else => todo()
+                        }
+                    },
+                    else => unreachable,
                 },
                 
                 .element_close_tag => |element_close_tag| {
@@ -80,9 +91,12 @@ pub fn next(self: *TokenStream) NextRet {
                     todo();
                 },
                 
-                .element_close_inline => |element_close_inline| {
-                    _ = element_close_inline;
-                    todo();
+                .element_close_inline => {
+                    std.debug.assert(self.getUtf8().? == '>');
+                    self.incrByByte();
+                    switch (self.getUtf8() orelse return null) {
+                        else => todo()
+                    }
                 },
                 
                 .attribute_name => |attribute_name| {
@@ -109,7 +123,6 @@ pub fn next(self: *TokenStream) NextRet {
                     _ = pi_token;
                     todo();
                 },
-                
             }
         },
     }
@@ -277,13 +290,20 @@ test {
     try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
     try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
     
+    current = try ts.next().?;
+    try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
+    
     ts.reset(
-        \\<pree:empty>
+        \\<pree:empty/>
     );
     
     current = try ts.next().?;
     try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
     try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
     try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
-    _ = try ts.next().?;
+    
+    current = try ts.next().?;
+    try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
+    
+    try testing.expect(ts.next() == null);
 }
