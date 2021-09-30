@@ -53,88 +53,7 @@ pub fn next(self: *TokenStream) NextRet {
                 '\r',
                 => todo(),
                 
-                '<' => {
-                    const start_index = self.getIndex();
-                    _ = start_index;
-                    
-                    self.incrByByte();
-                    switch (self.getUtf8() orelse return self.returnError(Error.Malformed)) {
-                        '/' => todo(),
-                        '?' => todo(),
-                        '!' => todo(),
-                        else => {
-                            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
-                                return self.returnError(Error.InvalidNameStartChar);
-                            }
-                            
-                            self.incrByUtf8Len();
-                            
-                            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
-                                ' ',
-                                '\t',
-                                '\n',
-                                '\r',
-                                '/',
-                                '>',
-                                ':',
-                                => break,
-                                else => if (!xml.isValidUtf8NameChar(char))
-                                    return self.returnError(Error.InvalidNameChar),
-                                    
-                            } else return self.returnError(Error.ExpectedClosingTag);
-                            
-                            switch (self.getUtf8().?) {
-                                ' ',
-                                '\t',
-                                '\n',
-                                '\r',
-                                '/',
-                                '>',
-                                => {
-                                    const info = .{ .prefix_len = 0, .full_len = (self.getIndex() - start_index) };
-                                    const result = Token.initTag(start_index, .element_open, info);
-                                    return self.returnToken(result);
-                                },
-                                
-                                ':' => {
-                                    const prefix_len = self.getIndex() - (("<".len) + start_index);
-                                    self.incrByByte();
-                                    
-                                    if (!xml.isValidUtf8NameStartChar(self.getUtf8() orelse return self.returnError(Error.Malformed))) {
-                                        return self.returnError(Error.InvalidNameStartChar);
-                                    }
-                                    
-                                    
-                                    while (self.getUtf8()) |char| : (self.incrByUtf8Len()) {
-                                        switch (char) {
-                                            ' ',
-                                            '\t',
-                                            '\n',
-                                            '\r',
-                                            '/',
-                                            '>',
-                                            => {
-                                                const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
-                                                const maybe_result = Token.initTag(start_index, .element_open, info);
-                                                return self.returnToken(maybe_result);
-                                            },
-                                            
-                                            ':' => return self.returnError(Error.InvalidNameChar),
-                                            
-                                            else => if (!xml.isValidUtf8NameChar(char)) {
-                                                return self.returnError(Error.InvalidNameChar);
-                                            }
-                                        }
-                                    } else return self.returnError(Error.ExpectedClosingTag);
-                                },
-                                
-                                else => unreachable
-                            }
-                            
-                            
-                        }
-                    }
-                },
+                '<' => return self.tokenizeAfterLeftAngleBracket(),
                 
                 else => return self.returnError(Error.ContentNotAllowedInPrologue)
             }
@@ -199,6 +118,88 @@ pub fn next(self: *TokenStream) NextRet {
 inline fn todo() noreturn {
     unreachable;
 }
+
+fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
+    std.debug.assert(self.getUtf8().? == '<');
+    const start_index = self.getIndex();
+    
+    self.incrByByte();
+    switch (self.getUtf8() orelse return self.returnError(Error.Malformed)) {
+        '/' => todo(),
+        '?' => todo(),
+        '!' => todo(),
+        else => {
+            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
+                return self.returnError(Error.InvalidNameStartChar);
+            }
+            
+            self.incrByUtf8Len();
+            
+            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                '/',
+                '>',
+                ':',
+                => break,
+                else => if (!xml.isValidUtf8NameChar(char))
+                    return self.returnError(Error.InvalidNameChar),
+                    
+            } else return self.returnError(Error.ExpectedClosingTag);
+            
+            switch (self.getUtf8().?) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                '/',
+                '>',
+                => {
+                    const info = .{ .prefix_len = 0, .full_len = (self.getIndex() - start_index) };
+                    const result = Token.initTag(start_index, .element_open, info);
+                    return self.returnToken(result);
+                },
+                
+                ':' => {
+                    const prefix_len = self.getIndex() - (("<".len) + start_index);
+                    self.incrByByte();
+                    
+                    if (!xml.isValidUtf8NameStartChar(self.getUtf8() orelse return self.returnError(Error.Malformed))) {
+                        return self.returnError(Error.InvalidNameStartChar);
+                    }
+                    
+                    while (self.getUtf8()) |char| : (self.incrByUtf8Len()) {
+                        switch (char) {
+                            ' ',
+                            '\t',
+                            '\n',
+                            '\r',
+                            '/',
+                            '>',
+                            => {
+                                const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
+                                const maybe_result = Token.initTag(start_index, .element_open, info);
+                                return self.returnToken(maybe_result);
+                            },
+                            
+                            ':' => return self.returnError(Error.InvalidNameChar),
+                            
+                            else => if (!xml.isValidUtf8NameChar(char)) {
+                                return self.returnError(Error.InvalidNameChar);
+                            }
+                        }
+                    } else return self.returnError(Error.ExpectedClosingTag);
+                },
+                
+                else => unreachable
+            }
+        }
+    }
+}
+
+
 
 fn returnToken(self: *TokenStream, tok: Token) NextRet {
     self.state.info = .{ .last_tok = tok.info };
