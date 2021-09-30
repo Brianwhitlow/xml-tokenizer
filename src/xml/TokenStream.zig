@@ -151,9 +151,47 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
     
     self.incrByByte();
     switch (self.getUtf8() orelse return self.returnError(Error.Malformed)) {
-        '/' => todo(),
+        '/' => {
+            self.incrByByte();
+            if (!xml.isValidUtf8NameStartChar(self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag))) {
+                return self.returnError(Error.InvalidNameStartChar);
+            }
+            
+            self.incrByUtf8Len();
+            
+            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                ':',
+                '/',
+                '>',
+                => break,
+                else => if (!xml.isValidUtf8NameChar(char))
+                    return self.returnError(Error.InvalidNameChar),
+            } else return self.returnError(Error.ExpectedClosingTag);
+            
+            const name_len = switch (self.getUtf8().?) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => todo(),
+                ':' => todo(),
+                '>' => (self.getIndex() + 1) - start_index,
+                else => unreachable
+            };
+            
+            _ = name_len;
+            
+            std.debug.assert(self.getUtf8().? == '>');
+            todo();
+        },
+        
         '?' => todo(),
         '!' => todo(),
+        
         else => {
             if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
                 return self.returnError(Error.InvalidNameStartChar);
@@ -166,9 +204,9 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
                 '\t',
                 '\n',
                 '\r',
+                ':',
                 '/',
                 '>',
-                ':',
                 => break,
                 else => if (!xml.isValidUtf8NameChar(char))
                     return self.returnError(Error.InvalidNameChar),
