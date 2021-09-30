@@ -97,38 +97,44 @@ pub fn next(self: *TokenStream) NextRet {
                                 },
                                 
                                 ':' => {
-                                    const prefix_len = self.getIndex() - start_index;
+                                    const prefix_len = self.getIndex() - (("<".len) + start_index);
                                     self.incrByByte();
                                     
                                     if (!xml.isValidUtf8NameStartChar(self.getUtf8() orelse return self.returnError(Error.Malformed))) {
                                         return self.returnError(Error.InvalidNameStartChar);
                                     }
                                     
-                                    while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
-                                        ' ',
-                                        '\t',
-                                        '\n',
-                                        '\r',
-                                        '/',
-                                        '>',
-                                        => break,
-                                        ':' => return self.returnError(Error.InvalidNameChar),
-                                        else => if (!xml.isValidUtf8NameChar(char)) {
-                                            return self.returnError(Error.InvalidNameChar);
-                                        }
-                                    } else {
-                                        const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
-                                        const maybe_result = Token.initTag(start_index, .element_open, info);
-                                        
-                                        return if (self.getIndex() == (self.buffer.len - 1))
-                                            self.returnToken(maybe_result)
-                                        else
-                                            self.returnError(Error.ExpectedClosingTag);
-                                    }
                                     
-                                    const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
-                                    const result = Token.initTag(start_index, .element_open, info);
-                                    return self.returnToken(result);
+                                    while (blk: {
+                                        const utf8 = self.getUtf8();
+                                        self.incrByUtf8Len();
+                                        break :blk utf8;
+                                    }) |char| {
+                                        std.debug.print("\n{u}\n", .{char});
+                                        switch (char) {
+                                            ' ',
+                                            '\t',
+                                            '\n',
+                                            '\r',
+                                            '/',
+                                            '>',
+                                            => {
+                                                const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
+                                                const maybe_result = Token.initTag(start_index, .element_open, info);
+                                                return self.returnToken(maybe_result);
+                                            },
+                                            
+                                            ':' => return self.returnError(Error.InvalidNameChar),
+                                            
+                                            else => if (!xml.isValidUtf8NameChar(char)) {
+                                                return self.returnError(Error.InvalidNameChar);
+                                            }
+                                        }
+                                    } else return self.returnError(Error.ExpectedClosingTag);
+                                    
+                                    //const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
+                                    //const result = Token.initTag(start_index, .element_open, info);
+                                    //return self.returnToken(result);
                                 },
                                 
                                 else => unreachable
@@ -143,7 +149,59 @@ pub fn next(self: *TokenStream) NextRet {
             }
         },
         
-        .last_tok => |_| todo(),
+        .last_tok => |last_tok| {
+            switch (last_tok) {
+                .element_open => |element_open| {
+                    _ = element_open;
+                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        => todo(),
+                        '/' => todo(),
+                        '>' => todo(),
+                        else => unreachable,
+                    }
+                },
+                
+                .element_close_tag => |element_close_tag| {
+                    _ = element_close_tag;
+                    todo();
+                },
+                
+                .element_close_inline => |element_close_inline| {
+                    _ = element_close_inline;
+                    todo();
+                },
+                
+                .attribute_name => |attribute_name| {
+                    _ = attribute_name;
+                    todo();
+                },
+                
+                .comment => |comment| {
+                    _ = comment;
+                    todo();
+                },
+                
+                .cdata => |cdata| {
+                    _ = cdata;
+                    todo();
+                },
+                
+                .pi_target => |pi_target| {
+                    _ = pi_target;
+                    todo();
+                },
+                
+                .pi_token => |pi_token| {
+                    _ = pi_token;
+                    todo();
+                },
+                
+            }
+        },
     }
 }
 
@@ -165,19 +223,20 @@ fn returnError(self: *TokenStream, err: Error) NextRet {
 
 /// Expects and asserts that the current UTF8 codepoint is valid.
 fn incrByUtf8Len(self: *TokenStream) void {
-    const codepoint = self.getUtf8().?;
+    const codepoint = self.getUtf8() orelse return;
     self.state.index += unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
 }
 
 /// Asserts that the current utf8 codepoint is exactly one byte long,
 /// thus ensuring that subsequent traversal will be valid.
 fn incrByByte(self: *TokenStream) void {
-    self.state.index += requirements: {
+    requirements: {
         const codepoint = self.getUtf8() orelse std.debug.panic("Invalid UTF8 codepoint or EOF encountered when trying to increment by a single byte.", .{});
         const codepoint_len = unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
         std.debug.assert(codepoint_len == 1);
-        break :requirements 1;
-    };
+        break :requirements;
+    }
+    self.state.index += 1;
 }
 
 fn getUtf8(self: TokenStream) ?u21 {
@@ -227,10 +286,12 @@ test {
     try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
     
     ts.reset(
-        \\<pree:empty> 
+        \\<pree:empty>
     );
     
     current = try ts.next().?;
     try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
+    try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
+    try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
     _ = try ts.next().?;
 }
