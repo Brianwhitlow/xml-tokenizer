@@ -105,12 +105,7 @@ pub fn next(self: *TokenStream) NextRet {
                                     }
                                     
                                     
-                                    while (blk: {
-                                        const utf8 = self.getUtf8();
-                                        self.incrByUtf8Len();
-                                        break :blk utf8;
-                                    }) |char| {
-                                        std.debug.print("\n{u}\n", .{char});
+                                    while (self.getUtf8()) |char| : (self.incrByUtf8Len()) {
                                         switch (char) {
                                             ' ',
                                             '\t',
@@ -131,10 +126,6 @@ pub fn next(self: *TokenStream) NextRet {
                                             }
                                         }
                                     } else return self.returnError(Error.ExpectedClosingTag);
-                                    
-                                    //const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
-                                    //const result = Token.initTag(start_index, .element_open, info);
-                                    //return self.returnToken(result);
                                 },
                                 
                                 else => unreachable
@@ -245,7 +236,7 @@ fn getUtf8(self: TokenStream) ?u21 {
     
     const beg = self.state.index;
     const end = beg + sequence_len;
-    if (end >= self.buffer.len) return null;
+    if (end > self.buffer.len) return null;
     
     return unicode.utf8Decode(self.buffer[beg..end]) catch null;
 }
