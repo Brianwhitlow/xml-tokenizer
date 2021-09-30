@@ -12,11 +12,11 @@ pub fn init(index: usize, info: Info) Token {
     };
 }
 
-pub fn initTag(index: usize, comptime tag: std.meta.Tag(Info), value: @TypeOf(@field(@unionInit(Info, @tagName(tag), undefined), @tagName(tag)))) Token {
+pub fn initTag(index: usize, comptime tag: std.meta.Tag(Info), value: std.meta.TagPayload(Info, tag)) Token {
     return Token.init(index, @unionInit(Info, @tagName(tag), value));
 }
 
-fn slice(self: Token, src: []const u8) []const u8 {
+pub fn slice(self: Token, src: []const u8) []const u8 {
     inline for (comptime std.meta.fieldNames(Info)) |field_name| {
         if (@field(Info, field_name) == self.info) {
             return @field(self.info, field_name).slice(self.index, src);
@@ -26,11 +26,19 @@ fn slice(self: Token, src: []const u8) []const u8 {
     unreachable;
 }
 
-pub fn get(self: Token, comptime field: std.meta.Tag(Info), comptime func_name: []const u8, src: []const u8) blk_type: {
+pub fn method(self: Token, comptime field: std.meta.Tag(Info), comptime func_name: []const u8, src: []const u8) blk_type: {
     const tag_name = @tagName(field);
     const FieldType = @TypeOf(@field(@unionInit(Info, tag_name, undefined), tag_name));
+    
     const func = @field(FieldType, func_name);
-    break :blk_type @TypeOf(func(std.mem.zeroes(FieldType), 0, ""));
+    const FuncType = @TypeOf(func);
+    
+    break :blk_type switch (@typeInfo(FuncType)) {
+        .Fn,
+        .BoundFn,
+        => |info| info.return_type.?,
+        else => unreachable
+    };
 } {
     std.debug.assert(std.meta.activeTag(self.info) == field);
     
@@ -154,19 +162,6 @@ pub const Info = union(enum) {
         prefix_len: usize, // slice[prefix_len] == ':' if prefix_len != 0
         identifier_len: usize,
         full_len: usize,
-        
-        /// Same as slice, but returns error.Invalid if it fails any sanity checks.
-        pub fn sliceChecked(self: @This(), index: usize, src: []const u8) error{ Invalid }![]const u8 {
-            const result = self.slice(index, src);
-            
-            if (!std.mem.eql(result[0.."</".len], "</")) return error.Invalid;
-            if (result[result.len - 1] != '>') return error.Invalid;
-            
-            if (self.prefix_len != 0 and result[self.prefix_len] != ':') return error.Invalid;
-            if (self.prefix_len == 0 and result[self.prefix_len] == ':') return error.Invalid;
-            
-            break :sanity_checks;
-        }
         
         /// Returns a slice matching the following pseudo-REGEX:
         /// `</` `({0}:)?` `{1}` `{S}?` `>`
