@@ -65,16 +65,20 @@ pub fn next(self: *TokenStream) NextRet {
                     '\t',
                     '\n',
                     '\r',
-                    => todo(),
-                    '/' => {
-                        const start_index = self.getIndex();
+                    => {
                         self.incrByByte();
-                        
-                        switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                            '>' => return self.returnToken(Token.init(start_index, .element_close_inline)),
-                            else => return self.returnError(Error.ExpectedClosingTag),
-                        }
+                        while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch(char) {
+                            ' ',
+                            '\t',
+                            '\n',
+                            '\r',
+                            => continue,
+                            '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
+                            else => todo(),
+                        } else todo();
                     },
+                    
+                    '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
                     
                     '>' => {
                         self.incrByByte();
@@ -130,6 +134,15 @@ pub fn next(self: *TokenStream) NextRet {
 
 inline fn todo() noreturn {
     unreachable;
+}
+
+fn tokenizeAfterElementOpenWhitespaceSlash(self: *TokenStream) NextRet {
+    const start_index = self.getIndex();
+    self.incrByByte();
+    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+        '>' => return self.returnToken(Token.init(start_index, .element_close_inline)),
+        else => return self.returnError(Error.ExpectedClosingTag),
+    }
 }
 
 fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
@@ -280,30 +293,39 @@ const State = struct {
     };
 };
 
-test {
-    var ts = TokenStream.init(
-        \\<empty/>
-    );
+test "simple empty tags" {
+    var ts: TokenStream = undefined;
+    var current: Token = undefined;
     
-    var current = try ts.next().?;
-    try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
-    try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
-    try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
+    inline for (.{
+        "<empty/>",
+        "<empty    />",
+    }) |src| {
+        ts.reset(src);
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
+        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
+        try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
+    }
     
-    current = try ts.next().?;
-    try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
-    
-    ts.reset(
-        \\<pree:empty/>
-    );
-    
-    current = try ts.next().?;
-    try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
-    try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
-    try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
-    
-    current = try ts.next().?;
-    try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
-    
-    try testing.expect(ts.next() == null);
+    inline for (.{
+        "<pree:empty/>",
+        "<pree:empty    />",
+    }) |src| {
+        ts.reset(src);
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
+        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
+        try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
+        
+        try testing.expect(ts.next() == null);
+    }
 }
