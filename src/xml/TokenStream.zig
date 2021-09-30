@@ -293,7 +293,7 @@ const State = struct {
     };
 };
 
-test "simple empty tags" {
+test "simple empty tags 1" {
     var ts: TokenStream = undefined;
     var current: Token = undefined;
     
@@ -325,6 +325,87 @@ test "simple empty tags" {
         
         current = try ts.next().?;
         try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
+        
+        try testing.expect(ts.next() == null);
+    }
+}
+
+test "simple empty tags 2" {
+    var ts: TokenStream = undefined;
+    var current: Token = undefined;
+    
+    inline for (.{
+        "<empty></empty>",
+        "<empty    ></empty>",
+    }) |src| {
+        ts.reset(src);
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
+        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
+        try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "</empty>");
+        try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
+        try testing.expectEqual(current.method(.element_close_tag, "prefix", ts.buffer), null);
+        
+        try testing.expect(ts.next() == null);
+    }
+    
+    inline for (.{
+        "<pree:empty></pree:empty>",
+        "<pree:empty    ></pree:empty>",
+    }) |src| {
+        ts.reset(src);
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
+        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
+        try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "</empty>");
+        try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
+        try testing.expectEqualStrings(current.method(.element_close_tag, "prefix", ts.buffer).?, "pree");
+        
+        try testing.expect(ts.next() == null);
+    }
+    
+    inline for (.{
+        "<empty></empty    >",
+        "<empty    ></empty    >",
+    }) |src| {
+        ts.reset(src);
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
+        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
+        try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "</empty    >");
+        try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
+        try testing.expectEqual(current.method(.element_close_tag, "prefix", ts.buffer), null);
+        
+        try testing.expect(ts.next() == null);
+    }
+    
+    inline for (.{
+        "<pree:empty></pree:empty    >",
+        "<pree:empty    ></pree:empty    >",
+    }) |src| {
+        ts.reset(src);
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
+        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
+        try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
+        
+        current = try ts.next().?;
+        try testing.expectEqualStrings(current.slice(ts.buffer), "</empty    >");
+        try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
+        try testing.expectEqualStrings(current.method(.element_close_tag, "prefix", ts.buffer).?, "pree");
         
         try testing.expect(ts.next() == null);
     }

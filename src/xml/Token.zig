@@ -84,20 +84,6 @@ pub const Info = union(enum) {
     // Assert that all info variants have a `slice` method
     comptime {
         std.debug.assert(allVariantsHaveSliceFunc(@This()));
-        //inline for (std.meta.fields(@This())) |field_info| {
-        //    const FieldType = field_info.field_type;
-        //    std.debug.assert(@hasDecl(FieldType, "slice"));
-            
-        //    const FuncType = @TypeOf(@field(FieldType, "slice"));
-            
-        //    std.debug.assert(switch (FuncType) {
-        //        fn(FieldType, usize, []const u8) []const u8,
-        //        fn(FieldType, usize, []const u8) ?[]const u8,
-        //        => true,
-        //        else => false,
-        //    });
-        //}
-        
     }
     
     pub const Length = struct {
@@ -252,19 +238,6 @@ pub const Info = union(enum) {
         // Assert that all info variants have a `slice` method
         comptime {
             std.debug.assert(allVariantsHaveSliceFunc(@This()));
-            //inline for (std.meta.fields(@This())) |field_info| {
-            //    const FieldType = field_info.field_type;
-                
-            //    std.debug.assert(@hasDecl(FieldType, "slice"));
-            //    const FuncType = @TypeOf(@field(FieldType, "slice"));
-                
-            //    std.debug.assert(switch (FuncType) {
-            //        fn(FieldType, usize, []const u8) []const u8,
-            //        fn(FieldType, usize, []const u8) ?[]const u8,
-            //        => true,
-            //        else => false,
-            //    });
-            //}
         }
         
         pub const Eql = struct {
