@@ -436,14 +436,21 @@ const tests = struct {
 test "simple empty tags 1" {
     var ts = TokenStream.init(undefined);
     
-    inline for (.{"<empty/>", "<empty    />"}) |src| {
+    const ws = " \t\n\r";
+    inline for (.{
+        "<empty" ++ ("") ++ "/>",
+        "<empty" ++ (ws) ++ "/>",
+    }) |src| {
         ts.reset(src);
         try tests.expectElementOpen(&ts, null, "empty");
         try tests.expectElementCloseInline(&ts);
         try tests.expectNull(&ts);
     }
     
-    inline for (.{"<pree:empty/>", "<pree:empty    />"}) |src| {
+    inline for (.{
+        "<pree:empty" ++ ("") ++ "/>",
+        "<pree:empty" ++ (ws) ++ "/>",
+    }) |src| {
         ts.reset(src);
         try tests.expectElementOpen(&ts, "pree", "empty");
         try tests.expectElementCloseInline(&ts);
@@ -454,11 +461,12 @@ test "simple empty tags 1" {
 test "simple empty tags 2" {
     var ts = TokenStream.init(undefined);
     
+    const ws = " \t\n\r";
     inline for (.{
-        "<empty></empty>",
-        "<empty></empty    >",
-        "<empty    ></empty>",
-        "<empty    ></empty    >",
+        "<empty" ++ ("") ++ ">" ++ "</empty" ++ ("") ++ ">",
+        "<empty" ++ ("") ++ ">" ++ "</empty" ++ (ws) ++ ">",
+        "<empty" ++ (ws) ++ ">" ++ "</empty" ++ ("") ++ ">",
+        "<empty" ++ (ws) ++ ">" ++ "</empty" ++ (ws) ++ ">",
     }) |src| {
         ts.reset(src);
         try tests.expectElementOpen(&ts, null, "empty");
@@ -467,10 +475,10 @@ test "simple empty tags 2" {
     }
     
     inline for (.{
-        "<pree:empty></pree:empty>",
-        "<pree:empty></pree:empty    >",
-        "<pree:empty    ></pree:empty>",
-        "<pree:empty    ></pree:empty    >",
+        "<pree:empty" ++ ("") ++ ">" ++ "</pree:empty" ++ ("") ++ ">",
+        "<pree:empty" ++ ("") ++ ">" ++ "</pree:empty" ++ ("") ++ ">",
+        "<pree:empty" ++ (ws) ++ ">" ++ "</pree:empty" ++ (ws) ++ ">",
+        "<pree:empty" ++ (ws) ++ ">" ++ "</pree:empty" ++ (ws) ++ ">",
     }) |src| {
         ts.reset(src);
         try tests.expectElementOpen(&ts, "pree", "empty");
