@@ -118,6 +118,11 @@ pub fn next(self: *TokenStream) NextRet {
                     todo();
                 },
                 
+                .attribute_value_segment => |attribute_value_segment| {
+                    _ = attribute_value_segment;
+                    todo();
+                },
+                
                 .comment => |comment| {
                     _ = comment;
                     todo();
@@ -230,6 +235,8 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
             }
             
             self.incrByUtf8Len();
+            
+            // TODO: Refactor this to be more concise like the '/' case.
             
             while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
                 ' ',
@@ -480,3 +487,4 @@ test "simple empty tags 2" {
         try testing.expect(ts.next() == null);
     }
 }
+
