@@ -74,7 +74,14 @@ pub fn next(self: *TokenStream) NextRet {
                             '\r',
                             => continue,
                             '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
-                            else => todo(),
+                            '>' => {
+                                self.incrByByte();
+                                switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                                    '<' => return self.tokenizeAfterLeftAngleBracket(),
+                                    else => todo()
+                                }
+                            },
+                            else => todo()
                         } else todo();
                     },
                     
@@ -90,9 +97,10 @@ pub fn next(self: *TokenStream) NextRet {
                     else => unreachable,
                 },
                 
-                .element_close_tag => |element_close_tag| {
-                    _ = element_close_tag;
-                    todo();
+                .element_close_tag => {
+                    switch (self.getUtf8() orelse return null) {
+                        else => todo()
+                    }
                 },
                 
                 .element_close_inline => {
@@ -172,21 +180,29 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
                     return self.returnError(Error.InvalidNameChar),
             } else return self.returnError(Error.ExpectedClosingTag);
             
-            const name_len = switch (self.getUtf8().?) {
+            switch (self.getUtf8().?) {
                 ' ',
                 '\t',
                 '\n',
                 '\r',
                 => todo(),
-                ':' => todo(),
-                '>' => (self.getIndex() + 1) - start_index,
+                
+                ':' => {
+                    todo();
+                },
+                
+                '>' => {
+                    self.incrByByte();
+                    const name_len = self.getIndex() - (start_index + ("</".len));
+                    return self.returnToken(Token.initTag(start_index, .element_close_tag, .{
+                        .prefix_len = 0,
+                        .identifier_len = name_len,
+                        .full_len = self.getIndex() - start_index,
+                    }));
+                },
+                
                 else => unreachable
-            };
-            
-            _ = name_len;
-            
-            std.debug.assert(self.getUtf8().? == '>');
-            todo();
+            }
         },
         
         '?' => todo(),
@@ -398,12 +414,12 @@ test "simple empty tags 2" {
         ts.reset(src);
         
         current = try ts.next().?;
-        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
+        try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
         try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
         try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
         
         current = try ts.next().?;
-        try testing.expectEqualStrings(current.slice(ts.buffer), "</empty>");
+        try testing.expectEqualStrings(current.slice(ts.buffer), "</pree:empty>");
         try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
         try testing.expectEqualStrings(current.method(.element_close_tag, "prefix", ts.buffer).?, "pree");
         
