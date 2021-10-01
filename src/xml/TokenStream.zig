@@ -373,12 +373,11 @@ const tests = struct {
             
             try testing.expect(tok.info == .element_open);
             try testing.expectEqualStrings(tok.slice(src), full_slice);
-            try testing.expectEqualStrings(tok.method(.element_open, "name", src), name);
-            if (prefix) |prfx| {
-                try testing.expectEqualStrings(tok.method(.element_open, "prefix", src).?, prfx);
-            } else {
-                try testing.expectEqual(tok.method(.element_open, "prefix", src), null);
-            }
+            try testing.expectEqualStrings(tok.info.element_open.name(tok.index, src), name);
+            if (prefix) |prfx|
+                try testing.expectEqualStrings(tok.info.element_open.prefix(tok.index, src) orelse return error.NullPrefix, prfx)
+            else
+                try testing.expectEqual(tok.info.element_open.prefix(tok.index, src), null);
         }
         
         fn elementCloseTag(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
@@ -389,12 +388,11 @@ const tests = struct {
             try testing.expectEqualStrings(tok.slice(src)[0..2], "</");
             try testing.expectEqualStrings(tok.slice(src)[tok.slice(src).len - 1..], ">");
             
-            try testing.expectEqualStrings(tok.method(.element_close_tag, "name", src), name);
-            if (prefix) |prfx| {
-                try testing.expectEqualStrings(tok.method(.element_close_tag, "prefix", src).?, prfx);
-            } else {
-                try testing.expectEqual(tok.method(.element_close_tag, "prefix", src), null);
-            }
+            try testing.expectEqualStrings(tok.info.element_close_tag.name(tok.index, src), name);
+            if (prefix) |prfx|
+                try testing.expectEqualStrings(tok.info.element_close_tag.prefix(tok.index, src) orelse return error.NullPrefix, prfx)
+            else
+                try testing.expectEqual(tok.info.element_close_tag.prefix(tok.index, src), null);
         }
         
         fn elementCloseInline(src: []const u8, maybe_tok: NextRet) !void {
@@ -433,7 +431,7 @@ const tests = struct {
     }
 };
 
-test "simple empty tags 1" {
+test "simple empty tags" {
     var ts = TokenStream.init(undefined);
     
     const ws = " \t\n\r";
@@ -456,12 +454,7 @@ test "simple empty tags 1" {
         try tests.expectElementCloseInline(&ts);
         try tests.expectNull(&ts);
     }
-}
-
-test "simple empty tags 2" {
-    var ts = TokenStream.init(undefined);
     
-    const ws = " \t\n\r";
     inline for (.{
         "<empty" ++ ("") ++ ">" ++ "</empty" ++ ("") ++ ">",
         "<empty" ++ ("") ++ ">" ++ "</empty" ++ (ws) ++ ">",
