@@ -1,14 +1,10 @@
 const std = @import("std");
 const testing = std.testing;
 
+pub const Tokenizer = @import("xml/Tokenizer.zig");
 pub const TokenStream = @import("xml/TokenStream.zig");
 
-const token = @import("xml/token.zig");
-pub const Token = token.Token;
-pub const Range = token.Range;
-pub const Index = token.Index;
-
-pub fn isValidNameStartCharUtf8(char: u21) bool {
+pub fn isValidUtf8NameStartChar(char: u21) bool {
     return switch (char) {
         'A'...'Z',
         'a'...'z',
@@ -32,8 +28,8 @@ pub fn isValidNameStartCharUtf8(char: u21) bool {
     };
 }
 
-pub fn isValidNameCharUtf8(char: u21) bool {
-    return isValidNameStartCharUtf8(char) or switch (char) {
+pub fn isValidUtf8NameChar(char: u21) bool {
+    return isValidUtf8NameStartChar(char) or switch (char) {
         '0'...'9',
         '-',
         '.',
@@ -47,7 +43,11 @@ pub fn isValidNameCharUtf8(char: u21) bool {
     };
 }
 
+pub fn isValidUtf8NameCharOrColon(char: u21) bool {
+    return (char == ':') or isValidUtf8NameChar(char);
+}
+
 comptime {
-    _ = token;
+    _ = Tokenizer;
     _ = TokenStream;
 }

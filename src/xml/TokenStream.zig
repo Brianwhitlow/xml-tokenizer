@@ -1,1268 +1,480 @@
 const std = @import("std");
 const testing = std.testing;
-
+const unicode = std.unicode;
 const xml = @import("../xml.zig");
-const Token = xml.Token;
-const Range = xml.Range;
-const Index = xml.Index;
 
 const TokenStream = @This();
 buffer: []const u8,
-index: usize = 0,
-parse_state: ParseState = .start,
+state: State,
 
-pub const ParseState = union(enum) {
-    start,
-    start_whitespace,
-    
-    @"<",
-    @"</",
-    @"<?",
-    @"<!",
-    @"<!-",
-    @"<![": struct { match_index: usize = 0 },
-    
-    el_open_name_start_char: ElementNameStartChar,
-    el_open_name_end_char: ElementNameEndChar,
-    
-    el_close_name_start_char: ElementNameStartChar,
-    el_close_name_end_char,
-    
-    pi_target_name_start_char: Index,
-    pi_target_name_end_char: PITargetNameEndChar,
-    
-    inside_comment: InsideComment,
-    inside_char_data: InsideCharData,
-    
-    found_right_angle_bracket,
-    @">": RightAngleBracket,
-    
-    eof,
-    
-    pub const ElementNameStartChar = struct {
-        start: Index,
-        colon: ?Index,
+pub fn init(src: []const u8) TokenStream {
+    return TokenStream {
+        .buffer = src,
+        .state = .{},
     };
-    
-    pub const ElementNameEndChar = struct {
-        el_id: Token.ElementId,
-        state: State,
-        
-        pub const State = union(enum) {
-            whitespace,
-            attribute_name_start_char: Index,
-            attribute_seek_eql: AttributeNameCache,
-            attribute_eql: AttributeNameCache,
-            attribute_value_start_quote: AttributeNameValueCache,
-            attribute_value_end_quote,
-            forward_slash,
-            pub const AttributeNameCache = Range;
-            pub const AttributeNameValueCache = struct {
-                name: Range,
-                value_start: Index,
-            };
-        };
-        
-    };
-    
-    pub const RightAngleBracket = struct {
-        start: Index,
-        non_whitespace_chars: bool,
-    };
-    
-    pub const PITargetNameEndChar = struct {
-        target: Range,
-        state: State,
-        
-        pub const State = enum {
-            seek_qm,
-            in_string,
-            found_qm,
-        };
-    };
-    
-    pub const InsideComment = struct {
-        start: usize,
-        state: State,
-        
-        pub const State = enum {
-            seek_dash,
-            found_dash1,
-            found_dash2,
-        };
-    };
-    
-    pub const InsideCharData = struct {
-        start: usize,
-        state: State,
-        
-        pub const State = enum {
-            seek_sbracket,
-            found_sbracket1,
-            found_sbracket2,
-        };
-    };
-    
+}
+
+pub fn reset(self: *TokenStream, new_src: ?[]const u8) void {
+    self.* = TokenStream.init(new_src orelse self.buffer);
+}
+
+pub const Token = @import("Token.zig");
+
+pub const Error = error {
+    PrematureEof,
+    ContentNotAllowedInPrologue,
+    Malformed,
+    InvalidNameChar,
+    InvalidNameStartChar,
+    ExpectedClosingTag,
 };
 
-pub fn init(buffer: []const u8) TokenStream {
-    return TokenStream { .buffer = buffer };
-}
+/// The return type of TokenStream.next().
+pub const NextRet = ?(Error!Token);
 
-pub fn reset(self: *TokenStream, new_buffer: ?[]const u8) Token {
-    self.parse_state = .start;
-    self.index = 0;
-    self.buffer = new_buffer orelse self.buffer;
-    return .bof;
-}
-
-pub fn next(self: *TokenStream) Token {
-    var result: Token = .{ .invalid = Index.init(self.index) };
+/// Returns null if there are no more tokens to parse.
+pub fn next(self: *TokenStream) NextRet {
+    // const on_start = self.state;
+    // defer std.debug.assert(std.meta.activeTag(on_start.info) != self.state.info or switch (self.state.info) {
+    //     .start => false,
+    //     .err => true,
+    //     .last_tok => |tok| (tok == .element_open)
+    // });
     
-    const on_start = .{ .index = self.index };
-    defer std.debug.assert( self.index >= on_start.index );
-    
-    mainloop: while (self.index < self.buffer.len)
-    : ({
-        // This is to ensure that there is never a state invariant where the result has been changed but not returned.
-        std.debug.assert(result.invalid.index == on_start.index);
-    }) {
-        const current_char = self.buffer[self.index];
-        switch (self.parse_state) {
-            .start
-            => switch (current_char) {
-                ' ', '\t', '\n', '\r',
-                '<',
-                => {
-                    self.index += 1;
-                    self.parse_state = switch (current_char) {
-                        '<', => .@"<",
-                        else => .start_whitespace,
-                    };
-                },
-                
-                else
-                => break :mainloop,
-            },
-            
-            .start_whitespace
-            => switch (current_char) {
-                ' ', '\t', '\n', '\r',
-                => self.index += 1,
-                
-                '<',
-                => {
-                    self.parse_state = .@"<";
-                    result = .{ .empty_whitespace = Range.init(0, self.index) };
-                    self.index += 1;
-                    break :mainloop;
-                },
-                
-                else
-                => break :mainloop,
-            },
-            
-            
-            
-            .@"<"
-            => switch (current_char) {
-                '!', '?', '/',
-                => {
-                    self.index += 1;
-                    self.parse_state = switch (current_char) {
-                        '!', => .@"<!",
-                        '?', => .@"<?",
-                        '/', => .@"</",
-                        else => unreachable,
-                    };
-                },
-                
-                else
-                => if (self.currentIsValidNameStartChar()) {
-                    self.parse_state = .{ .el_open_name_start_char = .{
-                        .start = Index.init(self.index),
-                        .colon = null,
-                    } };
-                    self.index += std.unicode.utf8ByteSequenceLength(current_char)
-                    catch unreachable;
-                } else break :mainloop,
-            },
-            
-            .@"</"
-            => if (self.currentIsValidNameStartChar()) {
-                self.parse_state = .{ .el_close_name_start_char = .{
-                    .start = Index.init(self.index),
-                    .colon = null,
-                } };
-                self.index += std.unicode.utf8ByteSequenceLength(current_char)
-                catch unreachable;
-            } else break :mainloop,
-            
-            .@"<?"
-            => if (self.currentIsValidNameStartChar()) {
-                self.parse_state = .{ .pi_target_name_start_char = Index.init(self.index) };
-                self.index += std.unicode.utf8ByteSequenceLength(current_char)
-                catch unreachable;
-            } else break :mainloop,
-            
-            .@"<!"
-            => switch (current_char) {
-                '-',
-                => {
-                    self.parse_state = .@"<!-";
-                    self.index += 1;
-                },
-                
-                '[',
-                => {
-                    self.parse_state = .{ .@"<![" = .{ .match_index = 0 } };
-                    self.index += 1;
-                },
-                
-                // TODO: Remember to add handling for internal DOCTYPE tokenizing.
-                
-                'D',
-                => unreachable,
-                
-                'E',
-                => unreachable,
-                
-                'A',
-                => unreachable,
-                
-                else
-                => break :mainloop,
-            },
-            
-            .@"<!-"
-            => switch (current_char) {
-                '-',
-                => {
-                    self.index += 1;
-                    self.parse_state = .{ .inside_comment = .{
-                        .start = self.index - ("<!--".len),
-                        .state = .seek_dash,
-                    } };
-                },
-                
-                else
-                => break :mainloop,
-            },
-            
-            .@"<!["
-            => |@"<!["| {
-                const token_string = "CDATA[";
-                switch (@"<![".match_index) {
-                    0...(token_string.len - 1),
+    errdefer std.debug.assert(self.state.info == .err);
+    switch (self.state.info) {
+        .err => return null,
+        .start => {
+            std.debug.assert(self.getIndex() == 0);
+            switch (self.getByte() orelse return self.returnError(Error.PrematureEof)) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => todo(),
+                '<' => return self.tokenizeAfterLeftAngleBracket(),
+                else => return self.returnError(Error.ContentNotAllowedInPrologue)
+            }
+        },
+        
+        .last_tok => |last_tok| {
+            switch (last_tok) {
+                .element_open => switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                    ' ',
+                    '\t',
+                    '\n',
+                    '\r',
                     => {
-                        const is_match = current_char == token_string[@"<![".match_index];
-                        if (!is_match) break :mainloop;
-                        self.parse_state.@"<![".match_index += 1;
-                    },
-                    
-                    token_string.len,
-                    => self.parse_state = .{ .inside_char_data = .{
-                        .start = self.index - ("<![CDATA[".len),
-                        .state = .seek_sbracket,
-                    } },
-                    
-                    else
-                    => unreachable,
-                }
-                
-                self.index += 1;
-            },
-            
-            
-            
-            .el_open_name_start_char
-            => |el_open_name_start_char| switch (current_char) {
-                ' ', '\t', '\n', '\r',
-                '/',
-                => {
-                    result = .{ .element_open = .{
-                        .colon = el_open_name_start_char.colon,
-                        .identifier = Range.init(el_open_name_start_char.start.index, self.index),
-                    } };
-                    
-                    self.parse_state = .{ .el_open_name_end_char = .{
-                        .el_id = result.element_open,
-                        .state = if (current_char == '/') .forward_slash else .whitespace,
-                    } };
-                    
-                    self.index += 1;
-                    break :mainloop;
-                },
-                
-                '>',
-                => {
-                    result = .{ .element_open = .{
-                        .colon = el_open_name_start_char.colon,
-                        .identifier = Range.init(el_open_name_start_char.start.index, self.index),
-                    } };
-                    
-                    self.parse_state = .found_right_angle_bracket;
-                    break :mainloop;
-                },
-                
-                ':',
-                => {
-                    self.parse_state = .{ .el_open_name_start_char = .{
-                        .start = el_open_name_start_char.start,
-                        .colon = Index.init(self.index),
-                    } };
-                    self.index += 1;
-                },
-                
-                else
-                => if (self.currentIsValidNameChar()) {
-                    self.index += std.unicode.utf8ByteSequenceLength(current_char)
-                    catch unreachable;
-                } else break :mainloop,
-            },
-            
-            .el_open_name_end_char
-            => |el_open_name_end_char| switch (el_open_name_end_char.state) {
-                .whitespace
-                => switch (current_char) {
-                    ' ', '\t', '\n', '\r',
-                    => self.index += 1,
-                    
-                    '>',
-                    => {
-                        self.parse_state = .found_right_angle_bracket;
-                    },
-                    
-                    '/',
-                    => {
-                        self.parse_state.el_open_name_end_char.state = .forward_slash;
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => if (self.currentIsValidNameStartChar()) {
-                        self.parse_state.el_open_name_end_char.state = .{ .attribute_name_start_char = Index.init(self.index) };
-                        self.index += std.unicode.utf8ByteSequenceLength(current_char)
-                        catch unreachable;
-                    } else break :mainloop,
-                },
-                
-                .attribute_name_start_char
-                => |attribute_name_start_char| switch (current_char) {
-                    ' ', '\t', '\n', '\r',
-                    '=',
-                    => self.parse_state.el_open_name_end_char.state = .{ .attribute_seek_eql = .{
-                        .beg = attribute_name_start_char.index,
-                        .end = self.index
-                    } },
-                    
-                    // This is required to properly tokenize cases like 'xml:<name>' and 'xmlns:<namespace name>'
-                    ':',
-                    => self.index += 1,
-                    
-                    else
-                    => if (self.currentIsValidNameChar()) {
-                        self.index += std.unicode.utf8ByteSequenceLength(current_char)
-                        catch unreachable;
-                    } else break :mainloop,
-                },
-                
-                .attribute_seek_eql
-                => |attribute_seek_eql| switch (current_char) {
-                    ' ', '\t', '\n', '\r',
-                    => self.index += 1,
-                    
-                    '=',
-                    => {
-                        self.parse_state.el_open_name_end_char.state = .{ .attribute_eql = attribute_seek_eql };
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => break :mainloop,
-                },
-                
-                .attribute_eql
-                => |attribute_eql| switch (current_char) {
-                    ' ', '\t', '\n', '\r',
-                    => self.index += 1,
-                    
-                    '"',
-                    => {
-                        self.parse_state.el_open_name_end_char.state = .{ .attribute_value_start_quote = .{
-                            .name = attribute_eql,
-                            .value_start = Index.init(self.index),
-                        } };
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => break :mainloop,
-                },
-                
-                .attribute_value_start_quote
-                => |attribute_value_start_quote| switch (current_char) {
-                    '"',
-                    => {
-                        self.index += 1;
-                        self.parse_state.el_open_name_end_char.state = .attribute_value_end_quote;
-                        
-                        result = .{ .attribute = .{
-                            .name = attribute_value_start_quote.name,
-                            .val = .{
-                                .beg = attribute_value_start_quote.value_start.index,
-                                .end = self.index,
+                        self.incrByByte();
+                        while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch(char) {
+                            ' ',
+                            '\t',
+                            '\n',
+                            '\r',
+                            => continue,
+                            '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
+                            '>' => {
+                                self.incrByByte();
+                                switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                                    '<' => return self.tokenizeAfterLeftAngleBracket(),
+                                    else => todo()
+                                }
                             },
-                        } };
-                        
-                        break :mainloop;
+                            else => todo()
+                        } else todo();
                     },
                     
-                    else
-                    => self.index += 1,
-                },
-                
-                .attribute_value_end_quote
-                => switch (current_char) {
-                    ' ', '\t', '\n', '\r',
-                    => {
-                        self.parse_state.el_open_name_end_char.state = .whitespace;
-                        self.index += 1;
-                    },
+                    '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
                     
-                    '>',
-                    => self.parse_state = .found_right_angle_bracket,
-                    
-                    '/',
-                    => {
-                        self.parse_state.el_open_name_end_char.state = .forward_slash;
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => break :mainloop,
-                },
-                
-                .forward_slash
-                => switch (current_char) {
-                    '>',
-                    => {
-                        result = .{ .element_close = el_open_name_end_char.el_id };
-                        self.parse_state = .found_right_angle_bracket;
-                        break :mainloop;
-                    },
-                    
-                    else
-                    => break :mainloop,
-                },
-            },
-            
-            
-            
-            .el_close_name_start_char
-            => |el_close_name_start_char| switch (current_char) {
-                ' ', '\t', '\n', '\r',
-                '>',
-                => {
-                    result = .{ .element_close = .{
-                        .colon = el_close_name_start_char.colon,
-                        .identifier = .{
-                            .beg = el_close_name_start_char.start.index,
-                            .end = self.index,
+                    '>' => {
+                        self.incrByByte();
+                        switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                            '<' => return self.tokenizeAfterLeftAngleBracket(),
+                            else => todo()
                         }
-                    } };
-                    self.parse_state = .el_close_name_end_char;
-                    
-                    if (current_char == '>' and self.index == self.buffer.len) {
-                        self.parse_state = .eof;
-                        result = .eof;
-                        break :mainloop;
-                    }
-                    
-                    break :mainloop;
+                    },
+                    else => unreachable,
                 },
                 
-                ':',
-                => {
-                    self.parse_state.el_close_name_start_char.colon = Index.init(self.index);
-                    self.index += 1;
-                },
-                
-                else
-                => if (self.currentIsValidNameChar()) {
-                    self.index += std.unicode.utf8ByteSequenceLength(current_char)
-                    catch unreachable;
-                } else break :mainloop,
-            },
-            
-            .el_close_name_end_char
-            => switch (current_char) {
-                ' ', '\t', '\n', '\r',
-                => self.index += 1,
-                
-                '>',
-                => self.parse_state = .found_right_angle_bracket,
-                
-                else
-                => break :mainloop,
-            },
-            
-            
-            
-            .pi_target_name_start_char
-            => |pi_target_name_start_char| switch (current_char) {
-                ' ', '\t', '\n', '\r', '?',
-                => {
-                    self.parse_state = .{ .pi_target_name_end_char = .{
-                        .target = Range.init(pi_target_name_start_char.index, self.index),
-                        .state = if (current_char == '?') .found_qm else .seek_qm,
-                    } };
-                    self.index += 1;
-                },
-                
-                else
-                => if (self.currentIsValidNameChar()) {
-                    self.index += std.unicode.utf8ByteSequenceLength(current_char)
-                    catch unreachable;
-                } else break :mainloop,
-            },
-            
-            .pi_target_name_end_char
-            => |pi_target_name_end_char| switch (pi_target_name_end_char.state) {
-                .seek_qm,
-                => switch (current_char) {
-                    '"',
-                    => {
-                        self.parse_state.pi_target_name_end_char.state = .in_string;
-                        self.index += 1;
-                    },
-                    
-                    '?',
-                    => {
-                        self.parse_state.pi_target_name_end_char.state = .found_qm;
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => self.index += 1,
-                },
-                
-                .in_string
-                => switch (current_char) {
-                    '"',
-                    => {
-                        self.parse_state.pi_target_name_end_char.state = .seek_qm;
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => {
-                        self.index += 1;
-                    },
-                },
-                
-                .found_qm
-                => switch (current_char) {
-                    '>',
-                    => {
-                        result = .{ .processing_instructions = .{
-                            .target = pi_target_name_end_char.target,
-                            .instructions = Range.init(pi_target_name_end_char.target.end + 1, self.index - 1),
-                        } };
-                        
-                        self.parse_state = .found_right_angle_bracket;
-                        break :mainloop;
-                    },
-                    
-                    else
-                    => {
-                        break :mainloop;
-                    },
-                },
-            },
-            
-            
-            
-            .inside_comment
-            => |inside_comment| switch (inside_comment.state) {
-                .seek_dash,
-                => switch (current_char) {
-                    '-',
-                    => {
-                        self.parse_state.inside_comment.state = .found_dash1;
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => self.index += 1,
-                },
-                
-                .found_dash1,
-                => switch (current_char) {
-                    '-',
-                    => {
-                        self.parse_state.inside_comment.state = .found_dash2;
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => {
-                        self.parse_state.inside_comment.state = .seek_dash;
-                        self.index += 1;
+                .element_close_tag => {
+                    std.debug.assert(self.getUtf8().? == '>');
+                    self.incrByByte();
+                    switch (self.getUtf8() orelse return null) {
+                        else => todo()
                     }
                 },
                 
-                .found_dash2,
-                => switch (current_char) {
-                    '>',
-                    => {
-                        self.parse_state = .found_right_angle_bracket;
-                        result = .{ .comment = Token.Comment.init(inside_comment.start, self.index + 1) };
-                        break :mainloop;
-                    },
-                    
-                    else
-                    => break :mainloop,
-                },
-            },
-            
-            .inside_char_data
-            => |inside_char_data| switch (inside_char_data.state) {
-                .seek_sbracket
-                => switch (current_char) {
-                    ']',
-                    => {
-                        self.parse_state.inside_char_data.state = .found_sbracket1;
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => self.index += 1,
+                .element_close_inline => {
+                    std.debug.assert(self.getUtf8().? == '>');
+                    self.incrByByte();
+                    switch (self.getUtf8() orelse return null) {
+                        else => todo()
+                    }
                 },
                 
-                .found_sbracket1
-                => switch (current_char) {
-                    ']',
-                    => {
-                        self.parse_state.inside_char_data.state = .found_sbracket2;
-                        self.index += 1;
-                    },
-                    
-                    else
-                    => {
-                        self.parse_state.inside_char_data.state = .seek_sbracket;
-                        self.index += 1;
-                    },
+                .attribute_name => |attribute_name| {
+                    _ = attribute_name;
+                    todo();
                 },
                 
-                .found_sbracket2
-                => switch (current_char) {
-                    '>',
-                    => {
-                        self.parse_state = .found_right_angle_bracket;
-                        result = .{ .char_data = Token.CharData.init(inside_char_data.start, self.index + 1) };
-                        break :mainloop;
-                    },
-                    
-                    else
-                    => {
-                        self.parse_state.inside_char_data.state = .seek_sbracket;
-                        self.index += 1;
-                    },
+                .attribute_value_segment => |attribute_value_segment| {
+                    _ = attribute_value_segment;
+                    todo();
                 },
-            },
-            
-            
-            
-            .found_right_angle_bracket
-            => {
-                self.index += 1;
-                self.parse_state = .{ .@">" = .{
-                    .start = Index.init(self.index),
-                    .non_whitespace_chars = false,
-                } };
                 
-                if (self.index == self.buffer.len) {
-                    result = .eof;
-                    break :mainloop;
-                }
-            },
-            
-            .@">"
-            => |@">"| {
-                const range = Range {
-                    .beg = @">".start.index,
-                    .end = self.index,
-                };
+                .comment => |comment| {
+                    _ = comment;
+                    todo();
+                },
                 
-                switch (current_char) {
-                    '<',
-                    => {
-                        const end_of_file_condition = self.index == self.buffer.len;
-                        const at_least_whitespace_found = self.index != @">".start.index;
-                        
-                        if (at_least_whitespace_found) {
-                            result =
-                            if (@">".non_whitespace_chars) .{ .text = range, }
-                            else .{ .empty_whitespace = range };
-                        }
-                        
-                        self.parse_state = .@"<";
-                        self.index += 1;
-                        
-                        if (end_of_file_condition) {
-                            result = .{ .invalid = Index.init(self.index) };
-                        }
-                        
-                        if (at_least_whitespace_found or end_of_file_condition) {
-                            break :mainloop;
-                        }
-                    },
+                .cdata => |cdata| {
+                    _ = cdata;
+                    todo();
+                },
+                
+                .text => |text| {
+                    _ = text;
+                    todo();
+                },
+                
+                .whitespace => |whitespace| {
+                    _ = whitespace;
+                    todo();
+                },
+                
+                .pi_target => |pi_target| {
+                    _ = pi_target;
+                    todo();
+                },
+                
+                .pi_token => |pi_token| {
+                    _ = pi_token;
+                    todo();
+                },
+            }
+        },
+    }
+}
+
+inline fn todo() noreturn {
+    unreachable;
+}
+
+fn tokenizeAfterElementOpenWhitespaceSlash(self: *TokenStream) NextRet {
+    const start_index = self.getIndex();
+    self.incrByByte();
+    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+        '>' => return self.returnToken(Token.init(start_index, .element_close_inline)),
+        else => return self.returnError(Error.ExpectedClosingTag),
+    }
+}
+
+fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
+    std.debug.assert(self.getUtf8().? == '<');
+    const start_index = self.getIndex();
+    
+    self.incrByByte();
+    switch (self.getUtf8() orelse return self.returnError(Error.Malformed)) {
+        '/' => {
+            self.incrByByte();
+            if (!xml.isValidUtf8NameStartChar(self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag))) {
+                return self.returnError(Error.InvalidNameStartChar);
+            }
+            
+            self.incrByUtf8Len();
+            
+            var prefix_len: usize = 0;
+            var identifier_len: usize = 1;
+            
+            blk_while0: while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => while (self.getUtf8()) |notnamechar| : (self.incrByUtf8Len()) switch (notnamechar) {
+                    ' ',
+                    '\t',
+                    '\n',
+                    '\r',
+                    => {},
+                    '>' => break :blk_while0,
+                    else => return self.returnError(Error.ExpectedClosingTag),
+                } else return self.returnError(Error.ExpectedClosingTag),
+                
+                ':' => {
+                    if (prefix_len != 0) {
+                        return self.returnError(Error.InvalidNameChar);
+                    }
                     
-                    ' ', '\t', '\n', '\r',
-                    => {
-                        self.index += 1;
-                        if (self.index == self.buffer.len) {
-                            result = .eof;
-                            break :mainloop;
-                        }
-                    },
+                    prefix_len = identifier_len;
+                    identifier_len = 0;
                     
-                    else
-                    => {
-                        self.parse_state.@">".non_whitespace_chars = true;
-                        self.index += 1;
-                        if (self.index == self.buffer.len) {
-                            result = .eof;
-                            break :mainloop;
-                        }
-                    },
-                }
+                    self.incrByByte();
+                    const maybe_codepoint = self.getUtf8();
+                    if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
+                        return self.returnError(Error.InvalidNameStartChar);
+                    }
+                    
+                    identifier_len += unicode.utf8CodepointSequenceLength(maybe_codepoint.?) catch unreachable;
+                },
                 
-            },
+                '>' => break,
+                
+                else => {
+                    if (!xml.isValidUtf8NameChar(char))
+                        return self.returnError(Error.InvalidNameChar)
+                    else {
+                        identifier_len += unicode.utf8CodepointSequenceLength(char) catch unreachable;
+                    }
+                },
+            } else return self.returnError(Error.ExpectedClosingTag);
             
-            .eof
-            => unreachable,
+            std.debug.assert(self.getUtf8().? == '>');
+            
+            const info = .{ .prefix_len = prefix_len, .identifier_len = identifier_len, .full_len = (self.getIndex() + 1) - start_index };
+            const result = Token.initTag(start_index, .element_close_tag, info);
+            return self.returnToken(result);
+        },
+        
+        '?' => todo(),
+        '!' => todo(),
+        
+        else => {
+            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
+                return self.returnError(Error.InvalidNameStartChar);
+            }
+            
+            self.incrByUtf8Len();
+            
+            var prefix_len: usize = 0;
+            
+            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                '/',
+                '>',
+                => break,
+                
+                ':' => {
+                    if (prefix_len != 0) {
+                        return self.returnError(Error.InvalidNameChar);
+                    }
+                    prefix_len = self.getIndex() - (start_index + ("<".len));
+                    
+                    self.incrByByte();
+                    const maybe_codepoint = self.getUtf8();
+                    if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
+                        return self.returnError(Error.InvalidNameStartChar);
+                    }
+                },
+                
+                else => if (!xml.isValidUtf8NameChar(char))
+                    return self.returnError(Error.InvalidNameChar),
+            } else return self.returnError(Error.ExpectedClosingTag);
+            
+            std.debug.assert(switch (self.getUtf8().?) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                '/',
+                '>',
+                => true,
+                else => false,
+            });
+            
+            const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
+            const result = Token.initTag(start_index, .element_open, info);
+            return self.returnToken(result);
         }
     }
-    
-    if (result == .invalid and self.index < self.buffer.len) {
-        result.invalid.index = self.index;
+}
+
+
+
+fn returnToken(self: *TokenStream, tok: Token) NextRet {
+    self.state.info = .{ .last_tok = tok.info };
+    return @as(NextRet, tok);
+}
+
+fn returnError(self: *TokenStream, err: Error) NextRet {
+    self.state.info = .{ .err = err };
+    return @as(NextRet, err);
+}
+
+
+
+/// Expects and asserts that the current UTF8 codepoint is valid.
+fn incrByUtf8Len(self: *TokenStream) void {
+    const codepoint = self.getUtf8() orelse return;
+    self.state.index += unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
+}
+
+/// Asserts that the current utf8 codepoint is exactly one byte long,
+/// thus ensuring that subsequent traversal will be valid.
+fn incrByByte(self: *TokenStream) void {
+    requirements: {
+        const codepoint = self.getUtf8() orelse std.debug.panic("Invalid UTF8 codepoint or EOF encountered when trying to increment by a single byte.", .{});
+        const codepoint_len = unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
+        std.debug.assert(codepoint_len == 1);
+        break :requirements;
     }
-    
-    return result;
+    self.state.index += 1;
 }
 
-fn currentUtf8Codepoint(self: TokenStream) ?u21 {
-    const utf8_cp_len = std.unicode.utf8ByteSequenceLength(self.buffer[self.index]) catch return null;
-    if (self.index + utf8_cp_len > self.buffer.len) return null;
-    return std.unicode.utf8Decode(self.buffer[self.index..self.index + utf8_cp_len]) catch null;
+fn getUtf8(self: TokenStream) ?u21 {
+    const start_byte = self.getByte() orelse return null;
+    const sequence_len = unicode.utf8ByteSequenceLength(start_byte) catch return null;
+    
+    const beg = self.state.index;
+    const end = beg + sequence_len;
+    if (end > self.buffer.len) return null;
+    
+    return unicode.utf8Decode(self.buffer[beg..end]) catch null;
 }
 
-fn currentIsValidNameChar(self: TokenStream) bool {
-    const current_cp = self.currentUtf8Codepoint();
-    const invalid_cp = current_cp == null or !isValidNameCharUtf8(current_cp.?);
-    return !invalid_cp;
+fn getByte(self: TokenStream) ?u8 {
+    const index = self.state.index;
+    const buffer = self.buffer;
+    const in_range = (index < buffer.len);
+    return if (in_range) buffer[index] else null;
 }
 
-fn currentIsValidNameStartChar(self: TokenStream) bool {
-    const current_cp = self.currentUtf8Codepoint();
-    const invalid_cp = current_cp == null or !isValidNameStartCharUtf8(current_cp.?);
-    return !invalid_cp;
+/// For convenience
+fn getIndex(self: TokenStream) usize {
+    return self.state.index;
 }
 
-const isValidNameStartCharUtf8 = xml.isValidNameStartCharUtf8;
-const isValidNameCharUtf8 = xml.isValidNameCharUtf8;
 
-test "T0" {
-    const xml_text = 
-        \\<book>
-        // not well formed, since the namespace declaration for 'test' doesn't exist;
-        // this is just to make sure that namespaces are captured correctly.
-        \\    <test:extra discount = "20%"/>
-        \\    <title lang="en" lang2= "ge" >Learning XML</title >
-        \\    <author>Erik T. Ray</author>
-        \\</book>
-    ;
-    
-    var tokenizer = TokenStream { .buffer = xml_text };
-    var current: Token = .bof;
-    
-    current = tokenizer.next();
-    try expectEqualElementOpen(xml_text, current, null, "book");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualElementOpen(xml_text, current, "test", "extra");
-        
-            current = tokenizer.next();
-            try expectEqualAttribute(xml_text, current,"discount", "20%");
-            
-        current = tokenizer.next();
-        try expectEqualElementClose(xml_text, current, "test", "extra");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualElementOpen(xml_text, current, null, "title");
-            
-            current = tokenizer.next();
-            try expectEqualAttribute(xml_text, current, "lang", "en");
-            
-            current = tokenizer.next();
-            try expectEqualAttribute(xml_text, current, "lang2",  "ge");
-            
-            current = tokenizer.next();
-            try expectEqualText(xml_text, current, "Learning XML");
-            
-        current = tokenizer.next();
-        try expectEqualElementClose(xml_text, current, null, "title");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualEmptyWhitespace(xml_text, current, "\n    ");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualElementOpen(xml_text, current, null, "author");
-            
-            current = tokenizer.next();
-            try expectEqualText(xml_text, current, "Erik T. Ray");
-            
-        current = tokenizer.next();
-        try expectEqualElementClose(xml_text, current, null, "author");
-        
-        
-        
-        current = tokenizer.next();
-        try expectEqualEmptyWhitespace(xml_text, current, "\n");
-        
-        
-        
-    current = tokenizer.next();
-    try expectEqualElementClose(xml_text, current, null, "book");
-    
-    current = tokenizer.next();
-    try testing.expect(current == .eof);
-    
-    current = tokenizer.next();
-    try testing.expect(current == .invalid);
-    
-}
 
-test "Empty Element with attributes" {
-    const xml_text =
-        \\<book title="Don Quijote" author="Miguel Cervantes"/>
-    ;
+const State = struct {
+    index: usize = 0,
+    info: Info = .start,
     
-    var tokenizer = TokenStream { .buffer = xml_text };
-    var current: Token = .bof;
-    
-    current = tokenizer.next();
-    try expectEqualElementOpen(xml_text, current, null, "book");
-    
-    current = tokenizer.next();
-    try expectEqualAttribute(xml_text, current, "title", "Don Quijote");
-    
-    current = tokenizer.next();
-    try expectEqualAttribute(xml_text, current, "author", "Miguel Cervantes");
-    
-    current = tokenizer.next();
-    try expectEqualElementClose(xml_text, current, null, "book");
-    
-    current = tokenizer.next();
-    try testing.expect(current == .eof);
-    
-    current = tokenizer.next();
-    try testing.expect(current == .invalid);
-    
-}
+    const Info = union(enum) {
+        err: Error,
+        start,
+        last_tok: Token.Info,
+    };
+};
 
-test "Tag Whitespace Variants" {
-    const xml_text =
-        \\<person/>
-        \\<person />
-        \\<person></person>
-        \\<person ></person >
-        \\<person></person >
-        \\<person ></person>
-
-        \\<person id="0"/>
-        \\<person id ="0"/>
-        \\<person id= "0"/>
-        \\<person id = "0"/>
-
-        \\<person id="0" />
-        \\<person id ="0" />
-        \\<person id= "0" />
-        \\<person id = "0" />
-
-        \\<person id="0"></person>
-        \\<person id ="0"></person>
-        \\<person id= "0"></person>
-        \\<person id = "0"></person>
-
-        \\<person id="0" ></person>
-        \\<person id ="0" ></person>
-        \\<person id= "0" ></person>
-        \\<person id = "0" ></person>
-
-        \\<person id="0"></person >
-        \\<person id ="0"></person >
-        \\<person id= "0"></person >
-        \\<person id = "0"></person >
-
-        \\<person id="0" ></person >
-        \\<person id ="0" ></person >
-        \\<person id= "0" ></person >
-        \\<person id = "0" ></person >
-    ;
-    
-    const initial_elements_with_no_attributes = 6;
-    const element_count = std.mem.count(u8, xml_text, "\n");
-    
-    var tokenizer = TokenStream { .buffer = xml_text };
-    var current: Token = .bof;
-    
-    
-    { // First five elements with no attribute
-        var idx: usize = 0;
-        errdefer std.debug.print("\nOn iteration {}\n", .{idx});
-        
-        while (idx < initial_elements_with_no_attributes) : (idx += 1) {
-            current = tokenizer.next();
-            try expectEqualElementOpen(xml_text, current, null, "person");
+const tests = struct {
+    const expect_token = struct {
+        fn elementOpen(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
+            const tok: Token = try (maybe_tok orelse error.NullToken);
             
-            current = tokenizer.next();
-            try expectEqualElementClose(xml_text, current, null, "person");
+            const full_slice: []const u8 = blk: {
+                const to_be_joined: []const []const u8 = if (prefix) |prfx| &.{ "<", prfx, ":", name } else &.{ "<", name };
+                break :blk try std.mem.concat(testing.allocator, u8, to_be_joined);
+            };
+            defer testing.allocator.free(full_slice);
             
-            current = tokenizer.next();
-            try expectEqualEmptyWhitespace(xml_text, current, "\n");
+            try testing.expect(tok.info == .element_open);
+            try testing.expectEqualStrings(tok.slice(src), full_slice);
+            try testing.expectEqualStrings(tok.method(.element_open, "name", src), name);
+            if (prefix) |prfx| {
+                try testing.expectEqualStrings(tok.method(.element_open, "prefix", src).?, prfx);
+            } else {
+                try testing.expectEqual(tok.method(.element_open, "prefix", src), null);
+            }
         }
-    }
-    
-    { // All the rest
-        var idx: usize = 0;
-        errdefer std.debug.print("\nOn iteration {} (after first set)\n", .{idx});
         
-        while (idx < (element_count - initial_elements_with_no_attributes)) : (idx += 1) {
-            current = tokenizer.next();
-            try expectEqualElementOpen(xml_text, current, null, "person");
+        fn elementCloseTag(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
+            const tok: Token = try (maybe_tok orelse error.NullToken);
             
-            current = tokenizer.next();
-            try expectEqualAttribute(xml_text, current, "id", "0" );
+            try testing.expect(tok.info == .element_close_tag);
             
-            current = tokenizer.next();
-            try expectEqualElementClose(xml_text, current, null, "person");
+            try testing.expectEqualStrings(tok.slice(src)[0..2], "</");
+            try testing.expectEqualStrings(tok.slice(src)[tok.slice(src).len - 1..], ">");
             
-            current = tokenizer.next();
-            try expectEqualEmptyWhitespace(xml_text, current, "\n");
+            try testing.expectEqualStrings(tok.method(.element_close_tag, "name", src), name);
+            if (prefix) |prfx| {
+                try testing.expectEqualStrings(tok.method(.element_close_tag, "prefix", src).?, prfx);
+            } else {
+                try testing.expectEqual(tok.method(.element_close_tag, "prefix", src), null);
+            }
         }
-    }
-    
-}
-
-test "Comments" {
-    const xml_text = 
-        \\<!-- faf -->
-        \\<!---->
-        \\<!--- -->
-    ;
-    
-    var tokenizer = TokenStream { .buffer = xml_text };
-    var current: Token = .bof;
-    
-    current = tokenizer.next();
-    try testing.expect(current == .comment);
-    try testing.expectEqualStrings(" faf ", current.comment.data(xml_text));
-    
-    current = tokenizer.next();
-    try expectEqualEmptyWhitespace(xml_text, current, "\n");
-    
-    current = tokenizer.next();
-    try testing.expect(current == .comment);
-    try testing.expectEqualStrings("", current.comment.data(xml_text));
-    
-    current = tokenizer.next();
-    try expectEqualEmptyWhitespace(xml_text, current, "\n");
-    
-    current = tokenizer.next();
-    try testing.expect(current == .comment);
-    try testing.expectEqualStrings("- ", current.comment.data(xml_text));
-    
-    current = tokenizer.next();
-    try testing.expect(current == .eof);
-    
-    current = tokenizer.next();
-    try testing.expect(current == .invalid);
-    
-}
-
-test "Processing Instructions" {
-    const xml_text = 
-        \\<?faf ""?>
-        \\<?did moob?>
-        \\<?xml encoding="UTF-8"?>
-    ;
-    
-    var tokenizer = TokenStream { .buffer = xml_text };
-    var current: Token = .bof;
-    
-    current = tokenizer.next();
-    try expectEqualProcessingInstructions(xml_text, current, "faf", "\"\"");
-    
-    current = tokenizer.next();
-    try expectEqualEmptyWhitespace(xml_text, current, "\n");
-    
-    current = tokenizer.next();
-    try expectEqualProcessingInstructions(xml_text, current, "did", "moob");
-    
-    current = tokenizer.next();
-    try expectEqualEmptyWhitespace(xml_text, current, "\n");
-    
-    current = tokenizer.next();
-    try expectEqualProcessingInstructions(xml_text, current, "xml", "encoding=\"UTF-8\"");
-    
-    current = tokenizer.next();
-    try testing.expect(current == .eof);
-    
-    current = tokenizer.next();
-    try testing.expect(current == .invalid);
-}
-
-test "UTF-8" {
-    const xml_text =
-        \\<text name="opôpomòz" info="Ïñí" />
-    ;
-    
-    var tokenizer = TokenStream { .buffer = xml_text };
-    var current: Token = .bof;
-    
-    current = tokenizer.next();
-    try expectEqualElementOpen(xml_text, current, null, "text");
-    
-    current = tokenizer.next();
-    try expectEqualAttribute(xml_text, current, "name", "opôpomòz");
-    
-    current = tokenizer.next();
-    try expectEqualAttribute(xml_text, current, "info", "Ïñí");
-    
-    current = tokenizer.next();
-    try expectEqualElementClose(xml_text, current, null, "text");
-    
-    current = tokenizer.next();
-    try testing.expect(current == .eof);
-    
-    current = tokenizer.next();
-    try testing.expect(current == .invalid);
-}
-
-test "CDATA Section" {
-    const xml_text =
-        \\<a >this is<![CDATA[<not real="markup"/>]]></a >
-    ;
-    
-    var tokenizer = TokenStream { .buffer = xml_text };
-    var current: Token = .bof;
-    
-    current = tokenizer.next();
-    try expectEqualElementOpen(xml_text, current, null, "a");
-    
-    current = tokenizer.next();
-    try expectEqualText(xml_text, current, "this is");
-    
-    current = tokenizer.next();
-    try expectEqualCharDataSection(xml_text, current, \\<not real="markup"/>
-    );
-    
-    current = tokenizer.next();
-    try expectEqualElementClose(xml_text, current, null, "a");
-    
-    current = tokenizer.next();
-    try testing.expect(current == .eof);
-    
-    current = tokenizer.next();
-    try testing.expect(current == .invalid);
-}
-
-fn expectEqualElementIdNamespace(
-    xml_text: []const u8,
-    el_id: Token.ElementId,
-    expect_opt_namespace: ?[]const u8,
-) !void {
-    const got_opt_namespace = el_id.namespace(xml_text);
-    
-    if (expect_opt_namespace) |expect_namespace| {
-        // Either both or neither must be null for succeeding the test.
-        try testing.expect(got_opt_namespace != null);
         
-        const got_namespace = got_opt_namespace.?;
-        try testing.expectEqualStrings(expect_namespace, got_namespace);
-    } else {
-        // Either both or neither must be null for succeeding the test.
-        try testing.expect(got_opt_namespace == null);
+        fn elementCloseInline(src: []const u8, maybe_tok: NextRet) !void {
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            try testing.expect(tok.info == .element_close_inline);
+            try testing.expectEqualStrings(tok.slice(src), "/>");
+        }
+        
+        fn isNull(maybe_tok: NextRet) !void {
+            try testing.expect(maybe_tok == null);
+        }
+        
+        fn isError(maybe_tok: NextRet, err: Error) !void {
+            try testing.expectError(err, maybe_tok orelse return error.NullToken);
+        }
+    };
+    
+    fn expectElementOpen(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
+        try expect_token.elementOpen(ts.buffer, ts.next(), prefix, name);
+    }
+    
+    fn expectElementCloseTag(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
+        try expect_token.elementCloseTag(ts.buffer, ts.next(), prefix, name);
+    }
+    
+    fn expectElementCloseInline(ts: *TokenStream) !void {
+        try expect_token.elementCloseInline(ts.buffer, ts.next());
+    }
+    
+    fn expectNull(ts: *TokenStream) !void {
+        try expect_token.isNull(ts.next());
+    }
+    
+    fn expectError(ts: *TokenStream, err: Error) !void {
+        try expect_token.isError(ts.next(), err);
+    }
+};
+
+test "simple empty tags 1" {
+    var ts = TokenStream.init(undefined);
+    
+    inline for (.{"<empty/>", "<empty    />"}) |src| {
+        ts.reset(src);
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+    }
+    
+    inline for (.{"<pree:empty/>", "<pree:empty    />"}) |src| {
+        ts.reset(src);
+        try tests.expectElementOpen(&ts, "pree", "empty");
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
     }
 }
 
-fn expectEqualElementIdName(
-    xml_text: []const u8, 
-    el_id: Token.ElementId, 
-    expect_name: []const u8,
-) !void {
-    const got_name = el_id.name(xml_text);
-    try testing.expectEqualStrings(expect_name, got_name);
-}
-
-fn expectEqualElementIdIdentifier(
-    xml_text: []const u8,
-    el_id: Token.ElementId,
-    expect_opt_namespace: ?[]const u8,
-    expect_name: []const u8,
-) !void {
-    try expectEqualElementIdNamespace(xml_text, el_id, expect_opt_namespace);
-    try expectEqualElementIdName(xml_text, el_id, expect_name);
+test "simple empty tags 2" {
+    var ts = TokenStream.init(undefined);
     
-    const expect_identifier
-    = if (expect_opt_namespace) |ns| try std.mem.join(testing.allocator, ":", &.{ns, expect_name})
-    else expect_name;
-    
-    defer if (expect_opt_namespace != null) testing.allocator.free(expect_identifier);
-    
-    try testing.expectEqualStrings(expect_identifier, el_id.identifier.slice(xml_text));
-}
-
-
-
-fn expectEqualElementOpen(
-    xml_text: []const u8,
-    tok: Token,
-    expect_opt_namespace: ?[]const u8,
-    expect_name: []const u8,
-) !void {
-    try testing.expect(tok == .element_open);
-    const el_id = tok.element_open;
-    
-    try expectEqualElementIdIdentifier(xml_text, el_id, expect_opt_namespace, expect_name);
-}
-
-fn expectEqualText(
-    xml_text: []const u8,
-    tok: Token,
-    text: []const u8
-) !void {
-    try testing.expect(tok == .text);
-    try testing.expectEqualStrings(text, tok.text.slice(xml_text));
-}
-
-fn expectEqualEmptyWhitespace(
-    xml_text: []const u8,
-    tok: Token,
-    expect_whitespace: []const u8,
-) !void {
-    for (expect_whitespace) |char| {
-        // `expectEqualEmptyWhitespace` expects whitespace characters only.
-        std.debug.assert(switch (char) {
-            ' ', '\t', '\n', '\r', => true,
-            else                   => false,
-        });
+    inline for (.{
+        "<empty></empty>",
+        "<empty></empty    >",
+        "<empty    ></empty>",
+        "<empty    ></empty    >",
+    }) |src| {
+        ts.reset(src);
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectElementCloseTag(&ts, null, "empty");
+        try tests.expectNull(&ts);
     }
     
-    try testing.expect(tok == .empty_whitespace);
-    const got_whitespace = tok.empty_whitespace.slice(xml_text);
-    
-    try testing.expectEqualStrings(expect_whitespace, got_whitespace);
-}
-
-fn expectEqualElementClose(
-    xml_text: []const u8,
-    tok: Token,
-    expect_opt_namespace: ?[]const u8,
-    expect_name: []const u8
-) !void {
-    try testing.expect(tok == .element_close);
-    const el_id = tok.element_close;
-    
-    try expectEqualElementIdIdentifier(xml_text, el_id, expect_opt_namespace, expect_name);
-}
-
-fn expectEqualAttributeName(
-    xml_text: []const u8,
-    attr: Token.Attribute,
-    expect_name: []const u8,
-) !void {
-    try testing.expectEqualStrings(expect_name, attr.name.slice(xml_text));
-}
-
-fn expectEqualAttributeValue(
-    xml_text: []const u8,
-    attr: Token.Attribute,
-    expect_value: []const u8,
-) !void {
-    const expect_value_with_quotes = try std.mem.join(testing.allocator, "", &.{ "\"", expect_value, "\"" });
-    defer testing.allocator.free(expect_value_with_quotes);
-    
-    const got_value = attr.value(xml_text);
-    const got_value_with_quotes = attr.val.slice(xml_text);
-    
-    try testing.expectEqualStrings(expect_value,             got_value);
-    try testing.expectEqualStrings(expect_value_with_quotes, got_value_with_quotes);
-}
-
-fn expectEqualAttribute(
-    xml_text: []const u8,
-    tok: Token,
-    expect_name: []const u8,
-    expect_val: []const u8,
-) !void {
-    try testing.expect(tok == .attribute);
-    const attr = tok.attribute;
-    try expectEqualAttributeName(xml_text, attr, expect_name);
-    try expectEqualAttributeValue(xml_text, attr, expect_val);
-}
-
-fn expectEqualProcessingInstructions(
-    xml_text: []const u8,
-    tok: Token,
-    expect_target: []const u8,
-    expect_instructions: []const u8,
-) !void {
-    try testing.expect(tok == .processing_instructions);
-    const pi_instructions = tok.processing_instructions;
-    
-    const got_target = pi_instructions.target.slice(xml_text);
-    const got_instructions = pi_instructions.instructions.slice(xml_text);
-    const got_slice = pi_instructions.slice(xml_text);
-    
-    try testing.expectEqualStrings(expect_target, got_target);
-    try testing.expectEqualStrings(expect_instructions, got_instructions);
-    
-    const expect_slice = try std.mem.join(testing.allocator, "", &.{ "<?", got_target, " ", got_instructions, "?>" });
-    defer testing.allocator.free(expect_slice);
-    
-    try testing.expectEqualStrings(expect_slice, got_slice);
-}
-
-fn expectEqualCharDataSection(
-    xml_text: []const u8,
-    tok: Token,
-    expect_data: []const u8,
-) !void {
-    try testing.expect(tok == .char_data);
-    const char_data = tok.char_data;
-    
-    const got_data = char_data.data(xml_text);
-    try testing.expectEqualStrings(expect_data, got_data);
+    inline for (.{
+        "<pree:empty></pree:empty>",
+        "<pree:empty></pree:empty    >",
+        "<pree:empty    ></pree:empty>",
+        "<pree:empty    ></pree:empty    >",
+    }) |src| {
+        ts.reset(src);
+        try tests.expectElementOpen(&ts, "pree", "empty");
+        try tests.expectElementCloseTag(&ts, "pree", "empty");
+        try tests.expectNull(&ts);
+    }
 }
