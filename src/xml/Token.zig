@@ -74,6 +74,7 @@ pub const Info = union(enum) {
     element_close_inline: ElementCloseInline,
     
     attribute_name: AttributeName,
+    attribute_value_segment: AttributeValueSegment,
     
     comment: Comment,
     cdata: CharDataSection,
@@ -209,6 +210,51 @@ pub const Info = union(enum) {
         }
     };
     
+    pub const AttributeValueSegment = union(enum) {
+        text: @This().Text,
+        entity_ref: @This().EntityRef,
+        
+        comptime {
+            std.debug.assert(allVariantsHaveSliceFunc(@This()));
+        }
+        
+        pub const Text = struct {
+            len: usize,
+            
+            pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+                const beg = index;
+                const end = beg + self.len;
+                return src[beg..end];
+            }
+        };
+        
+        pub const EntityRef = struct {
+            len: usize,
+            
+            pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+                const beg = index;
+                const end = beg + self.len;
+                return src[beg..end];
+            }
+            
+            pub fn name(self: @This(), index: usize, src: []const u8) []const u8 {
+                const sliced = self.slice(index, src);
+                const beg = ("&".len);
+                const end = sliced.len - (";".len);
+                return sliced[beg..end];
+            }
+        };
+        
+        pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+            inline for (comptime std.meta.fieldNames(@This())) |name| {
+                if (@field(@This(), name) == self)
+                    return @field(self, name).slice(index, src);
+            }
+            
+            unreachable;
+        }
+    };
+    
     pub const Comment = DataSection("<!--", "-->");
     pub const CharDataSection = DataSection("<![CDATA[", "]]>");
     
@@ -231,9 +277,9 @@ pub const Info = union(enum) {
     
     pub const ProcessingInstructionsToken = union(enum) {
         name: Length,
-        eql: Eql,
-        string: QuotedString,
-        end_tag: EndTag,
+        eql: @This().Eql,
+        string: @This().QuotedString,
+        end_tag: @This().EndTag,
         
         // Assert that all info variants have a `slice` method
         comptime {
