@@ -17,13 +17,7 @@ pub fn initTag(index: usize, comptime tag: std.meta.Tag(Info), value: std.meta.T
 }
 
 pub fn slice(self: Token, src: []const u8) []const u8 {
-    inline for (comptime std.meta.fieldNames(Info)) |field_name| {
-        if (@field(Info, field_name) == self.info) {
-            return @field(self.info, field_name).slice(self.index, src);
-        }
-    }
-    
-    unreachable;
+    return self.info.slice(self.index, src);
 }
 
 pub fn method(self: Token, comptime field: std.meta.Tag(Info), comptime func_name: []const u8, src: []const u8) blk_type: {
@@ -78,6 +72,8 @@ pub const Info = union(enum) {
     
     comment: Comment,
     cdata: CharDataSection,
+    text: Text,
+    whitespace: Whitespace,
     
     pi_target: ProcessingInstructionsTarget,
     pi_token: ProcessingInstructionsToken,
@@ -87,33 +83,14 @@ pub const Info = union(enum) {
         std.debug.assert(allVariantsHaveSliceFunc(@This()));
     }
     
-    pub const Length = struct {
-        len: usize,
-        
-        pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-            const beg = index;
-            const end = index + self.len;
-            return src[beg..end];
+    pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+        inline for (comptime std.meta.fieldNames(Info)) |field_name| {
+            if (@field(Info, field_name) == self) {
+                return @field(self, field_name).slice(index, src);
+            }
         }
-    };
-    
-    fn DataSection(comptime start_tag: []const u8, comptime end_tag: []const u8) type {
-        return struct {
-            full_len: usize,
-            
-            pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-                const beg = index;
-                const end = beg + self.full_len;
-                return src[beg..end];
-            }
-            
-            pub fn data(self: @This(), index: usize, src: []const u8) []const u8 {
-                const sliced = self.slice(index, src);
-                const beg = start_tag.len;
-                const end = sliced.len - end_tag.len;
-                return sliced[beg..end];
-            }
-        };
+        
+        unreachable;
     }
     
     pub const ElementOpen = struct {
@@ -218,6 +195,15 @@ pub const Info = union(enum) {
             std.debug.assert(allVariantsHaveSliceFunc(@This()));
         }
         
+        pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+            inline for (comptime std.meta.fieldNames(@This())) |name| {
+                if (@field(@This(), name) == self)
+                    return @field(self, name).slice(index, src);
+            }
+            
+            unreachable;
+        }
+        
         pub const Text = struct {
             len: usize,
             
@@ -244,19 +230,12 @@ pub const Info = union(enum) {
                 return sliced[beg..end];
             }
         };
-        
-        pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-            inline for (comptime std.meta.fieldNames(@This())) |name| {
-                if (@field(@This(), name) == self)
-                    return @field(self, name).slice(index, src);
-            }
-            
-            unreachable;
-        }
     };
     
     pub const Comment = DataSection("<!--", "-->");
     pub const CharDataSection = DataSection("<![CDATA[", "]]>");
+    pub const Text = Length;
+    pub const Whitespace = Length;
     
     pub const ProcessingInstructionsTarget = struct {
         target_len: usize,
@@ -284,6 +263,15 @@ pub const Info = union(enum) {
         // Assert that all info variants have a `slice` method
         comptime {
             std.debug.assert(allVariantsHaveSliceFunc(@This()));
+        }
+        
+        pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+            inline for (comptime std.meta.fieldNames(@This())) |name| {
+                if (@field(@This(), name) == self)
+                    return @field(self, name).slice(index, src);
+            }
+            
+            unreachable;
         }
         
         pub const Eql = struct {
@@ -318,20 +306,34 @@ pub const Info = union(enum) {
                 return src[beg..end];
             }
         };
+    };
+    
+    const Length = struct {
+        len: usize,
         
         pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-            inline for (comptime std.meta.fieldNames(@This())) |name| {
-                if (@field(@This(), name) == self)
-                    return @field(self, name).slice(index, src);
-            }
-            
-            unreachable;
-            //return switch (self) {
-            //    .name => |name| name.slice(index, src),
-            //    .eql => |eql| eql.slice(index, src),
-            //    .string => |string| string.slice(index, src),
-            //    .end_Tag => |end_tag| end_tag.slice(index, src),
-            //};
+            const beg = index;
+            const end = index + self.len;
+            return src[beg..end];
         }
     };
+    
+    fn DataSection(comptime start_tag: []const u8, comptime end_tag: []const u8) type {
+        return struct {
+            full_len: usize,
+            
+            pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+                const beg = index;
+                const end = beg + self.full_len;
+                return src[beg..end];
+            }
+            
+            pub fn data(self: @This(), index: usize, src: []const u8) []const u8 {
+                const sliced = self.slice(index, src);
+                const beg = start_tag.len;
+                const end = sliced.len - end_tag.len;
+                return sliced[beg..end];
+            }
+        };
+    }
 };

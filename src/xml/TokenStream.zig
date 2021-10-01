@@ -2,7 +2,6 @@ const std = @import("std");
 const testing = std.testing;
 const unicode = std.unicode;
 const xml = @import("../xml.zig");
-const Token = @import("Token.zig");
 
 const TokenStream = @This();
 buffer: []const u8,
@@ -18,6 +17,8 @@ pub fn init(src: []const u8) TokenStream {
 pub fn reset(self: *TokenStream, new_src: ?[]const u8) void {
     self.* = TokenStream.init(new_src orelse self.buffer);
 }
+
+pub const Token = @import("Token.zig");
 
 pub const Error = error {
     PrematureEof,
@@ -51,9 +52,7 @@ pub fn next(self: *TokenStream) NextRet {
                 '\n',
                 '\r',
                 => todo(),
-                
                 '<' => return self.tokenizeAfterLeftAngleBracket(),
-                
                 else => return self.returnError(Error.ContentNotAllowedInPrologue)
             }
         },
@@ -130,6 +129,16 @@ pub fn next(self: *TokenStream) NextRet {
                 
                 .cdata => |cdata| {
                     _ = cdata;
+                    todo();
+                },
+                
+                .text => |text| {
+                    _ = text;
+                    todo();
+                },
+                
+                .whitespace => |whitespace| {
+                    _ = whitespace;
                     todo();
                 },
                 
