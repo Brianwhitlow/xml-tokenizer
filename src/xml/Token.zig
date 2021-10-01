@@ -50,18 +50,6 @@ pub fn method(self: Token, comptime field: std.meta.Tag(Info), comptime func_nam
     return func(@field(self.info, tag_name), self.index, src);
 }
 
-fn allVariantsHaveSliceFunc(comptime Union: type) bool {
-    inline for (std.meta.fields(Union)) |field_info| {
-        const FieldType = field_info.field_type;
-        return @hasDecl(FieldType, "slice") and switch (@TypeOf(@field(FieldType, "slice"))) {
-            fn (FieldType, usize, []const u8) []const u8,
-            fn (FieldType, usize, []const u8) ?[]const u8,
-            => true,
-            else => false,
-        };
-    }
-}
-
 pub const Info = union(enum) {
     element_open: ElementOpen,
     element_close_tag: ElementCloseTag,
@@ -72,16 +60,30 @@ pub const Info = union(enum) {
     
     comment: Comment,
     cdata: CharDataSection,
-    text: Text,
-    whitespace: Whitespace,
+    text: Length,
+    whitespace: Length,
     
     pi_target: ProcessingInstructionsTarget,
     pi_token: ProcessingInstructionsToken,
     
-    // Assert that all info variants have a `slice` method
+    // Assert that all variants of Union have a `slice` method
+    fn allVariantsHaveSliceFunc(comptime Union: type) bool {
+        inline for (std.meta.fields(Union)) |field_info| {
+            const FieldType = field_info.field_type;
+            return @hasDecl(FieldType, "slice") and switch (@TypeOf(@field(FieldType, "slice"))) {
+                fn (FieldType, usize, []const u8) []const u8,
+                fn (FieldType, usize, []const u8) ?[]const u8,
+                => true,
+                else => false,
+            };
+        }
+    }
+    
     comptime {
         std.debug.assert(allVariantsHaveSliceFunc(@This()));
     }
+    
+    
     
     pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
         inline for (comptime std.meta.fieldNames(Info)) |field_name| {
@@ -234,8 +236,6 @@ pub const Info = union(enum) {
     
     pub const Comment = DataSection("<!--", "-->");
     pub const CharDataSection = DataSection("<![CDATA[", "]]>");
-    pub const Text = Length;
-    pub const Whitespace = Length;
     
     pub const ProcessingInstructionsTarget = struct {
         target_len: usize,
@@ -307,6 +307,8 @@ pub const Info = union(enum) {
             }
         };
     };
+    
+    
     
     const Length = struct {
         len: usize,
