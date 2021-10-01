@@ -371,11 +371,13 @@ test "simple empty tags 1" {
         ts.reset(src);
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_open);
         try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
         try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
         try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_close_inline);
         try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
     }
     
@@ -386,11 +388,13 @@ test "simple empty tags 1" {
         ts.reset(src);
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_open);
         try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
         try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
         try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_close_inline);
         try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
         
         try testing.expect(ts.next() == null);
@@ -408,11 +412,13 @@ test "simple empty tags 2" {
         ts.reset(src);
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_open);
         try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
         try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
         try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_close_tag);
         try testing.expectEqualStrings(current.slice(ts.buffer), "</empty>");
         try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
         try testing.expectEqual(current.method(.element_close_tag, "prefix", ts.buffer), null);
@@ -427,11 +433,13 @@ test "simple empty tags 2" {
         ts.reset(src);
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_open);
         try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
         try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
         try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_close_tag);
         try testing.expectEqualStrings(current.slice(ts.buffer), "</pree:empty>");
         try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
         try testing.expectEqualStrings(current.method(.element_close_tag, "prefix", ts.buffer).?, "pree");
@@ -446,11 +454,13 @@ test "simple empty tags 2" {
         ts.reset(src);
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_open);
         try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
         try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
         try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_close_tag);
         try testing.expectEqualStrings(current.slice(ts.buffer), "</empty    >");
         try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
         try testing.expectEqual(current.method(.element_close_tag, "prefix", ts.buffer), null);
@@ -465,11 +475,13 @@ test "simple empty tags 2" {
         ts.reset(src);
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_open);
         try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
         try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
         try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
         
         current = try ts.next().?;
+        try testing.expect(current.info == .element_close_tag);
         try testing.expectEqualStrings(current.slice(ts.buffer), "</pree:empty    >");
         try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
         try testing.expectEqualStrings(current.method(.element_close_tag, "prefix", ts.buffer).?, "pree");
@@ -477,4 +489,3 @@ test "simple empty tags 2" {
         try testing.expect(ts.next() == null);
     }
 }
-

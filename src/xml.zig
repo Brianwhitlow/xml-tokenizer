@@ -48,7 +48,6 @@ pub fn isValidUtf8NameCharOrColon(char: u21) bool {
 }
 
 comptime {
-    testing.refAllDecls(@This());
     _ = Tokenizer;
     _ = TokenStream;
 }
