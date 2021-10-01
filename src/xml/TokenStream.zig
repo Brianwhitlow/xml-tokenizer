@@ -98,6 +98,8 @@ pub fn next(self: *TokenStream) NextRet {
                 },
                 
                 .element_close_tag => {
+                    std.debug.assert(self.getUtf8().? == '>');
+                    self.incrByByte();
                     switch (self.getUtf8() orelse return null) {
                         else => todo()
                     }
@@ -167,42 +169,56 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
             
             self.incrByUtf8Len();
             
-            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                ':',
-                '/',
-                '>',
-                => break,
-                else => if (!xml.isValidUtf8NameChar(char))
-                    return self.returnError(Error.InvalidNameChar),
-            } else return self.returnError(Error.ExpectedClosingTag);
+            var prefix_len: usize = 0;
+            var identifier_len: usize = 1;
             
-            switch (self.getUtf8().?) {
+            blk_while0: while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
                 ' ',
                 '\t',
                 '\n',
                 '\r',
-                => todo(),
+                => while (self.getUtf8()) |notnamechar| : (self.incrByUtf8Len()) switch (notnamechar) {
+                    ' ',
+                    '\t',
+                    '\n',
+                    '\r',
+                    => {},
+                    '>' => break :blk_while0,
+                    else => return self.returnError(Error.ExpectedClosingTag),
+                } else return self.returnError(Error.ExpectedClosingTag),
                 
                 ':' => {
-                    todo();
+                    if (prefix_len != 0) {
+                        return self.returnError(Error.InvalidNameChar);
+                    } else {
+                        prefix_len = identifier_len;
+                        identifier_len = 0;
+                        
+                        self.incrByByte();
+                        const maybe_codepoint = self.getUtf8();
+                        if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
+                            return self.returnError(Error.InvalidNameStartChar);
+                        }
+                        identifier_len += unicode.utf8CodepointSequenceLength(maybe_codepoint.?) catch unreachable;
+                    }
                 },
                 
-                '>' => {
-                    self.incrByByte();
-                    const name_len = self.getIndex() - (start_index + ("</".len));
-                    return self.returnToken(Token.initTag(start_index, .element_close_tag, .{
-                        .prefix_len = 0,
-                        .identifier_len = name_len,
-                        .full_len = self.getIndex() - start_index,
-                    }));
-                },
+                '>' => break,
                 
-                else => unreachable
-            }
+                else => {
+                    if (!xml.isValidUtf8NameChar(char))
+                        return self.returnError(Error.InvalidNameChar)
+                    else {
+                        identifier_len += unicode.utf8CodepointSequenceLength(char) catch unreachable;
+                    }
+                },
+            } else return self.returnError(Error.ExpectedClosingTag);
+            
+            std.debug.assert(self.getUtf8().? == '>');
+            
+            const info = .{ .prefix_len = prefix_len, .identifier_len = identifier_len, .full_len = (self.getIndex() + 1) - start_index };
+            const result = Token.initTag(start_index, .element_close_tag, info);
+            return self.returnToken(result);
         },
         
         '?' => todo(),
@@ -452,12 +468,12 @@ test "simple empty tags 2" {
         ts.reset(src);
         
         current = try ts.next().?;
-        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
+        try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
         try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
         try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
         
         current = try ts.next().?;
-        try testing.expectEqualStrings(current.slice(ts.buffer), "</empty    >");
+        try testing.expectEqualStrings(current.slice(ts.buffer), "</pree:empty    >");
         try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
         try testing.expectEqualStrings(current.method(.element_close_tag, "prefix", ts.buffer).?, "pree");
         

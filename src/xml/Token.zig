@@ -170,7 +170,7 @@ pub const Info = union(enum) {
         pub fn name(self: @This(), index: usize, src: []const u8) []const u8 {
             const sliced = self.slice(index, src);
             const beg = ("</".len) + if (self.prefix_len == 0) 0 else (self.prefix_len + 1);
-            const end = sliced.len - (">".len);
+            const end = beg + self.identifier_len;
             return sliced[beg..end];
         }
     };
