@@ -360,132 +360,136 @@ const State = struct {
     };
 };
 
-test "simple empty tags 1" {
-    var ts: TokenStream = undefined;
-    var current: Token = undefined;
-    
-    inline for (.{
-        "<empty/>",
-        "<empty    />",
-    }) |src| {
-        ts.reset(src);
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_open);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
-        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
-        try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_close_inline);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
-    }
-    
-    inline for (.{
-        "<pree:empty/>",
-        "<pree:empty    />",
-    }) |src| {
-        ts.reset(src);
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_open);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
-        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
-        try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_close_inline);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "/>");
-        
-        try testing.expect(ts.next() == null);
+
+test {
+    comptime {
+        _ = tests;
     }
 }
 
-test "simple empty tags 2" {
-    var ts: TokenStream = undefined;
-    var current: Token = undefined;
+const tests = struct {
     
-    inline for (.{
-        "<empty></empty>",
-        "<empty    ></empty>",
-    }) |src| {
-        ts.reset(src);
+    const expect_token_equal_to = struct {
+        fn elementOpen(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            
+            const full_slice: []const u8 = blk: {
+                const to_be_joined: []const []const u8 = if (prefix) |prfx| &.{ "<", prfx, ":", name } else &.{ "<", name };
+                break :blk try std.mem.concat(testing.allocator, u8, to_be_joined);
+            };
+            defer testing.allocator.free(full_slice);
+            
+            try testing.expect(tok.info == .element_open);
+            try testing.expectEqualStrings(tok.slice(src), full_slice);
+            try testing.expectEqualStrings(tok.method(.element_open, "name", src), name);
+            if (prefix) |prfx| {
+                try testing.expectEqualStrings(tok.method(.element_open, "prefix", src).?, prfx);
+            } else {
+                try testing.expectEqual(tok.method(.element_open, "prefix", src), null);
+            }
+        }
         
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_open);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
-        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
-        try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
+        fn elementCloseTag(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            
+            try testing.expect(tok.info == .element_close_tag);
+            
+            try testing.expectEqualStrings(tok.slice(src)[0..2], "</");
+            try testing.expectEqualStrings(tok.slice(src)[tok.slice(src).len - 1..], ">");
+            
+            try testing.expectEqualStrings(tok.method(.element_close_tag, "name", src), name);
+            if (prefix) |prfx| {
+                try testing.expectEqualStrings(tok.method(.element_close_tag, "prefix", src).?, prfx);
+            } else {
+                try testing.expectEqual(tok.method(.element_close_tag, "prefix", src), null);
+            }
+        }
         
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_close_tag);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "</empty>");
-        try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
-        try testing.expectEqual(current.method(.element_close_tag, "prefix", ts.buffer), null);
+        fn elementCloseInline(src: []const u8, maybe_tok: NextRet) !void {
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            try testing.expect(tok.info == .element_close_inline);
+            try testing.expectEqualStrings(tok.slice(src), "/>");
+        }
         
-        try testing.expect(ts.next() == null);
+        fn @"null"(maybe_tok: NextRet) !void {
+            try testing.expect(maybe_tok == null);
+        }
+        
+        fn @"error"(maybe_tok: NextRet, err: Error) !void {
+            try testing.expectError(err, maybe_tok orelse return error.NullToken);
+        }
+    };
+    
+    fn expectElementOpen(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
+        try expect_token_equal_to.elementOpen(ts.buffer, ts.next(), prefix, name);
     }
     
-    inline for (.{
-        "<pree:empty></pree:empty>",
-        "<pree:empty    ></pree:empty>",
-    }) |src| {
-        ts.reset(src);
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_open);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
-        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
-        try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_close_tag);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "</pree:empty>");
-        try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
-        try testing.expectEqualStrings(current.method(.element_close_tag, "prefix", ts.buffer).?, "pree");
-        
-        try testing.expect(ts.next() == null);
+    fn expectElementCloseTag(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
+        try expect_token_equal_to.elementCloseTag(ts.buffer, ts.next(), prefix, name);
     }
     
-    inline for (.{
-        "<empty></empty    >",
-        "<empty    ></empty    >",
-    }) |src| {
-        ts.reset(src);
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_open);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "<empty");
-        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
-        try testing.expectEqual(current.method(.element_open, "prefix", ts.buffer), null);
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_close_tag);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "</empty    >");
-        try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
-        try testing.expectEqual(current.method(.element_close_tag, "prefix", ts.buffer), null);
-        
-        try testing.expect(ts.next() == null);
+    fn expectElementCloseInline(ts: *TokenStream) !void {
+        try expect_token_equal_to.elementCloseInline(ts.buffer, ts.next());
     }
     
-    inline for (.{
-        "<pree:empty></pree:empty    >",
-        "<pree:empty    ></pree:empty    >",
-    }) |src| {
-        ts.reset(src);
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_open);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "<pree:empty");
-        try testing.expectEqualStrings(current.method(.element_open, "name", ts.buffer), "empty");
-        try testing.expectEqualStrings(current.method(.element_open, "prefix", ts.buffer).?, "pree");
-        
-        current = try ts.next().?;
-        try testing.expect(current.info == .element_close_tag);
-        try testing.expectEqualStrings(current.slice(ts.buffer), "</pree:empty    >");
-        try testing.expectEqualStrings(current.method(.element_close_tag, "name", ts.buffer), "empty");
-        try testing.expectEqualStrings(current.method(.element_close_tag, "prefix", ts.buffer).?, "pree");
-        
-        try testing.expect(ts.next() == null);
+    fn expectNull(ts: *TokenStream) !void {
+        try expect_token_equal_to.@"null"(ts.next());
     }
-}
+    
+    fn expectError(ts: *TokenStream, err: Error) !void {
+        try expect_token_equal_to.@"error"(ts.next(), err);
+    }
+    
+    test "simple empty tags 1" {
+        var ts: TokenStream = undefined;
+        
+        inline for (.{
+            "<empty/>",
+            "<empty    />",
+        }) |src| {
+            ts.reset(src);
+            try expectElementOpen(&ts, null, "empty");
+            try expectElementCloseInline(&ts);
+            try expectNull(&ts);
+        }
+        
+        inline for (.{
+            "<pree:empty/>",
+            "<pree:empty    />",
+        }) |src| {
+            ts.reset(src);
+            try expectElementOpen(&ts, "pree", "empty");
+            try expectElementCloseInline(&ts);
+            try expectNull(&ts);
+        }
+    }
+    
+    test "simple empty tags 2" {
+        var ts: TokenStream = undefined;
+        
+        inline for (.{
+            "<empty></empty>",
+            "<empty></empty    >",
+            "<empty    ></empty>",
+            "<empty    ></empty    >",
+        }) |src| {
+            ts.reset(src);
+            try expectElementOpen(&ts, null, "empty");
+            try expectElementCloseTag(&ts, null, "empty");
+            try expectNull(&ts);
+        }
+        
+        inline for (.{
+            "<pree:empty></pree:empty>",
+            "<pree:empty></pree:empty    >",
+            "<pree:empty    ></pree:empty>",
+            "<pree:empty    ></pree:empty    >",
+        }) |src| {
+            ts.reset(src);
+            try expectElementOpen(&ts, "pree", "empty");
+            try expectElementCloseTag(&ts, "pree", "empty");
+            try expectNull(&ts);
+        }
+    }
+    
+};
