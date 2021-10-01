@@ -195,17 +195,18 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
                 ':' => {
                     if (prefix_len != 0) {
                         return self.returnError(Error.InvalidNameChar);
-                    } else {
-                        prefix_len = identifier_len;
-                        identifier_len = 0;
-                        
-                        self.incrByByte();
-                        const maybe_codepoint = self.getUtf8();
-                        if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
-                            return self.returnError(Error.InvalidNameStartChar);
-                        }
-                        identifier_len += unicode.utf8CodepointSequenceLength(maybe_codepoint.?) catch unreachable;
                     }
+                    
+                    prefix_len = identifier_len;
+                    identifier_len = 0;
+                    
+                    self.incrByByte();
+                    const maybe_codepoint = self.getUtf8();
+                    if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
+                        return self.returnError(Error.InvalidNameStartChar);
+                    }
+                    
+                    identifier_len += unicode.utf8CodepointSequenceLength(maybe_codepoint.?) catch unreachable;
                 },
                 
                 '>' => break,
@@ -236,68 +237,48 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
             
             self.incrByUtf8Len();
             
-            // TODO: Refactor this to be more concise like the '/' case.
+            var prefix_len: usize = 0;
             
             while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
                 ' ',
                 '\t',
                 '\n',
                 '\r',
-                ':',
                 '/',
                 '>',
                 => break,
+                
+                ':' => {
+                    if (prefix_len != 0) {
+                        return self.returnError(Error.InvalidNameChar);
+                    }
+                    prefix_len = self.getIndex() - (start_index + ("<".len));
+                    
+                    self.incrByByte();
+                    const maybe_codepoint = self.getUtf8();
+                    if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
+                        return self.returnError(Error.InvalidNameStartChar);
+                    }
+                },
+                
                 else => if (!xml.isValidUtf8NameChar(char))
                     return self.returnError(Error.InvalidNameChar),
-                    
             } else return self.returnError(Error.ExpectedClosingTag);
             
-            switch (self.getUtf8().?) {
+            std.debug.assert(switch (self.getUtf8().?) {
                 ' ',
                 '\t',
                 '\n',
                 '\r',
                 '/',
                 '>',
-                => {
-                    const info = .{ .prefix_len = 0, .full_len = (self.getIndex() - start_index) };
-                    const result = Token.initTag(start_index, .element_open, info);
-                    return self.returnToken(result);
-                },
-                
-                ':' => {
-                    const prefix_len = self.getIndex() - (("<".len) + start_index);
-                    self.incrByByte();
-                    
-                    if (!xml.isValidUtf8NameStartChar(self.getUtf8() orelse return self.returnError(Error.Malformed))) {
-                        return self.returnError(Error.InvalidNameStartChar);
-                    }
-                    
-                    while (self.getUtf8()) |char| : (self.incrByUtf8Len()) {
-                        switch (char) {
-                            ' ',
-                            '\t',
-                            '\n',
-                            '\r',
-                            '/',
-                            '>',
-                            => {
-                                const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
-                                const maybe_result = Token.initTag(start_index, .element_open, info);
-                                return self.returnToken(maybe_result);
-                            },
-                            
-                            ':' => return self.returnError(Error.InvalidNameChar),
-                            
-                            else => if (!xml.isValidUtf8NameChar(char)) {
-                                return self.returnError(Error.InvalidNameChar);
-                            }
-                        }
-                    } else return self.returnError(Error.ExpectedClosingTag);
-                },
-                
-                else => unreachable
-            }
+                => true,
+                else => false,
+            });
+            
+            const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
+            const result = Token.initTag(start_index, .element_open, info);
+            return self.returnToken(result);
         }
     }
 }
