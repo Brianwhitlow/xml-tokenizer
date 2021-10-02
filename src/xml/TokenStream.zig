@@ -948,10 +948,21 @@ test "comment" {
     try tests.expectComment(&ts, " Aloha! ");
     try tests.expectNull(&ts);
     
-    ts.reset("<root> <!--wowza!-->"); // note that we omit a closing tag
+    // note that we omit a closing tag
+    ts.reset("<root> <!--wowza!-->");
     try tests.expectElementOpen(&ts, null, "root");
     try tests.expectWhitespace(&ts, " ");
     try tests.expectComment(&ts, "wowza!");
-    try tests.expectError(&ts, Error.ExpectedClosingTag); // since the 'depth' is not zero (there are not an equal number of element openings and element closings), we error out here.
+    // since the 'depth' is not zero (there are not an equal number of element openings and element closings),
+    // we error out here.
+    try tests.expectError(&ts, Error.ExpectedClosingTag);
+    try tests.expectNull(&ts);
+    
+    // but be careful, because this behaviour is not semantically intelligent;
+    // it only requires the number of open tags and close tags to be equal
+    ts.reset("<root><!--jeez-louise--></fakeroot>");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectComment(&ts, "jeez-louise");
+    try tests.expectElementCloseTag(&ts, null, "fakeroot");
     try tests.expectNull(&ts);
 }
