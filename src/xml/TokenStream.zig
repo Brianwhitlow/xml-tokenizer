@@ -97,15 +97,13 @@ pub fn next(self: *TokenStream) NextRet {
                 .element_close_tag => {
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
-                    switch (self.getUtf8() orelse return null) {
-                        else => todo()
-                    }
+                    return if (self.getUtf8() != null) self.tokenizeContent() else null;
                 },
                 
                 .element_close_inline => {
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
-                    return if (self.getUtf8() != null) self.tokenizeContent() else return null;
+                    return if (self.getUtf8() != null) self.tokenizeContent() else null;
                 },
                 
                 .attribute_name => |attribute_name| {
@@ -854,4 +852,23 @@ test "UTF8 content" {
     try tests.expectText(&ts, utf8_content);
     try tests.expectElementCloseTag(&ts, null, "root");
     try tests.expectNull(&ts);
+}
+
+test "nested empty tags" {
+    var ts = TokenStream.init(undefined);
+    
+    ts.reset("<foo> <bar/> </foo>");
+    try tests.expectElementOpen(&ts, null, "foo");
+    try tests.expectWhitespace(&ts, " ");
+    try tests.expectElementOpen(&ts, null, "bar");
+    try tests.expectElementCloseInline(&ts);
+    try tests.expectWhitespace(&ts, " ");
+    try tests.expectElementCloseTag(&ts, null, "foo");
+    
+    ts.reset("<foo><bar> baz </bar></foo>");
+    try tests.expectElementOpen(&ts, null, "foo");
+    try tests.expectElementOpen(&ts, null, "bar");
+    try tests.expectText(&ts, " baz ");
+    try tests.expectElementCloseTag(&ts, null, "bar");
+    try tests.expectElementCloseTag(&ts, null, "foo");
 }
