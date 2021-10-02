@@ -60,47 +60,52 @@ pub fn next(self: *TokenStream) NextRet {
         
         .last_tok => |last_tok| {
             switch (last_tok) {
-                .element_open => switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                    ' ',
-                    '\t',
-                    '\n',
-                    '\r',
-                    => {
-                        self.incrByByte();
-                        while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch(char) {
-                            ' ',
-                            '\t',
-                            '\n',
-                            '\r',
-                            => continue,
-                            '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
-                            '>' => {
-                                self.incrByByte();
-                                switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                                    '<' => return self.tokenizeAfterLeftAngleBracket(),
-                                    else => todo()
-                                }
-                            },
-                            else => todo()
-                        } else todo();
-                    },
-                    
-                    '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
-                    
-                    '>' => {
-                        self.incrByByte();
-                        return self.tokenizeContent();
-                    },
-                    else => unreachable,
+                .element_open => {
+                    self.state.depth += 1;
+                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        => {
+                            self.incrByByte();
+                            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch(char) {
+                                ' ',
+                                '\t',
+                                '\n',
+                                '\r',
+                                => continue,
+                                '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
+                                '>' => {
+                                    self.incrByByte();
+                                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                                        '<' => return self.tokenizeAfterLeftAngleBracket(),
+                                        else => todo()
+                                    }
+                                },
+                                else => todo()
+                            } else todo();
+                        },
+                        
+                        '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
+                        
+                        '>' => {
+                            self.incrByByte();
+                            return self.tokenizeContent();
+                        },
+                        else => unreachable,
+                    }
                 },
                 
                 .element_close_tag => {
+                    self.state.depth -= 1;
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
                     return if (self.getUtf8() != null) self.tokenizeContent() else null;
                 },
                 
                 .element_close_inline => {
+                    self.state.depth -= 1;
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
                     return if (self.getUtf8() != null) self.tokenizeContent() else null;
@@ -116,9 +121,13 @@ pub fn next(self: *TokenStream) NextRet {
                     todo();
                 },
                 
-                .comment => |comment| {
-                    _ = comment;
-                    todo();
+                .comment => {
+                    std.debug.assert(self.getUtf8().? == '>');
+                    self.incrByByte();
+                    switch (self.getUtf8() orelse return self.returnNullIfDepth0()) {
+                        '<' => return self.tokenizeAfterLeftAngleBracket(),
+                        else => todo(),
+                    }
                 },
                 
                 .cdata => |cdata| {
@@ -145,7 +154,7 @@ pub fn next(self: *TokenStream) NextRet {
                 },
                 
                 .whitespace => {
-                    switch (self.getUtf8() orelse return null) {
+                    switch (self.getUtf8() orelse return self.returnNullIfDepth0()) {
                         '<' => return self.tokenizeAfterLeftAngleBracket(),
                         '&' => return self.tokenizeAfterAmpersandInContent(),
                         else => unreachable,
@@ -304,7 +313,45 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
         },
         
         '?' => todo(),
-        '!' => todo(),
+        '!' => {
+            self.incrByByte();
+            switch (self.getUtf8() orelse return self.returnError(Error.Malformed)) {
+                '-' => {
+                    self.incrByByte();
+                    switch (self.getUtf8() orelse return self.returnError(Error.Malformed)) {
+                        '-' => {
+                            self.incrByByte();
+                            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
+                                '-' => {
+                                    self.incrByByte();
+                                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                                        '-' => {
+                                            self.incrByByte();
+                                            switch (self.getUtf8() orelse return self.returnError(Error.Malformed)) {
+                                                '>' => {
+                                                    const info = .{ .len = (self.getIndex() + 1) - start_index };
+                                                    const result = Token.initTag(start_index, .comment, info);
+                                                    return self.returnToken(result);
+                                                },
+                                                else => return self.returnError(Error.Malformed),
+                                            }
+                                        },
+                                        
+                                        else => continue,
+                                    }
+                                },
+                                else => continue
+                            } else return self.returnError(Error.ExpectedClosingTag);
+                        },
+                        else => return self.returnError(Error.Malformed)
+                    }
+                },
+                
+                '[' => todo(),
+                
+                else => return self.returnError(Error.Malformed),
+            }
+        },
         
         else => {
             if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
@@ -357,6 +404,12 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
             return self.returnToken(result);
         }
     }
+}
+
+
+
+fn returnNullIfDepth0(self: *TokenStream) NextRet {
+    return if (self.state.depth == 0) null else return self.returnError(Error.ExpectedClosingTag);
 }
 
 
@@ -419,6 +472,7 @@ fn getIndex(self: TokenStream) usize {
 const State = struct {
     index: usize = 0,
     info: Info = .start,
+    depth: usize = 0,
     
     const Info = union(enum) {
         err: Error,
@@ -426,6 +480,8 @@ const State = struct {
         last_tok: Token.Info,
     };
 };
+
+
 
 const tests = struct {
     const expect_token = struct {
@@ -487,6 +543,16 @@ const tests = struct {
             try testing.expectEqualStrings(name, tok.info.entity_reference.name(tok.index, src));
         }
         
+        fn comment(src: []const u8, maybe_tok: NextRet, content: []const u8) !void {
+            const full_slice = try std.mem.concat(testing.allocator, u8, &.{ "<!--", content, "-->" });
+            defer testing.allocator.free(full_slice);
+            
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            try testing.expectEqual(@as(std.meta.Tag(Token.Info), .comment), tok.info);
+            try testing.expectEqualStrings(full_slice, tok.slice(src));
+            try testing.expectEqualStrings(content, tok.info.comment.data(tok.index, src));
+        }
+        
         
         
         fn isNull(maybe_tok: NextRet) !void {
@@ -522,6 +588,10 @@ const tests = struct {
         try expect_token.entityReference(ts.buffer, ts.next(), name);
     }
     
+    fn expectComment(ts: *TokenStream, content: []const u8) !void {
+        try expect_token.comment(ts.buffer, ts.next(), content);
+    }
+    
     
     
     fn expectNull(ts: *TokenStream) !void {
@@ -532,8 +602,6 @@ const tests = struct {
         try expect_token.isError(ts.next(), err);
     }
 };
-
-
 
 test "empty source" {
     var ts = TokenStream.init("");
@@ -854,7 +922,7 @@ test "UTF8 content" {
     try tests.expectNull(&ts);
 }
 
-test "nested empty tags" {
+test "nested tags" {
     var ts = TokenStream.init(undefined);
     
     ts.reset("<foo> <bar/> </foo>");
@@ -871,4 +939,19 @@ test "nested empty tags" {
     try tests.expectText(&ts, " baz ");
     try tests.expectElementCloseTag(&ts, null, "bar");
     try tests.expectElementCloseTag(&ts, null, "foo");
+}
+
+test "comment" {
+    var ts = TokenStream.init(undefined);
+    
+    ts.reset("<!-- Aloha! -->");
+    try tests.expectComment(&ts, " Aloha! ");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<root> <!--wowza!-->"); // note that we omit a closing tag
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectWhitespace(&ts, " ");
+    try tests.expectComment(&ts, "wowza!");
+    try tests.expectError(&ts, Error.ExpectedClosingTag); // since the 'depth' is not zero (there are not an equal number of element openings and element closings), we error out here.
+    try tests.expectNull(&ts);
 }
