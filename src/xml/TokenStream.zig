@@ -51,7 +51,7 @@ pub fn next(self: *TokenStream) NextRet {
                 '\t',
                 '\n',
                 '\r',
-                => todo(),
+                => return self.tokenizeAfterRightAngleBracketOrBof(),
                 '<' => return self.tokenizeAfterLeftAngleBracket(),
                 else => return self.returnError(Error.ContentNotAllowedInPrologue)
             }
@@ -88,10 +88,7 @@ pub fn next(self: *TokenStream) NextRet {
                     
                     '>' => {
                         self.incrByByte();
-                        switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                            '<' => return self.tokenizeAfterLeftAngleBracket(),
-                            else => todo()
-                        }
+                        return self.tokenizeAfterRightAngleBracketOrBof();
                     },
                     else => unreachable,
                 },
@@ -107,9 +104,7 @@ pub fn next(self: *TokenStream) NextRet {
                 .element_close_inline => {
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
-                    switch (self.getUtf8() orelse return null) {
-                        else => todo()
-                    }
+                    return if (self.getUtf8() != null) self.tokenizeAfterRightAngleBracketOrBof() else return null;
                 },
                 
                 .attribute_name => |attribute_name| {
@@ -137,9 +132,9 @@ pub fn next(self: *TokenStream) NextRet {
                     todo();
                 },
                 
-                .whitespace => |whitespace| {
-                    _ = whitespace;
-                    todo();
+                .whitespace => {
+                    std.debug.assert((self.getUtf8() orelse return null) == '<');
+                    return self.tokenizeAfterLeftAngleBracket();
                 },
                 
                 .pi_target => |pi_target| {
@@ -158,6 +153,33 @@ pub fn next(self: *TokenStream) NextRet {
 
 inline fn todo() noreturn {
     unreachable;
+}
+
+fn tokenizeAfterRightAngleBracketOrBof(self: *TokenStream) NextRet {
+    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+        '<' => return self.tokenizeAfterLeftAngleBracket(),
+        else => {
+            const start_index = self.getIndex();
+            var non_whitespace: bool = false;
+            
+            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => {},
+                '<' => break,
+                else => non_whitespace = true,
+            };
+            
+            const info = .{ .len = (self.getIndex() - start_index) };
+            const result = if (non_whitespace)
+                Token.initTag(start_index, .text, info)
+            else
+                Token.initTag(start_index, .whitespace, info);
+            return self.returnToken(result);
+        }
+    }
 }
 
 fn tokenizeAfterElementOpenWhitespaceSlash(self: *TokenStream) NextRet {
@@ -365,41 +387,52 @@ const tests = struct {
         fn elementOpen(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
             const tok: Token = try (maybe_tok orelse error.NullToken);
             
-            const full_slice: []const u8 = blk: {
-                const to_be_joined: []const []const u8 = if (prefix) |prfx| &.{ "<", prfx, ":", name } else &.{ "<", name };
-                break :blk try std.mem.concat(testing.allocator, u8, to_be_joined);
-            };
+            const full_slice: []const u8 = try std.mem.concat(testing.allocator, u8, @as([]const []const u8, if (prefix) |prfx| &.{ "<", prfx, ":", name } else &.{ "<", name }));
             defer testing.allocator.free(full_slice);
             
-            try testing.expect(tok.info == .element_open);
-            try testing.expectEqualStrings(tok.slice(src), full_slice);
-            try testing.expectEqualStrings(tok.info.element_open.name(tok.index, src), name);
+            try testing.expectEqual(@as(std.meta.Tag(Token.Info), .element_open), tok.info);
+            try testing.expectEqualStrings(full_slice, tok.slice(src));
+            try testing.expectEqualStrings(name, tok.info.element_open.name(tok.index, src));
             if (prefix) |prfx|
-                try testing.expectEqualStrings(tok.info.element_open.prefix(tok.index, src) orelse return error.NullPrefix, prfx)
-            else
-                try testing.expectEqual(tok.info.element_open.prefix(tok.index, src), null);
+                try testing.expectEqualStrings(prfx, tok.info.element_open.prefix(tok.index, src) orelse return error.NullPrefix)
+            else {
+                try testing.expectEqual(@as(?[]const u8, null), tok.info.element_open.prefix(tok.index, src));
+            }
         }
         
         fn elementCloseTag(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
             const tok: Token = try (maybe_tok orelse error.NullToken);
             
-            try testing.expect(tok.info == .element_close_tag);
-            
-            try testing.expectEqualStrings(tok.slice(src)[0..2], "</");
-            try testing.expectEqualStrings(tok.slice(src)[tok.slice(src).len - 1..], ">");
-            
-            try testing.expectEqualStrings(tok.info.element_close_tag.name(tok.index, src), name);
+            try testing.expectEqual(@as(std.meta.Tag(Token.Info), .element_close_tag), tok.info);
+            try testing.expectEqualStrings("</", tok.slice(src)[0..2]);
+            try testing.expectEqualStrings(">", tok.slice(src)[tok.slice(src).len - 1..]);
+            try testing.expectEqualStrings(name, tok.info.element_close_tag.name(tok.index, src));
             if (prefix) |prfx|
-                try testing.expectEqualStrings(tok.info.element_close_tag.prefix(tok.index, src) orelse return error.NullPrefix, prfx)
-            else
-                try testing.expectEqual(tok.info.element_close_tag.prefix(tok.index, src), null);
+                try testing.expectEqualStrings(prfx, tok.info.element_close_tag.prefix(tok.index, src) orelse return error.NullPrefix)
+            else {
+                try testing.expectEqual(@as(?[]const u8, null), tok.info.element_close_tag.prefix(tok.index, src));
+            }
         }
         
         fn elementCloseInline(src: []const u8, maybe_tok: NextRet) !void {
             const tok: Token = try (maybe_tok orelse error.NullToken);
-            try testing.expect(tok.info == .element_close_inline);
-            try testing.expectEqualStrings(tok.slice(src), "/>");
+            try testing.expectEqual(@as(std.meta.Tag(Token.Info), .element_close_inline), tok.info);
+            try testing.expectEqualStrings("/>", tok.slice(src));
         }
+        
+        fn text(src: []const u8, maybe_tok: NextRet, content: []const u8) !void {
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            try testing.expectEqual(@as(std.meta.Tag(Token.Info), .text), tok.info);
+            try testing.expectEqualStrings(content, tok.slice(src));
+        }
+        
+        fn whitespace(src: []const u8, maybe_tok: NextRet, content: []const u8) !void {
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            try testing.expectEqual(@as(std.meta.Tag(Token.Info), .whitespace), tok.info);
+            try testing.expectEqualStrings(tok.slice(src), content);
+        }
+        
+        
         
         fn isNull(maybe_tok: NextRet) !void {
             try testing.expect(maybe_tok == null);
@@ -422,6 +455,16 @@ const tests = struct {
         try expect_token.elementCloseInline(ts.buffer, ts.next());
     }
     
+    fn expectText(ts: *TokenStream, content: []const u8) !void {
+        try expect_token.text(ts.buffer, ts.next(), content);
+    }
+    
+    fn expectWhitespace(ts: *TokenStream, content: []const u8) !void {
+        try expect_token.whitespace(ts.buffer, ts.next(), content);
+    }
+    
+    
+    
     fn expectNull(ts: *TokenStream) !void {
         try expect_token.isNull(ts.next());
     }
@@ -435,6 +478,7 @@ test "simple empty tags" {
     var ts = TokenStream.init(undefined);
     
     const ws = " \t\n\r";
+    
     inline for (.{
         "<empty" ++ ("") ++ "/>",
         "<empty" ++ (ws) ++ "/>",
@@ -478,4 +522,30 @@ test "simple empty tags" {
         try tests.expectElementCloseTag(&ts, "pree", "empty");
         try tests.expectNull(&ts);
     }
+}
+
+test "significant whitespace" {
+    var ts = TokenStream.init(undefined);
+    
+    inline for (.{
+        " ",
+        "\t",
+        "\n",
+        "\r",
+        "\t \t",
+        "\n\r\t\n",
+    })
+    |whitespace| {
+        ts.reset("<root>" ++ whitespace ++ "</root>");
+        try tests.expectElementOpen(&ts, null, "root");
+        try tests.expectWhitespace(&ts, whitespace);
+        try tests.expectElementCloseTag(&ts, null, "root");
+    }
+    
+    ts.reset("\n<empty/>\t");
+    try tests.expectWhitespace(&ts, "\n");
+    try tests.expectElementOpen(&ts, null, "empty");
+    try tests.expectElementCloseInline(&ts);
+    try tests.expectWhitespace(&ts, "\t");
+    try tests.expectNull(&ts);
 }
