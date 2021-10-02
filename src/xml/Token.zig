@@ -295,11 +295,11 @@ pub const Info = union(enum) {
     
     fn DataSection(comptime start_tag: []const u8, comptime end_tag: []const u8) type {
         return struct {
-            full_len: usize,
+            len: usize,
             
             pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
                 const beg = index;
-                const end = beg + self.full_len;
+                const end = beg + self.len;
                 return src[beg..end];
             }
             
