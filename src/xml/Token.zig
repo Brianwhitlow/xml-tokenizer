@@ -20,36 +20,6 @@ pub fn slice(self: Token, src: []const u8) []const u8 {
     return self.info.slice(self.index, src);
 }
 
-pub fn method(self: Token, comptime field: std.meta.Tag(Info), comptime func_name: []const u8, src: []const u8) blk_type: {
-    const tag_name = @tagName(field);
-    const FieldType = @TypeOf(@field(@unionInit(Info, tag_name, undefined), tag_name));
-    
-    const func = @field(FieldType, func_name);
-    const FuncType = @TypeOf(func);
-    
-    break :blk_type switch (@typeInfo(FuncType)) {
-        .Fn,
-        .BoundFn,
-        => |info| info.return_type.?,
-        else => unreachable
-    };
-} {
-    std.debug.assert(std.meta.activeTag(self.info) == field);
-    
-    const tag_name = @tagName(field);
-    const FieldType = @TypeOf(@field(@unionInit(Info, tag_name, undefined), tag_name));
-    
-    const func = @field(FieldType, func_name);
-    comptime std.debug.assert(switch (@TypeOf(func)) {
-        fn(FieldType, usize, []const u8) []const u8,
-        fn(FieldType, usize, []const u8) ?[]const u8,
-        => true,
-        else => false
-    });
-    
-    return func(@field(self.info, tag_name), self.index, src);
-}
-
 pub const Info = union(enum) {
     element_open: ElementOpen,
     element_close_tag: ElementCloseTag,
@@ -65,6 +35,8 @@ pub const Info = union(enum) {
     
     pi_target: ProcessingInstructionsTarget,
     pi_token: ProcessingInstructionsToken,
+    
+    
     
     // Assert that all variants of Union have a `slice` method
     fn allVariantsHaveSliceFunc(comptime Union: type) bool {
