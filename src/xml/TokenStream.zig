@@ -101,14 +101,14 @@ pub fn next(self: *TokenStream) NextRet {
                     self.state.depth -= 1;
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
-                    return if (self.getUtf8() != null) self.tokenizeContent() else null;
+                    return if (self.getUtf8() != null) self.tokenizeContent() else self.returnNullIfDepth0();
                 },
                 
                 .element_close_inline => {
                     self.state.depth -= 1;
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
-                    return if (self.getUtf8() != null) self.tokenizeContent() else null;
+                    return if (self.getUtf8() != null) self.tokenizeContent() else self.returnNullIfDepth0();
                 },
                 
                 .attribute_name => |attribute_name| {
