@@ -540,6 +540,7 @@ test "significant whitespace" {
         try tests.expectElementOpen(&ts, null, "root");
         try tests.expectWhitespace(&ts, whitespace);
         try tests.expectElementCloseTag(&ts, null, "root");
+        try tests.expectNull(&ts);
     }
     
     ts.reset("\n<empty/>\t");
