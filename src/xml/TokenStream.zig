@@ -21,7 +21,6 @@ pub fn reset(self: *TokenStream, new_src: ?[]const u8) void {
 pub const Token = @import("Token.zig");
 
 pub const Error = error {
-    PrematureEof,
     ContentNotAllowedInPrologue,
     Malformed,
     InvalidNameChar,
@@ -35,19 +34,12 @@ pub const NextRet = ?(Error!Token);
 
 /// Returns null if there are no more tokens to parse.
 pub fn next(self: *TokenStream) NextRet {
-    // const on_start = self.state;
-    // defer std.debug.assert(std.meta.activeTag(on_start.info) != self.state.info or switch (self.state.info) {
-    //     .start => false,
-    //     .err => true,
-    //     .last_tok => |tok| (tok == .element_open)
-    // });
-    
     errdefer std.debug.assert(self.state.info == .err);
     switch (self.state.info) {
         .err => return null,
         .start => {
             std.debug.assert(self.getIndex() == 0);
-            switch (self.getByte() orelse return self.returnError(Error.PrematureEof)) {
+            switch (self.getByte() orelse return null) {
                 ' ',
                 '\t',
                 '\n',
@@ -543,6 +535,18 @@ const tests = struct {
     }
 };
 
+
+
+test "empty source" {
+    var ts = TokenStream.init("");
+    try tests.expectNull(&ts);
+}
+
+test "empty source with whitespace" {
+    var ts = TokenStream.init(" ");
+    try tests.expectNull(&ts);
+}
+
 test "simple empty tags" {
     var ts = TokenStream.init(undefined);
     
@@ -632,8 +636,8 @@ test "basic content" {
 
 test "entity references" {
     var ts = TokenStream.init(undefined);
-    ts.reset("<root>&amp;&lt; FOOBAR &gt;</root >");
     
+    ts.reset("<root>&amp;&lt; FOOBAR &gt;</root >");
     try tests.expectElementOpen(&ts, null, "root");
     try tests.expectEntityReference(&ts, "amp");
     try tests.expectEntityReference(&ts, "lt");
@@ -644,9 +648,7 @@ test "entity references" {
     
     
     
-    
     ts.reset("<root> &amp;&lt;\t FOOBAR\t&gt; \t </root >");
-    
     try tests.expectElementOpen(&ts, null, "root");
     try tests.expectWhitespace(&ts, " ");
     try tests.expectEntityReference(&ts, "amp");
@@ -656,7 +658,6 @@ test "entity references" {
     try tests.expectWhitespace(&ts, " \t ");
     try tests.expectElementCloseTag(&ts, null, "root");
     try tests.expectNull(&ts);
-    
 }
 
 test "UTF8 content" {
