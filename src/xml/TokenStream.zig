@@ -27,6 +27,7 @@ pub const Error = error {
     InvalidNameChar,
     InvalidNameStartChar,
     ExpectedClosingTag,
+    EntityReferenceMissingName,
 };
 
 /// The return type of TokenStream.next().
@@ -51,7 +52,15 @@ pub fn next(self: *TokenStream) NextRet {
                 '\t',
                 '\n',
                 '\r',
-                => return self.tokenizeAfterRightAngleBracketOrBof(),
+                => while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
+                    ' ',
+                    '\t',
+                    '\n',
+                    '\r',
+                    => continue,
+                    '<' => return self.returnToken(Token.initTag(0, .whitespace, .{ .len = self.getIndex() - 0 })),
+                    else => return self.returnError(Error.ContentNotAllowedInPrologue)
+                } else return null,
                 '<' => return self.tokenizeAfterLeftAngleBracket(),
                 else => return self.returnError(Error.ContentNotAllowedInPrologue)
             }
@@ -88,7 +97,7 @@ pub fn next(self: *TokenStream) NextRet {
                     
                     '>' => {
                         self.incrByByte();
-                        return self.tokenizeAfterRightAngleBracketOrBof();
+                        return self.tokenizeContent();
                     },
                     else => unreachable,
                 },
@@ -104,7 +113,7 @@ pub fn next(self: *TokenStream) NextRet {
                 .element_close_inline => {
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
-                    return if (self.getUtf8() != null) self.tokenizeAfterRightAngleBracketOrBof() else return null;
+                    return if (self.getUtf8() != null) self.tokenizeContent() else return null;
                 },
                 
                 .attribute_name => |attribute_name| {
@@ -127,14 +136,30 @@ pub fn next(self: *TokenStream) NextRet {
                     todo();
                 },
                 
-                .text => |text| {
-                    _ = text;
-                    todo();
+                .text => {
+                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                        '<' => return self.tokenizeAfterLeftAngleBracket(),
+                        '&' => return self.tokenizeAfterAmpersandInContent(),
+                        else => unreachable,
+                    }
+                },
+                
+                .entity_reference => {
+                    std.debug.assert(self.getUtf8().? == ';');
+                    self.incrByByte();
+                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                        '<' => return self.tokenizeAfterLeftAngleBracket(),
+                        '&' => return self.tokenizeAfterAmpersandInContent(),
+                        else => return self.tokenizeContent(),
+                    }
                 },
                 
                 .whitespace => {
-                    std.debug.assert((self.getUtf8() orelse return null) == '<');
-                    return self.tokenizeAfterLeftAngleBracket();
+                    switch (self.getUtf8() orelse return null) {
+                        '<' => return self.tokenizeAfterLeftAngleBracket(),
+                        '&' => return self.tokenizeAfterAmpersandInContent(),
+                        else => unreachable,
+                    }
                 },
                 
                 .pi_target => |pi_target| {
@@ -155,20 +180,50 @@ inline fn todo() noreturn {
     unreachable;
 }
 
-fn tokenizeAfterRightAngleBracketOrBof(self: *TokenStream) NextRet {
+fn tokenizeAfterAmpersandInContent(self: *TokenStream) NextRet {
+    std.debug.assert(self.getUtf8().? == '&');
+    const start_index = self.getIndex();
+    self.incrByByte();
+    switch (self.getUtf8() orelse return self.returnError(Error.EntityReferenceMissingName)) {
+        ';' => return self.returnError(Error.EntityReferenceMissingName),
+        else => {
+            const codepoint = self.getUtf8().?;
+            if (!xml.isValidUtf8NameStartChar(codepoint) and codepoint != ':') {
+                return self.returnError(Error.InvalidNameStartChar);
+            }
+            self.incrByUtf8Len();
+        }
+    }
+    
+    while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
+        ';' => break,
+        else => if (!xml.isValidUtf8NameCharOrColon(char))
+            return self.returnError(Error.InvalidNameChar) 
+    } else return self.returnError(Error.ExpectedClosingTag);
+    
+    std.debug.assert(self.getUtf8().? == ';');
+    
+    const info = .{ .len = (self.getIndex() + 1) - start_index };
+    const result = Token.initTag(start_index, .entity_reference, info);
+    return self.returnToken(result);
+}
+
+fn tokenizeContent(self: *TokenStream) NextRet {
+    const start_index = self.getIndex();
     switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
         '<' => return self.tokenizeAfterLeftAngleBracket(),
+        '&' => return self.tokenizeAfterAmpersandInContent(),
         else => {
-            const start_index = self.getIndex();
             var non_whitespace: bool = false;
-            
             while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
                 ' ',
                 '\t',
                 '\n',
                 '\r',
                 => {},
-                '<' => break,
+                '&',
+                '<',
+                => break,
                 else => non_whitespace = true,
             };
             
@@ -429,7 +484,17 @@ const tests = struct {
         fn whitespace(src: []const u8, maybe_tok: NextRet, content: []const u8) !void {
             const tok: Token = try (maybe_tok orelse error.NullToken);
             try testing.expectEqual(@as(std.meta.Tag(Token.Info), .whitespace), tok.info);
-            try testing.expectEqualStrings(tok.slice(src), content);
+            try testing.expectEqualStrings(content, tok.slice(src));
+        }
+        
+        fn entityReference(src: []const u8, maybe_tok: NextRet, name: []const u8) !void {
+            const full_slice = try std.mem.concat(testing.allocator, u8, &.{ "&", name, ";" });
+            defer testing.allocator.free(full_slice);
+            
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            try testing.expectEqual(@as(std.meta.Tag(Token.Info), .entity_reference), tok.info);
+            try testing.expectEqualStrings(full_slice, tok.slice(src));
+            try testing.expectEqualStrings(name, tok.info.entity_reference.name(tok.index, src));
         }
         
         
@@ -461,6 +526,10 @@ const tests = struct {
     
     fn expectWhitespace(ts: *TokenStream, content: []const u8) !void {
         try expect_token.whitespace(ts.buffer, ts.next(), content);
+    }
+    
+    fn expectEntityReference(ts: *TokenStream, name: []const u8) !void {
+        try expect_token.entityReference(ts.buffer, ts.next(), name);
     }
     
     
@@ -548,5 +617,240 @@ test "significant whitespace" {
     try tests.expectElementOpen(&ts, null, "empty");
     try tests.expectElementCloseInline(&ts);
     try tests.expectWhitespace(&ts, "\t");
+    try tests.expectNull(&ts);
+}
+
+test "basic content" {
+    var ts = TokenStream.init(undefined);
+    
+    ts.reset("<root> foo bar baz </root >");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectText(&ts, " foo bar baz ");
+    try tests.expectElementCloseTag(&ts, null, "root");
+    try tests.expectNull(&ts);
+}
+
+test "entity references" {
+    var ts = TokenStream.init(undefined);
+    ts.reset("<root>&amp;&lt; FOOBAR &gt;</root >");
+    
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectEntityReference(&ts, "amp");
+    try tests.expectEntityReference(&ts, "lt");
+    try tests.expectText(&ts, " FOOBAR ");
+    try tests.expectEntityReference(&ts, "gt");
+    try tests.expectElementCloseTag(&ts, null, "root");
+    try tests.expectNull(&ts);
+    
+    
+    
+    
+    ts.reset("<root> &amp;&lt;\t FOOBAR\t&gt; \t </root >");
+    
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectWhitespace(&ts, " ");
+    try tests.expectEntityReference(&ts, "amp");
+    try tests.expectEntityReference(&ts, "lt");
+    try tests.expectText(&ts, "\t FOOBAR\t");
+    try tests.expectEntityReference(&ts, "gt");
+    try tests.expectWhitespace(&ts, " \t ");
+    try tests.expectElementCloseTag(&ts, null, "root");
+    try tests.expectNull(&ts);
+    
+}
+
+test "UTF8 content" {
+    var ts = TokenStream.init(undefined);
+    
+    const utf8_content =
+        // edited to exclude any ampersands and left/right angle brackets
+        \\
+        \\      ði ıntəˈnæʃənəl fəˈnɛtık əsoʊsiˈeıʃn
+        \\      Y [ˈʏpsilɔn], Yen [jɛn], Yoga [ˈjoːgɑ]
+        \\
+        \\    APL:
+        \\
+        \\      ((V⍳V)=⍳⍴V)/V←,V    ⌷←⍳→⍴∆∇⊃‾⍎⍕⌈
+        \\
+        \\    Nicer typography in plain text files:
+        \\
+        \\      ╔══════════════════════════════════════════╗
+        \\      ║                                          ║
+        \\      ║   • ‘single’ and “double” quotes         ║
+        \\      ║                                          ║
+        \\      ║   • Curly apostrophes: “We’ve been here” ║
+        \\      ║                                          ║
+        \\      ║   • Latin-1 apostrophe and accents: '´`  ║
+        \\      ║                                          ║
+        \\      ║   • ‚deutsche‘ „Anführungszeichen“       ║
+        \\      ║                                          ║
+        \\      ║   • †, ‡, ‰, •, 3–4, —, −5/+5, ™, …      ║
+        \\      ║                                          ║
+        \\      ║   • ASCII safety test: 1lI|, 0OD, 8B     ║
+        \\      ║                      ╭─────────╮         ║
+        \\      ║   • the euro symbol: │ 14.95 € │         ║
+        \\      ║                      ╰─────────╯         ║
+        \\      ╚══════════════════════════════════════════╝
+        \\
+        \\    Greek (in Polytonic):
+        \\
+        \\      The Greek anthem:
+        \\
+        \\      Σὲ γνωρίζω ἀπὸ τὴν κόψη
+        \\      τοῦ σπαθιοῦ τὴν τρομερή,
+        \\      σὲ γνωρίζω ἀπὸ τὴν ὄψη
+        \\      ποὺ μὲ βία μετράει τὴ γῆ.
+        \\
+        \\      ᾿Απ᾿ τὰ κόκκαλα βγαλμένη
+        \\      τῶν ῾Ελλήνων τὰ ἱερά
+        \\      καὶ σὰν πρῶτα ἀνδρειωμένη
+        \\      χαῖρε, ὦ χαῖρε, ᾿Ελευθεριά!
+        \\
+        \\      From a speech of Demosthenes in the 4th century BC:
+        \\
+        \\      Οὐχὶ ταὐτὰ παρίσταταί μοι γιγνώσκειν, ὦ ἄνδρες ᾿Αθηναῖοι,
+        \\      ὅταν τ᾿ εἰς τὰ πράγματα ἀποβλέψω καὶ ὅταν πρὸς τοὺς
+        \\      λόγους οὓς ἀκούω· τοὺς μὲν γὰρ λόγους περὶ τοῦ
+        \\      τιμωρήσασθαι Φίλιππον ὁρῶ γιγνομένους, τὰ δὲ πράγματ᾿ 
+        \\      εἰς τοῦτο προήκοντα,  ὥσθ᾿ ὅπως μὴ πεισόμεθ᾿ αὐτοὶ
+        \\      πρότερον κακῶς σκέψασθαι δέον. οὐδέν οὖν ἄλλο μοι δοκοῦσιν
+        \\      οἱ τὰ τοιαῦτα λέγοντες ἢ τὴν ὑπόθεσιν, περὶ ἧς βουλεύεσθαι,
+        \\      οὐχὶ τὴν οὖσαν παριστάντες ὑμῖν ἁμαρτάνειν. ἐγὼ δέ, ὅτι μέν
+        \\      ποτ᾿ ἐξῆν τῇ πόλει καὶ τὰ αὑτῆς ἔχειν ἀσφαλῶς καὶ Φίλιππον
+        \\      τιμωρήσασθαι, καὶ μάλ᾿ ἀκριβῶς οἶδα· ἐπ᾿ ἐμοῦ γάρ, οὐ πάλαι
+        \\      γέγονεν ταῦτ᾿ ἀμφότερα· νῦν μέντοι πέπεισμαι τοῦθ᾿ ἱκανὸν
+        \\      προλαβεῖν ἡμῖν εἶναι τὴν πρώτην, ὅπως τοὺς συμμάχους
+        \\      σώσομεν. ἐὰν γὰρ τοῦτο βεβαίως ὑπάρξῃ, τότε καὶ περὶ τοῦ
+        \\      τίνα τιμωρήσεταί τις καὶ ὃν τρόπον ἐξέσται σκοπεῖν· πρὶν δὲ
+        \\      τὴν ἀρχὴν ὀρθῶς ὑποθέσθαι, μάταιον ἡγοῦμαι περὶ τῆς
+        \\      τελευτῆς ὁντινοῦν ποιεῖσθαι λόγον.
+        \\
+        \\      Δημοσθένους, Γ´ ᾿Ολυνθιακὸς
+        \\
+        \\    Georgian:
+        \\
+        \\      From a Unicode conference invitation:
+        \\
+        \\      გთხოვთ ახლავე გაიაროთ რეგისტრაცია Unicode-ის მეათე საერთაშორისო
+        \\      კონფერენციაზე დასასწრებად, რომელიც გაიმართება 10-12 მარტს,
+        \\      ქ. მაინცში, გერმანიაში. კონფერენცია შეჰკრებს ერთად მსოფლიოს
+        \\      ექსპერტებს ისეთ დარგებში როგორიცაა ინტერნეტი და Unicode-ი,
+        \\      ინტერნაციონალიზაცია და ლოკალიზაცია, Unicode-ის გამოყენება
+        \\      ოპერაციულ სისტემებსა, და გამოყენებით პროგრამებში, შრიფტებში,
+        \\      ტექსტების დამუშავებასა და მრავალენოვან კომპიუტერულ სისტემებში.
+        \\
+        \\    Russian:
+        \\
+        \\      From a Unicode conference invitation:
+        \\
+        \\      Зарегистрируйтесь сейчас на Десятую Международную Конференцию по
+        \\      Unicode, которая состоится 10-12 марта 1997 года в Майнце в Германии.
+        \\      Конференция соберет широкий круг экспертов по  вопросам глобального
+        \\      Интернета и Unicode, локализации и интернационализации, воплощению и
+        \\      применению Unicode в различных операционных системах и программных
+        \\      приложениях, шрифтах, верстке и многоязычных компьютерных системах.
+        \\
+        \\    Thai (UCS Level 2):
+        \\
+        \\      Excerpt from a poetry on The Romance of The Three Kingdoms (a Chinese
+        \\      classic 'San Gua'):
+        \\
+        \\      [----------------------------|------------------------]
+        \\        ๏ แผ่นดินฮั่นเสื่อมโทรมแสนสังเวช  พระปกเกศกองบู๊กู้ขึ้นใหม่
+        \\      สิบสองกษัตริย์ก่อนหน้าแลถัดไป       สององค์ไซร้โง่เขลาเบาปัญญา
+        \\        ทรงนับถือขันทีเป็นที่พึ่ง           บ้านเมืองจึงวิปริตเป็นนักหนา
+        \\      โฮจิ๋นเรียกทัพทั่วหัวเมืองมา         หมายจะฆ่ามดชั่วตัวสำคัญ
+        \\        เหมือนขับไสไล่เสือจากเคหา      รับหมาป่าเข้ามาเลยอาสัญ
+        \\      ฝ่ายอ้องอุ้นยุแยกให้แตกกัน          ใช้สาวนั้นเป็นชนวนชื่นชวนใจ
+        \\        พลันลิฉุยกุยกีกลับก่อเหตุ          ช่างอาเพศจริงหนาฟ้าร้องไห้
+        \\      ต้องรบราฆ่าฟันจนบรรลัย           ฤๅหาใครค้ำชูกู้บรรลังก์ ฯ
+        \\
+        \\      (The above is a two-column text. If combining characters are handled
+        \\      correctly, the lines of the second column should be aligned with the
+        \\      | character above.)
+        \\
+        \\    Ethiopian:
+        \\
+        \\      Proverbs in the Amharic language:
+        \\
+        \\      ሰማይ አይታረስ ንጉሥ አይከሰስ።
+        \\      ብላ ካለኝ እንደአባቴ በቆመጠኝ።
+        \\      ጌጥ ያለቤቱ ቁምጥና ነው።
+        \\      ደሀ በሕልሙ ቅቤ ባይጠጣ ንጣት በገደለው።
+        \\      የአፍ ወለምታ በቅቤ አይታሽም።
+        \\      አይጥ በበላ ዳዋ ተመታ።
+        \\      ሲተረጉሙ ይደረግሙ።
+        \\      ቀስ በቀስ፥ ዕንቁላል በእግሩ ይሄዳል።
+        \\      ድር ቢያብር አንበሳ ያስር።
+        \\      ሰው እንደቤቱ እንጅ እንደ ጉረቤቱ አይተዳደርም።
+        \\      እግዜር የከፈተውን ጉሮሮ ሳይዘጋው አይድርም።
+        \\      የጎረቤት ሌባ፥ ቢያዩት ይስቅ ባያዩት ያጠልቅ።
+        \\      ሥራ ከመፍታት ልጄን ላፋታት።
+        \\      ዓባይ ማደሪያ የለው፥ ግንድ ይዞ ይዞራል።
+        \\      የእስላም አገሩ መካ የአሞራ አገሩ ዋርካ።
+        \\      ተንጋሎ ቢተፉ ተመልሶ ባፉ።
+        \\      ወዳጅህ ማር ቢሆን ጨርስህ አትላሰው።
+        \\      እግርህን በፍራሽህ ልክ ዘርጋ።
+        \\
+        \\    Runes:
+        \\
+        \\      ᚻᛖ ᚳᚹᚫᚦ ᚦᚫᛏ ᚻᛖ ᛒᚢᛞᛖ ᚩᚾ ᚦᚫᛗ ᛚᚪᚾᛞᛖ ᚾᚩᚱᚦᚹᛖᚪᚱᛞᚢᛗ ᚹᛁᚦ ᚦᚪ ᚹᛖᛥᚫ
+        \\
+        \\      (Old English, which transcribed into Latin reads 'He cwaeth that he
+        \\      bude thaem lande northweardum with tha Westsae.' and means 'He said
+        \\      that he lived in the northern land near the Western Sea.')
+        \\
+        \\    Braille:
+        \\
+        \\      ⡌⠁⠧⠑ ⠼⠁⠒  ⡍⠜⠇⠑⠹⠰⠎ ⡣⠕⠌
+        \\
+        \\      ⡍⠜⠇⠑⠹ ⠺⠁⠎ ⠙⠑⠁⠙⠒ ⠞⠕ ⠃⠑⠛⠔ ⠺⠊⠹⠲ ⡹⠻⠑ ⠊⠎ ⠝⠕ ⠙⠳⠃⠞
+        \\      ⠱⠁⠞⠑⠧⠻ ⠁⠃⠳⠞ ⠹⠁⠞⠲ ⡹⠑ ⠗⠑⠛⠊⠌⠻ ⠕⠋ ⠙⠊⠎ ⠃⠥⠗⠊⠁⠇ ⠺⠁⠎
+        \\      ⠎⠊⠛⠝⠫ ⠃⠹ ⠹⠑ ⠊⠇⠻⠛⠹⠍⠁⠝⠂ ⠹⠑ ⠊⠇⠻⠅⠂ ⠹⠑ ⠥⠝⠙⠻⠞⠁⠅⠻⠂
+        \\      ⠁⠝⠙ ⠹⠑ ⠡⠊⠑⠋ ⠍⠳⠗⠝⠻⠲ ⡎⠊⠗⠕⠕⠛⠑ ⠎⠊⠛⠝⠫ ⠊⠞⠲ ⡁⠝⠙
+        \\      ⡎⠊⠗⠕⠕⠛⠑⠰⠎ ⠝⠁⠍⠑ ⠺⠁⠎ ⠛⠕⠕⠙ ⠥⠏⠕⠝ ⠰⡡⠁⠝⠛⠑⠂ ⠋⠕⠗ ⠁⠝⠹⠹⠔⠛ ⠙⠑ 
+        \\      ⠡⠕⠎⠑ ⠞⠕ ⠏⠥⠞ ⠙⠊⠎ ⠙⠁⠝⠙ ⠞⠕⠲
+        \\
+        \\      ⡕⠇⠙ ⡍⠜⠇⠑⠹ ⠺⠁⠎ ⠁⠎ ⠙⠑⠁⠙ ⠁⠎ ⠁ ⠙⠕⠕⠗⠤⠝⠁⠊⠇⠲
+        \\
+        \\      ⡍⠔⠙⠖ ⡊ ⠙⠕⠝⠰⠞ ⠍⠑⠁⠝ ⠞⠕ ⠎⠁⠹ ⠹⠁⠞ ⡊ ⠅⠝⠪⠂ ⠕⠋ ⠍⠹
+        \\      ⠪⠝ ⠅⠝⠪⠇⠫⠛⠑⠂ ⠱⠁⠞ ⠹⠻⠑ ⠊⠎ ⠏⠜⠞⠊⠊⠥⠇⠜⠇⠹ ⠙⠑⠁⠙ ⠁⠃⠳⠞
+        \\      ⠁ ⠙⠕⠕⠗⠤⠝⠁⠊⠇⠲ ⡊ ⠍⠊⠣⠞ ⠙⠁⠧⠑ ⠃⠑⠲ ⠔⠊⠇⠔⠫⠂ ⠍⠹⠎⠑⠇⠋⠂ ⠞⠕
+        \\      ⠗⠑⠛⠜⠙ ⠁ ⠊⠕⠋⠋⠔⠤⠝⠁⠊⠇ ⠁⠎ ⠹⠑ ⠙⠑⠁⠙⠑⠌ ⠏⠊⠑⠊⠑ ⠕⠋ ⠊⠗⠕⠝⠍⠕⠝⠛⠻⠹ 
+        \\      ⠔ ⠹⠑ ⠞⠗⠁⠙⠑⠲ ⡃⠥⠞ ⠹⠑ ⠺⠊⠎⠙⠕⠍ ⠕⠋ ⠳⠗ ⠁⠝⠊⠑⠌⠕⠗⠎ 
+        \\      ⠊⠎ ⠔ ⠹⠑ ⠎⠊⠍⠊⠇⠑⠆ ⠁⠝⠙ ⠍⠹ ⠥⠝⠙⠁⠇⠇⠪⠫ ⠙⠁⠝⠙⠎
+        \\      ⠩⠁⠇⠇ ⠝⠕⠞ ⠙⠊⠌⠥⠗⠃ ⠊⠞⠂ ⠕⠗ ⠹⠑ ⡊⠳⠝⠞⠗⠹⠰⠎ ⠙⠕⠝⠑ ⠋⠕⠗⠲ ⡹⠳
+        \\      ⠺⠊⠇⠇ ⠹⠻⠑⠋⠕⠗⠑ ⠏⠻⠍⠊⠞ ⠍⠑ ⠞⠕ ⠗⠑⠏⠑⠁⠞⠂ ⠑⠍⠏⠙⠁⠞⠊⠊⠁⠇⠇⠹⠂ ⠹⠁⠞
+        \\      ⡍⠜⠇⠑⠹ ⠺⠁⠎ ⠁⠎ ⠙⠑⠁⠙ ⠁⠎ ⠁ ⠙⠕⠕⠗⠤⠝⠁⠊⠇⠲
+        \\
+        \\      (The first couple of paragraphs of "A Christmas Carol" by Dickens)
+        \\
+        \\    Compact font selection example text:
+        \\
+        \\      ABCDEFGHIJKLMNOPQRSTUVWXYZ /0123456789
+        \\      abcdefghijklmnopqrstuvwxyz £©µÀÆÖÞßéöÿ
+        \\      –—‘“”„†•…‰™œŠŸž€ ΑΒΓΔΩαβγδω АБВГДабвгд
+        \\      ∀∂∈ℝ∧∪≡∞ ↑↗↨↻⇣ ┐┼╔╘░►☺♀ ﬁ�⑀₂ἠḂӥẄɐː⍎אԱა
+        \\
+        \\    Greetings in various languages:
+        \\
+        \\      Hello world, Καλημέρα κόσμε, コンニチハ
+        \\
+        \\    Box drawing alignment tests:                                          █
+        \\                                                                          ▉
+        \\      ╔══╦══╗  ┌──┬──┐  ╭──┬──╮  ╭──┬──╮  ┏━━┳━━┓  ┎┒┏┑   ╷  ╻ ┏┯┓ ┌┰┐    ▊ ╱╲╱╲╳╳╳
+        \\      ║┌─╨─┐║  │╔═╧═╗│  │╒═╪═╕│  │╓─╁─╖│  ┃┌─╂─┐┃  ┗╃╄┙  ╶┼╴╺╋╸┠┼┨ ┝╋┥    ▋ ╲╱╲╱╳╳╳
+        \\      ║│╲ ╱│║  │║   ║│  ││ │ ││  │║ ┃ ║│  ┃│ ╿ │┃  ┍╅╆┓   ╵  ╹ ┗┷┛ └┸┘    ▌ ╱╲╱╲╳╳╳
+        \\      ╠╡ ╳ ╞╣  ├╢   ╟┤  ├┼─┼─┼┤  ├╫─╂─╫┤  ┣┿╾┼╼┿┫  ┕┛┖┚     ┌┄┄┐ ╎ ┏┅┅┓ ┋ ▍ ╲╱╲╱╳╳╳
+        \\      ║│╱ ╲│║  │║   ║│  ││ │ ││  │║ ┃ ║│  ┃│ ╽ │┃  ░░▒▒▓▓██ ┊  ┆ ╎ ╏  ┇ ┋ ▎
+        \\      ║└─╥─┘║  │╚═╤═╝│  │╘═╪═╛│  │╙─╀─╜│  ┃└─╂─┘┃  ░░▒▒▓▓██ ┊  ┆ ╎ ╏  ┇ ┋ ▏
+        \\      ╚══╩══╝  └──┴──┘  ╰──┴──╯  ╰──┴──╯  ┗━━┻━━┛           └╌╌┘ ╎ ┗╍╍┛ ┋  ▁▂▃▄▅▆▇█
+        \\
+    ;
+    
+    ts.reset("<root>" ++ utf8_content ++ "</root>");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectText(&ts, utf8_content);
+    try tests.expectElementCloseTag(&ts, null, "root");
     try tests.expectNull(&ts);
 }

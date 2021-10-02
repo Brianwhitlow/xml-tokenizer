@@ -31,6 +31,7 @@ pub const Info = union(enum) {
     comment: Comment,
     cdata: CharDataSection,
     text: Length,
+    entity_reference: EntityReference,
     whitespace: Length,
     
     pi_target: ProcessingInstructionsTarget,
@@ -163,7 +164,7 @@ pub const Info = union(enum) {
     
     pub const AttributeValueSegment = union(enum) {
         text: @This().Text,
-        entity_ref: @This().EntityRef,
+        entity_reference: EntityReference,
         
         comptime {
             std.debug.assert(allVariantsHaveSliceFunc(@This()));
@@ -187,27 +188,27 @@ pub const Info = union(enum) {
                 return src[beg..end];
             }
         };
-        
-        pub const EntityRef = struct {
-            len: usize,
-            
-            pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-                const beg = index;
-                const end = beg + self.len;
-                return src[beg..end];
-            }
-            
-            pub fn name(self: @This(), index: usize, src: []const u8) []const u8 {
-                const sliced = self.slice(index, src);
-                const beg = ("&".len);
-                const end = sliced.len - (";".len);
-                return sliced[beg..end];
-            }
-        };
     };
     
     pub const Comment = DataSection("<!--", "-->");
     pub const CharDataSection = DataSection("<![CDATA[", "]]>");
+    
+    pub const EntityReference = struct {
+        len: usize,
+        
+        pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+            const beg = index;
+            const end = beg + self.len;
+            return src[beg..end];
+        }
+        
+        pub fn name(self: @This(), index: usize, src: []const u8) []const u8 {
+            const sliced = self.slice(index, src);
+            const beg = ("&".len);
+            const end = sliced.len - (";".len);
+            return sliced[beg..end];
+        }
+    };
     
     pub const ProcessingInstructionsTarget = struct {
         target_len: usize,
