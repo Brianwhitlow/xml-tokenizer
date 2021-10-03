@@ -186,12 +186,10 @@ pub fn next(self: *TokenStream) NextRet {
                     todo();
                 },
                 
-                .text => {
-                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                        '<' => return self.tokenizeAfterLeftAngleBracket(),
-                        '&' => return self.tokenizeAfterAmpersandInContent(),
-                        else => unreachable,
-                    }
+                .text => switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                    '<' => return self.tokenizeAfterLeftAngleBracket(),
+                    '&' => return self.tokenizeAfterAmpersandInContent(),
+                    else => unreachable,
                 },
                 
                 .entity_reference => {
@@ -204,12 +202,10 @@ pub fn next(self: *TokenStream) NextRet {
                     }
                 },
                 
-                .whitespace => {
-                    switch (self.getUtf8() orelse return self.returnNullIfDepth0()) {
-                        '<' => return self.tokenizeAfterLeftAngleBracket(),
-                        '&' => return self.tokenizeAfterAmpersandInContent(),
-                        else => unreachable,
-                    }
+                .whitespace => switch (self.getUtf8() orelse return self.returnNullIfDepth0()) {
+                    '<' => return self.tokenizeAfterLeftAngleBracket(),
+                    '&' => return self.tokenizeAfterAmpersandInContent(),
+                    else => unreachable,
                 },
                 
                 .pi_target => |pi_target| {
@@ -230,7 +226,41 @@ inline fn todo() noreturn {
     unreachable;
 }
 
-
+const State = struct {
+    index: usize = 0,
+    info: Info = .start,
+    depth: usize = 0,
+    last_quote: ?QuoteType = null,
+    
+    const QuoteType = enum(u8) {
+        single = '\'',
+        double = '"',
+        pub fn init(char: u8) QuoteType {
+            std.debug.assert(switch (char) {
+                '\'',
+                '"',
+                => true,
+                else => false,
+            });
+            return @intToEnum(QuoteType, char);
+        }
+        
+        pub fn initUtf8(char: u21) QuoteType {
+            std.debug.assert(unicode.utf8CodepointSequenceLength(char) catch unreachable == 1);
+            return QuoteType.init(@intCast(u8, char));
+        }
+        
+        pub fn value(self: QuoteType) u8 {
+            return @enumToInt(self);
+        }
+    };
+    
+    const Info = union(enum) {
+        err: Error,
+        start,
+        last_tok: Token.Info,
+    };
+};
 
 fn tokenizeAfterAmpersandInContent(self: *TokenStream) NextRet {
     std.debug.assert(self.getUtf8().? == '&');
@@ -289,7 +319,7 @@ fn tokenizeContent(self: *TokenStream) NextRet {
     }
 }
 
-fn tokenizeAfterElementOpenWhitespaceSlash(self: *TokenStream) NextRet {
+fn tokenizeElementCloseInline(self: *TokenStream) NextRet {
     const start_index = self.getIndex();
     self.incrByByte();
     switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
@@ -313,12 +343,12 @@ fn tokenizeAfterElementOpenOrAttributeValue(self: *TokenStream) NextRet {
                 '\n',
                 '\r',
                 => continue,
-                '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
+                '/' => return self.tokenizeElementCloseInline(),
                 '>' => {
                     self.incrByByte();
                     switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
                         '<' => return self.tokenizeAfterLeftAngleBracket(),
-                        else => todo()
+                        else => return self.tokenizeContent()
                     }
                 },
                 else => {
@@ -362,9 +392,7 @@ fn tokenizeAfterElementOpenOrAttributeValue(self: *TokenStream) NextRet {
                 }
             } else return self.returnError(Error.ExpectedClosingTag);
         },
-        
-        '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
-        
+        '/' => return self.tokenizeElementCloseInline(),
         '>' => {
             self.incrByByte();
             return self.tokenizeContent();
@@ -641,44 +669,6 @@ inline fn getIndex(self: TokenStream) usize {
 
 
 
-const State = struct {
-    index: usize = 0,
-    info: Info = .start,
-    depth: usize = 0,
-    last_quote: ?QuoteType = null,
-    
-    const QuoteType = enum(u8) {
-        single = '\'',
-        double = '"',
-        pub fn init(char: u8) QuoteType {
-            std.debug.assert(switch (char) {
-                '\'',
-                '"',
-                => true,
-                else => false,
-            });
-            return @intToEnum(QuoteType, char);
-        }
-        
-        pub fn initUtf8(char: u21) QuoteType {
-            std.debug.assert(unicode.utf8CodepointSequenceLength(char) catch unreachable == 1);
-            return QuoteType.init(@intCast(u8, char));
-        }
-        
-        pub fn value(self: QuoteType) u8 {
-            return @enumToInt(self);
-        }
-    };
-    
-    const Info = union(enum) {
-        err: Error,
-        start,
-        last_tok: Token.Info,
-    };
-};
-
-
-
 const tests = struct {
     const expect_token = struct {
         fn elementOpen(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
@@ -952,11 +942,13 @@ test "significant whitespace" {
 test "basic content" {
     var ts = TokenStream.init(undefined);
     
-    ts.reset("<root> foo bar baz </root >");
-    try tests.expectElementOpen(&ts, null, "root");
-    try tests.expectText(&ts, " foo bar baz ");
-    try tests.expectElementCloseTag(&ts, null, "root");
-    try tests.expectNull(&ts);
+    inline for (.{"", "    "}) |ws| {
+        ts.reset("<root" ++ ws ++ "> foo bar baz </root >");
+        try tests.expectElementOpen(&ts, null, "root");
+        try tests.expectText(&ts, " foo bar baz ");
+        try tests.expectElementCloseTag(&ts, null, "root");
+        try tests.expectNull(&ts);
+    }
 }
 
 test "entity references" {
