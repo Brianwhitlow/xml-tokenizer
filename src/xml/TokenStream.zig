@@ -177,7 +177,7 @@ pub fn next(self: *TokenStream) NextRet {
                     self.incrByByte();
                     switch (self.getUtf8() orelse return self.returnNullIfDepth0()) {
                         '<' => return self.tokenizeAfterLeftAngleBracket(),
-                        else => todo(),
+                        else => return self.tokenizeContent(),
                     }
                 },
                 
@@ -1200,10 +1200,11 @@ test "comment" {
     try tests.expectNull(&ts);
     
     // note that we omit a closing tag
-    ts.reset("<root> <!--wowza!-->");
+    ts.reset("<root> <!--wowza!-->\t");
     try tests.expectElementOpen(&ts, null, "root");
     try tests.expectWhitespace(&ts, " ");
     try tests.expectComment(&ts, "wowza!");
+    try tests.expectWhitespace(&ts, "\t");
     // since the 'depth' is not zero (there are not an equal number of element openings and element closings),
     // we error out here.
     try tests.expectError(&ts, Error.ExpectedClosingTag);
