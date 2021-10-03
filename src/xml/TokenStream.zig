@@ -553,6 +553,50 @@ const tests = struct {
             try testing.expectEqualStrings(content, tok.info.comment.data(tok.index, src));
         }
         
+        fn attributeName(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
+            const full_slice: []const u8 = if (prefix) |prfx| @as([]const u8, try std.mem.concat(testing.allocator, u8, &.{ prfx, ":", name })) else name;
+            defer if (prefix != null) testing.allocator.free(full_slice);
+            
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            try testing.expectEqual(@as(std.meta.Tag(Token.Info), .attribute_name), tok.info);
+            try testing.expectEqualStrings(full_slice, tok.slice(src));
+            try testing.expectEqualStrings(name, tok.info.attribute_name.name(tok.index, src));
+            if (prefix) |prfx|
+                try testing.expectEqualStrings(prfx, tok.info.attribute_name.prefix(tok.index, src) orelse return error.NullPrefix)
+            else {
+                try testing.expectEqual(@as(?[]const u8, null), tok.info.element_close_tag.prefix(tok.index, src));
+            }
+        }
+        
+        const AttributeValueSegment = union(std.meta.Tag(Token.Info.AttributeValueSegment)) {
+            text: []const u8,
+            entity_reference: struct{ name: []const u8 },
+        };
+        
+        fn attributeValueSegment(src: []const u8, maybe_tok: NextRet, segment: AttributeValueSegment) !void {
+            const tok: Token = try (maybe_tok orelse error.NullToken);
+            try testing.expectEqual(@as(std.meta.Tag(Token.Info), .attribute_value_segment), tok.info);
+            try testing.expectEqual(std.meta.activeTag(segment), tok.info.attribute_value_segment);
+            
+            const full_slice: []const u8 = switch (segment) {
+                .text => |text| text,
+                .entity_reference => |entity_reference| try std.mem.concat(testing.allocator, u8, &.{ "&", entity_reference.name, ";" }),
+            };
+            defer switch (segment) {
+                .text => {},
+                .entity_reference => testing.allocator.free(full_slice),
+            };
+            
+            try testing.expectEqualStrings(full_slice, tok.slice(src));
+            switch (segment) {
+                .text => {},
+                .entity_reference => |entity_reference| {
+                    const name = tok.info.attribute_value_segment.entity_reference.name(tok.index, src);
+                    try testing.expectEqualStrings(entity_reference.name, name);
+                }
+            }
+        }
+        
         
         
         fn isNull(maybe_tok: NextRet) !void {
@@ -590,6 +634,21 @@ const tests = struct {
     
     fn expectComment(ts: *TokenStream, content: []const u8) !void {
         try expect_token.comment(ts.buffer, ts.next(), content);
+    }
+    
+    fn expectAttributeName(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
+        try expect_token.attributeName(ts.buffer, ts.next(), prefix, name);
+    }
+    
+    fn expectAttributeValueSegment(ts: *TokenStream, segment: expect_token.AttributeValueSegment) !void {
+        try expect_token.attributeValueSegment(ts.buffer, ts.next(), segment);
+    }
+    
+    fn expectAttribute(ts: *TokenStream, prefix: ?[]const u8, name: []const u8, segments: []const expect_token.AttributeValueSegment) !void {
+        try expectAttributeName(ts, prefix, name);
+        for (segments) |segment| {
+            try expectAttributeValueSegment(ts, segment);
+        }
     }
     
     
@@ -964,5 +1023,15 @@ test "comment" {
     try tests.expectElementOpen(&ts, null, "root");
     try tests.expectComment(&ts, "jeez-louise");
     try tests.expectElementCloseTag(&ts, null, "fakeroot");
+    try tests.expectNull(&ts);
+}
+
+test "attributes" {
+    var ts = TokenStream.init(undefined);
+    
+    ts.reset("<foo bar= 'baz'/>");
+    try tests.expectElementOpen(&ts, null, "foo");
+    try tests.expectAttribute(&ts, null, "bar", &.{ .{ .text = "baz" } });
+    try tests.expectElementCloseInline(&ts);
     try tests.expectNull(&ts);
 }

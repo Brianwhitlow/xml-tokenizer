@@ -163,7 +163,7 @@ pub const Info = union(enum) {
     };
     
     pub const AttributeValueSegment = union(enum) {
-        text: @This().Text,
+        text: Length,
         entity_reference: EntityReference,
         
         comptime {
@@ -178,16 +178,6 @@ pub const Info = union(enum) {
             
             unreachable;
         }
-        
-        pub const Text = struct {
-            len: usize,
-            
-            pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-                const beg = index;
-                const end = beg + self.len;
-                return src[beg..end];
-            }
-        };
     };
     
     pub const Comment = DataSection("<!--", "-->");
