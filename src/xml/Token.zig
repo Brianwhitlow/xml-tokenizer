@@ -165,6 +165,7 @@ pub const Info = union(enum) {
     pub const AttributeValueSegment = union(enum) {
         text: Length,
         entity_reference: EntityReference,
+        empty_quotes: EmptyQuotes,
         
         comptime {
             std.debug.assert(allVariantsHaveSliceFunc(@This()));
@@ -178,6 +179,16 @@ pub const Info = union(enum) {
             
             unreachable;
         }
+        
+        pub const EmptyQuotes = struct {
+            pub fn slice(_: @This(), index: usize, src: []const u8) []const u8 {
+                const beg = index;
+                const end = beg + 0;
+                const result = src[beg..end];
+                std.debug.assert(std.mem.eql(u8, result, ""));
+                return result;
+            }
+        };
     };
     
     pub const Comment = DataSection("<!--", "-->");

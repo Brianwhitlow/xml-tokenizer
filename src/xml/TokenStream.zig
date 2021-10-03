@@ -62,39 +62,78 @@ pub fn next(self: *TokenStream) NextRet {
             switch (last_tok) {
                 .element_open => {
                     self.state.depth += 1;
-                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                        ' ',
-                        '\t',
-                        '\n',
-                        '\r',
-                        => {
-                            self.incrByByte();
-                            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch(char) {
-                                ' ',
-                                '\t',
-                                '\n',
-                                '\r',
-                                => continue,
-                                '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
-                                '>' => {
-                                    self.incrByByte();
-                                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                                        '<' => return self.tokenizeAfterLeftAngleBracket(),
-                                        else => todo()
-                                    }
-                                },
-                                else => todo()
-                            } else todo();
-                        },
+                    return self.tokenizeAfterElementOpenOrAttributeValue();
+                    //switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                    //    ' ',
+                    //    '\t',
+                    //    '\n',
+                    //    '\r',
+                    //    => {
+                    //        self.incrByByte();
+                    //        while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch(char) {
+                    //            ' ',
+                    //            '\t',
+                    //            '\n',
+                    //            '\r',
+                    //            => continue,
+                    //            '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
+                    //            '>' => {
+                    //                self.incrByByte();
+                    //                switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                    //                    '<' => return self.tokenizeAfterLeftAngleBracket(),
+                    //                    else => todo()
+                    //                }
+                    //            },
+                    //            else => {
+                    //                if (!xml.isValidUtf8NameStartChar(char)) {
+                    //                    return self.returnError(Error.InvalidNameStartChar);
+                    //                }
+                                    
+                    //                const start_index = self.getIndex();
+                    //                var prefix_len: usize = 0;
+                                    
+                    //                self.incrByUtf8Len();
+                    //                while (self.getUtf8()) |name_char| : (self.incrByUtf8Len()) switch(name_char) {
+                    //                    ' ',
+                    //                    '\t',
+                    //                    '\n',
+                    //                    '\r',
+                    //                    '=',
+                    //                    => {
+                    //                        const full_len = self.getIndex() - start_index;
+                    //                        const info = .{ .prefix_len = prefix_len, .full_len = full_len };
+                    //                        const result = Token.initTag(start_index, .attribute_name, info);
+                    //                        return self.returnToken(result);
+                    //                    },
+                                        
+                    //                    ':' => {
+                    //                        if (prefix_len != 0) {
+                    //                            return self.returnError(Error.InvalidNameChar);
+                    //                        }
+                    //                        prefix_len = self.getIndex() - start_index;
+                                            
+                    //                        self.incrByByte();
+                    //                        const maybe_codepoint = self.getUtf8();
+                    //                        if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
+                    //                            return self.returnError(Error.InvalidNameStartChar);
+                    //                        }
+                    //                    },
+                                        
+                    //                    else => if (!xml.isValidUtf8NameChar(name_char))
+                    //                        return self.returnError(Error.InvalidNameChar)
+                    //                } else return self.returnError(Error.ExpectedClosingTag);
+                    //            }
+                    //        } else return self.returnError(Error.ExpectedClosingTag);
+                    //    },
                         
-                        '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
+                    //    '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
                         
-                        '>' => {
-                            self.incrByByte();
-                            return self.tokenizeContent();
-                        },
-                        else => unreachable,
-                    }
+                    //    '>' => {
+                    //        self.incrByByte();
+                    //        return self.tokenizeContent();
+                    //    },
+                    //    else => unreachable,
+                    //}
                 },
                 
                 .element_close_tag => {
@@ -111,14 +150,97 @@ pub fn next(self: *TokenStream) NextRet {
                     return if (self.getUtf8() != null) self.tokenizeContent() else self.returnNullIfDepth0();
                 },
                 
-                .attribute_name => |attribute_name| {
-                    _ = attribute_name;
-                    todo();
+                .attribute_name => {
+                    std.debug.assert(switch (self.getUtf8().?) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        '=',
+                        => true,
+                        else => false
+                    });
+                    
+                    while (self.getUtf8()) |char| : (self.incrByByte()) switch (char) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        => continue,
+                        '=' => break,
+                        else => return self.returnError(Error.ExpectedClosingTag)
+                    } else return self.returnError(Error.ExpectedClosingTag);
+                    
+                    std.debug.assert(self.getUtf8().? == '=');
+                    
+                    self.incrByByte();
+                    while (self.getUtf8()) |char| : (self.incrByByte()) switch (char) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        => continue,
+                        '"',
+                        '\'',
+                        => break,
+                        else => return self.returnError(Error.ExpectedClosingTag),
+                    } else return self.returnError(Error.ExpectedClosingTag);
+                    
+                    std.debug.assert(switch (self.getUtf8().?) {
+                        '"',
+                        '\'',
+                        => true,
+                        else => false,
+                    });
+                    
+                    self.state.last_quote = State.QuoteType.initUtf8(self.getUtf8().?);
+                    self.incrByByte();
+                    
+                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                        '"',
+                        '\'',
+                        => {
+                            const current_quote_type = State.QuoteType.init(self.getByte().?);
+                            if (self.state.last_quote.? != current_quote_type) {
+                                return self.tokenizeAttributeValueSegmentText();
+                            }
+                            
+                            const result = Token.initTag(self.getIndex(), .attribute_value_segment, .empty_quotes);
+                            return self.returnToken(result);
+                        },
+                        '&' => return self.tokenizeAttributeValueSegmentEntityRef(),
+                        else => return self.tokenizeAttributeValueSegmentText(),
+                    }
                 },
                 
-                .attribute_value_segment => |attribute_value_segment| {
-                    _ = attribute_value_segment;
-                    todo();
+                .attribute_value_segment => switch (self.getUtf8().?) {
+                    '"',
+                    '\'',
+                    => {
+                        std.debug.assert(self.state.last_quote.? == State.QuoteType.init(self.getByte().?));
+                        self.incrByByte();
+                        self.state.last_quote = null;
+                        return self.tokenizeAfterElementOpenOrAttributeValue();
+                    },
+                    ';' => {
+                        self.incrByByte();
+                        switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                            '"',
+                            '\'',
+                            => {
+                                if (self.state.last_quote.? == State.QuoteType.init(self.getByte().?)) {
+                                    self.incrByByte();
+                                    self.state.last_quote = null;
+                                    return self.tokenizeAfterElementOpenOrAttributeValue();
+                                }
+                                return self.tokenizeAttributeValueSegmentText();
+                            },
+                            '&' => return self.tokenizeAttributeValueSegmentEntityRef(),
+                            else => return self.tokenizeAttributeValueSegmentText(),
+                        }
+                    },
+                    '&' => return self.tokenizeAttributeValueSegmentEntityRef(),
+                    else => unreachable,
                 },
                 
                 .comment => {
@@ -178,6 +300,8 @@ pub fn next(self: *TokenStream) NextRet {
 inline fn todo() noreturn {
     unreachable;
 }
+
+
 
 fn tokenizeAfterAmpersandInContent(self: *TokenStream) NextRet {
     std.debug.assert(self.getUtf8().? == '&');
@@ -243,6 +367,125 @@ fn tokenizeAfterElementOpenWhitespaceSlash(self: *TokenStream) NextRet {
         '>' => return self.returnToken(Token.init(start_index, .element_close_inline)),
         else => return self.returnError(Error.ExpectedClosingTag),
     }
+}
+
+fn tokenizeAfterElementOpenOrAttributeValue(self: *TokenStream) NextRet {
+    std.debug.assert(self.state.last_quote == null);
+    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+        ' ',
+        '\t',
+        '\n',
+        '\r',
+        => {
+            self.incrByByte();
+            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch(char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => continue,
+                '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
+                '>' => {
+                    self.incrByByte();
+                    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+                        '<' => return self.tokenizeAfterLeftAngleBracket(),
+                        else => todo()
+                    }
+                },
+                else => {
+                    if (!xml.isValidUtf8NameStartChar(char)) {
+                        return self.returnError(Error.InvalidNameStartChar);
+                    }
+                    
+                    const start_index = self.getIndex();
+                    var prefix_len: usize = 0;
+                    
+                    self.incrByUtf8Len();
+                    while (self.getUtf8()) |name_char| : (self.incrByUtf8Len()) switch(name_char) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        '=',
+                        => {
+                            const full_len = self.getIndex() - start_index;
+                            const info = .{ .prefix_len = prefix_len, .full_len = full_len };
+                            const result = Token.initTag(start_index, .attribute_name, info);
+                            return self.returnToken(result);
+                        },
+                        
+                        ':' => {
+                            if (prefix_len != 0) {
+                                return self.returnError(Error.InvalidNameChar);
+                            }
+                            prefix_len = self.getIndex() - start_index;
+                            
+                            self.incrByByte();
+                            const maybe_codepoint = self.getUtf8();
+                            if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
+                                return self.returnError(Error.InvalidNameStartChar);
+                            }
+                        },
+                        
+                        else => if (!xml.isValidUtf8NameChar(name_char))
+                            return self.returnError(Error.InvalidNameChar)
+                    } else return self.returnError(Error.ExpectedClosingTag);
+                }
+            } else return self.returnError(Error.ExpectedClosingTag);
+        },
+        
+        '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
+        
+        '>' => {
+            self.incrByByte();
+            return self.tokenizeContent();
+        },
+        else => unreachable,
+    }
+}
+
+fn tokenizeAttributeValueSegmentEntityRef(self: *TokenStream) NextRet {
+    std.debug.assert(self.getUtf8().? == '&');
+    const start_index = self.getIndex();
+    self.incrByByte();
+    if (!xml.isValidUtf8NameStartChar(self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag))) {
+        return self.returnError(Error.InvalidNameStartChar);
+    }
+    
+    self.incrByUtf8Len();
+    while (self.getUtf8()) |name_char| : (self.incrByUtf8Len()) switch (name_char) {
+        ';' => break,
+        else => if (!xml.isValidUtf8NameCharOrColon(name_char))
+            return self.returnError(Error.InvalidNameChar)
+    } else return self.returnError(Error.ExpectedClosingTag);
+    
+    std.debug.assert(self.getUtf8().? == ';');
+    const len = (self.getIndex() + 1) - start_index;
+    const info = Token.Info.AttributeValueSegment { .entity_reference = .{ .len = len } };
+    const result = Token.initTag(start_index, .attribute_value_segment, info);
+    return self.returnToken(result);
+}
+
+fn tokenizeAttributeValueSegmentText(self: *TokenStream) NextRet {
+    const start_index = self.getIndex();
+    
+    while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
+        '"',
+        '\'',
+        => {
+            const current_quote_type = State.QuoteType.init(self.getByte().?);
+            if (self.state.last_quote.? == current_quote_type) break;
+        },
+        '&' => break,
+        '<' => return self.returnError(Error.Malformed),
+        else => continue,
+    };
+    
+    // Using Token.initTag here causes a segfault at runtime if we use anonymous union initialization. Something to do with initializing the union 
+    const len = (self.getIndex() - start_index);
+    const info = Token.Info.AttributeValueSegment { .text = .{ .len = len } };
+    const result = Token.initTag(start_index, .attribute_value_segment, info);
+    return self.returnToken(result);
 }
 
 fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
@@ -463,7 +706,7 @@ fn getByte(self: TokenStream) ?u8 {
 }
 
 /// For convenience
-fn getIndex(self: TokenStream) usize {
+inline fn getIndex(self: TokenStream) usize {
     return self.state.index;
 }
 
@@ -473,6 +716,30 @@ const State = struct {
     index: usize = 0,
     info: Info = .start,
     depth: usize = 0,
+    last_quote: ?QuoteType = null,
+    
+    const QuoteType = enum(u8) {
+        single = '\'',
+        double = '"',
+        pub fn init(char: u8) QuoteType {
+            std.debug.assert(switch (char) {
+                '\'',
+                '"',
+                => true,
+                else => false,
+            });
+            return @intToEnum(QuoteType, char);
+        }
+        
+        pub fn initUtf8(char: u21) QuoteType {
+            std.debug.assert(unicode.utf8CodepointSequenceLength(char) catch unreachable == 1);
+            return QuoteType.init(@intCast(u8, char));
+        }
+        
+        pub fn value(self: QuoteType) u8 {
+            return @enumToInt(self);
+        }
+    };
     
     const Info = union(enum) {
         err: Error,
@@ -564,11 +831,12 @@ const tests = struct {
             if (prefix) |prfx|
                 try testing.expectEqualStrings(prfx, tok.info.attribute_name.prefix(tok.index, src) orelse return error.NullPrefix)
             else {
-                try testing.expectEqual(@as(?[]const u8, null), tok.info.element_close_tag.prefix(tok.index, src));
+                try testing.expectEqual(@as(?[]const u8, null), tok.info.attribute_name.prefix(tok.index, src));
             }
         }
         
         const AttributeValueSegment = union(std.meta.Tag(Token.Info.AttributeValueSegment)) {
+            empty_quotes,
             text: []const u8,
             entity_reference: struct{ name: []const u8 },
         };
@@ -579,16 +847,19 @@ const tests = struct {
             try testing.expectEqual(std.meta.activeTag(segment), tok.info.attribute_value_segment);
             
             const full_slice: []const u8 = switch (segment) {
+                .empty_quotes => "",
                 .text => |text| text,
                 .entity_reference => |entity_reference| try std.mem.concat(testing.allocator, u8, &.{ "&", entity_reference.name, ";" }),
             };
             defer switch (segment) {
+                .empty_quotes => {},
                 .text => {},
                 .entity_reference => testing.allocator.free(full_slice),
             };
             
             try testing.expectEqualStrings(full_slice, tok.slice(src));
             switch (segment) {
+                .empty_quotes => {},
                 .text => {},
                 .entity_reference => |entity_reference| {
                     const name = tok.info.attribute_value_segment.entity_reference.name(tok.index, src);
@@ -1029,9 +1300,86 @@ test "comment" {
 test "attributes" {
     var ts = TokenStream.init(undefined);
     
-    ts.reset("<foo bar= 'baz'/>");
-    try tests.expectElementOpen(&ts, null, "foo");
-    try tests.expectAttribute(&ts, null, "bar", &.{ .{ .text = "baz" } });
-    try tests.expectElementCloseInline(&ts);
-    try tests.expectNull(&ts);
+    // the important thing to note here is that all of the variants of the 'seperators' have no impact on the
+    // the outputs of the composed sources.
+    inline for (.{ "'", "\"" }) |quote|
+    inline for (.{ "", "    " }) |ws|
+    inline for (.{ "=", "= ", " =", " = " }) |eql|
+    {
+        // empty quotes
+        ts.reset("<foo bar" ++ eql ++ quote ++ quote ++ ws ++ "/>");
+        try tests.expectElementOpen(&ts, null, "foo");
+        try tests.expectAttribute(&ts, null, "bar", &.{ .empty_quotes });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        // without namespace
+        ts.reset("<foo bar" ++ eql ++ quote ++ "baz" ++ quote ++ ws ++ "/>");
+        try tests.expectElementOpen(&ts, null, "foo");
+        try tests.expectAttribute(&ts, null, "bar", &.{ .{ .text = "baz" } });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        // with namespace
+        ts.reset("<foo foo2:bar" ++ eql ++ quote ++ "baz" ++ quote ++ ws ++ "/>");
+        try tests.expectElementOpen(&ts, null, "foo");
+        try tests.expectAttribute(&ts, "foo2", "bar", &.{ .{ .text = "baz" } });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        // with closing tag, for good measure
+        ts.reset("<foo bar" ++ eql ++ quote ++ "baz" ++ quote ++ ws ++ "></foo>");
+        try tests.expectElementOpen(&ts, null, "foo");
+        try tests.expectAttribute(&ts, null, "bar", &.{ .{ .text = "baz" } });
+        try tests.expectElementCloseTag(&ts, null, "foo");
+        try tests.expectNull(&ts);
+        
+        // multiple attributes
+        ts.reset("<foo bar" ++ eql ++ quote ++ quote ++ " " ++ "bar2" ++ eql ++ quote ++ "baz2" ++ quote ++ ws ++ "/>");
+        try tests.expectElementOpen(&ts, null, "foo");
+        try tests.expectAttribute(&ts, null, "bar", &.{ .empty_quotes });
+        try tests.expectAttribute(&ts, null, "bar2", &.{ .{ .text = "baz2" } });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        // single entity reference
+        ts.reset("<foo bar" ++ eql ++ quote ++ "&amp;" ++ quote ++ ws ++ "/>");
+        try tests.expectElementOpen(&ts, null, "foo");
+        try tests.expectAttribute(&ts, null, "bar", &.{ .{ .entity_reference = .{ .name = "amp" } } });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        // two entity references
+        ts.reset("<foo bar" ++ eql ++ quote ++ "&amp;&lt;" ++ quote ++ ws ++ "/>");
+        try tests.expectElementOpen(&ts, null, "foo");
+        try tests.expectAttribute(&ts, null, "bar", &.{
+            .{ .entity_reference = .{ .name = "amp" } },
+            .{ .entity_reference = .{ .name = "lt" } },
+        });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        // mixed segments 1
+        ts.reset("<foo bar" ++ eql ++ quote ++ "&amp;TEXT&lt;" ++ quote ++ ws ++ "/>");
+        try tests.expectElementOpen(&ts, null, "foo");
+        try tests.expectAttribute(&ts, null, "bar", &.{
+            .{ .entity_reference = .{ .name = "amp" } },
+            .{ .text = "TEXT" },
+            .{ .entity_reference = .{ .name = "lt" } },
+        });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        // mixed segments 2
+        ts.reset("<foo bar" ++ eql ++ quote ++ "TEXT&lt;TEXT" ++ quote ++ ws ++ "/>");
+        try tests.expectElementOpen(&ts, null, "foo");
+        try tests.expectAttribute(&ts, null, "bar", &.{
+            .{ .text = "TEXT" },
+            .{ .entity_reference = .{ .name = "lt" } },
+            .{ .text = "TEXT" },
+        });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+    };
+    
 }
