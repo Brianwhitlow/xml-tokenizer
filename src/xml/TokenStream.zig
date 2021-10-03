@@ -22,6 +22,7 @@ pub const Token = @import("Token.zig");
 
 pub const Error = error {
     ContentNotAllowedInPrologue,
+    ContentNotAllowedInTrailingSection,
     Malformed,
     InvalidNameChar,
     InvalidNameStartChar,
@@ -52,7 +53,7 @@ pub fn next(self: *TokenStream) NextRet {
                     => continue,
                     '<' => return self.returnToken(Token.initTag(0, .whitespace, .{ .len = self.getIndex() - 0 })),
                     else => return self.returnError(Error.ContentNotAllowedInPrologue)
-                } else return null,
+                } else return self.returnToken(Token.initTag(0, .whitespace, .{ .len = self.getIndex() - 0 })),
                 '<' => return self.tokenizeAfterLeftAngleBracket(),
                 else => return self.returnError(Error.ContentNotAllowedInPrologue)
             }
@@ -69,14 +70,14 @@ pub fn next(self: *TokenStream) NextRet {
                     self.state.depth -= 1;
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
-                    return if (self.getUtf8() != null) self.tokenizeContent() else self.returnNullIfDepth0();
+                    return if (self.getUtf8() != null) self.tokenizeContent() else self.returnNullIfDepth0(Error.ExpectedClosingTag);
                 },
                 
                 .element_close_inline => {
                     self.state.depth -= 1;
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
-                    return if (self.getUtf8() != null) self.tokenizeContent() else self.returnNullIfDepth0();
+                    return if (self.getUtf8() != null) self.tokenizeContent() else self.returnNullIfDepth0(Error.ExpectedClosingTag);
                 },
                 
                 .attribute_name => {
@@ -175,7 +176,7 @@ pub fn next(self: *TokenStream) NextRet {
                 .comment => {
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
-                    switch (self.getUtf8() orelse return self.returnNullIfDepth0()) {
+                    switch (self.getUtf8() orelse return self.returnNullIfDepth0(Error.ExpectedClosingTag)) {
                         '<' => return self.tokenizeAfterLeftAngleBracket(),
                         else => return self.tokenizeContent(),
                     }
@@ -202,7 +203,7 @@ pub fn next(self: *TokenStream) NextRet {
                     }
                 },
                 
-                .whitespace => switch (self.getUtf8() orelse return self.returnNullIfDepth0()) {
+                .whitespace => switch (self.getUtf8() orelse return self.returnNullIfDepth0(Error.ExpectedClosingTag)) {
                     '<' => return self.tokenizeAfterLeftAngleBracket(),
                     '&' => return self.tokenizeAfterAmpersandInContent(),
                     else => unreachable,
@@ -307,7 +308,9 @@ fn tokenizeContent(self: *TokenStream) NextRet {
                 '<',
                 => break,
                 else => non_whitespace = true,
-            };
+            } else if (self.state.depth == 0 and non_whitespace) {
+                return self.returnError(Error.ContentNotAllowedInTrailingSection);
+            }
             
             const info = .{ .len = (self.getIndex() - start_index) };
             const result = if (non_whitespace)
@@ -608,8 +611,8 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
 
 
 
-fn returnNullIfDepth0(self: *TokenStream) NextRet {
-    return if (self.state.depth == 0) null else return self.returnError(Error.ExpectedClosingTag);
+fn returnNullIfDepth0(self: *TokenStream, otherwise_error: Error) NextRet {
+    return if (self.state.depth == 0) null else return self.returnError(otherwise_error);
 }
 
 
@@ -859,6 +862,13 @@ test "empty source" {
 
 test "empty source with whitespace" {
     var ts = TokenStream.init(" ");
+    try tests.expectWhitespace(&ts, " ");
+    try tests.expectNull(&ts);
+}
+
+test "content in prologue" {
+    var ts = TokenStream.init("foo");
+    try tests.expectError(&ts, Error.ContentNotAllowedInPrologue);
     try tests.expectNull(&ts);
 }
 
@@ -1304,4 +1314,46 @@ test "attributes" {
         try tests.expectNull(&ts);
     };
     
+}
+
+test "depth testing" {
+    var ts = TokenStream.init(undefined);
+    
+    ts.reset("<root>\t");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectWhitespace(&ts, "\t");
+    try tests.expectError(&ts, Error.ExpectedClosingTag);
+    try tests.expectNull(&ts);
+    
+    ts.reset("<root >foobarbaz");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectText(&ts, "foobarbaz");
+    try tests.expectError(&ts, Error.ExpectedClosingTag);
+    try tests.expectNull(&ts);
+    
+    ts.reset("<root/>foobarbaz");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectElementCloseInline(&ts);
+    try tests.expectError(&ts, Error.ContentNotAllowedInTrailingSection);
+    try tests.expectNull(&ts);
+    
+    ts.reset("<root>foobarbaz<sub/>\t</root> ");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectText(&ts, "foobarbaz");
+    try tests.expectElementOpen(&ts, null, "sub");
+    try tests.expectElementCloseInline(&ts);
+    try tests.expectWhitespace(&ts, "\t");
+    try tests.expectElementCloseTag(&ts, null, "root");
+    try tests.expectWhitespace(&ts, " ");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<root>foobarbaz<sub/>\t</root> ñ");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectText(&ts, "foobarbaz");
+    try tests.expectElementOpen(&ts, null, "sub");
+    try tests.expectElementCloseInline(&ts);
+    try tests.expectWhitespace(&ts, "\t");
+    try tests.expectElementCloseTag(&ts, null, "root");
+    try tests.expectError(&ts, Error.ContentNotAllowedInTrailingSection);
+    try tests.expectNull(&ts);
 }
