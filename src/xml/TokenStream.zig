@@ -603,7 +603,7 @@ test "empty tag close inline" {
     
 }
 
-test "empty tag with attribute" {
+test "empty tag with attribute stress testing" {
     var ts = TokenStream.init(undefined);
     
     @setEvalBranchQuota(4_000);
