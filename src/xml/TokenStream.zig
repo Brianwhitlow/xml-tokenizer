@@ -1,7 +1,10 @@
 const std = @import("std");
+const meta = std.meta;
 const testing = std.testing;
 const unicode = std.unicode;
+
 const xml = @import("../xml.zig");
+pub const Token = @import("Token.zig");
 
 const TokenStream = @This();
 buffer: []const u8,
@@ -18,302 +21,309 @@ pub fn reset(self: *TokenStream, new_src: ?[]const u8) void {
     self.* = TokenStream.init(new_src orelse self.buffer);
 }
 
-pub const Token = @import("Token.zig");
-
 pub const Error = error {
-    PrematureEof,
-    ContentNotAllowedInPrologue,
-    Malformed,
-    InvalidNameChar,
-    InvalidNameStartChar,
-    ExpectedClosingTag,
+    
 };
 
-/// The return type of TokenStream.next().
 pub const NextRet = ?(Error!Token);
 
-/// Returns null if there are no more tokens to parse.
 pub fn next(self: *TokenStream) NextRet {
-    // const on_start = self.state;
-    // defer std.debug.assert(std.meta.activeTag(on_start.info) != self.state.info or switch (self.state.info) {
-    //     .start => false,
-    //     .err => true,
-    //     .last_tok => |tok| (tok == .element_open)
-    // });
     
-    errdefer std.debug.assert(self.state.info == .err);
+    //const on_start = self.state;
+    //defer std.debug.assert(!meta.eql(on_start.info, self.state.info));
+    
     switch (self.state.info) {
-        .err => return null,
-        .start => {
-            std.debug.assert(self.getIndex() == 0);
-            switch (self.getByte() orelse return self.returnError(Error.PrematureEof)) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                => todo(),
-                '<' => return self.tokenizeAfterLeftAngleBracket(),
-                else => return self.returnError(Error.ContentNotAllowedInPrologue)
-            }
-        },
-        
-        .last_tok => |last_tok| {
-            switch (last_tok) {
-                .element_open => switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
+        .end => return null,
+        .start => if (self.state.info.start) |prev_tok| switch (prev_tok) {
+            .element_open => unreachable,
+            .element_close_tag => unreachable,
+            .element_close_inline => unreachable,
+            
+            .attribute_name => unreachable,
+            .attribute_value_segment => unreachable,
+            
+            .comment => todo("Tokenize after prologue comments", .{}),
+            .cdata => unreachable,
+            .text => unreachable,
+            .entity_reference => unreachable,
+            .whitespace => {
+                switch (self.getUtf8() orelse return null) {
+                    '<' => return self.tokenizeAfterLeftAngleBracket(),
+                    else => unreachable,
+                }
+            },
+            
+            .pi_target => todo("Tokenize after prologue processing instructions target.", .{}),
+            .pi_token => todo("Tokenize after prologue processing instructions token.", .{}),
+        } else switch (self.getByte() orelse return null) {
+            ' ',
+            '\t',
+            '\n',
+            '\r',
+            => {
+                const Closure = struct { fn retWhitespace(ts: *TokenStream) NextRet {
+                    const len = ts.getIndex() - 0;
+                    const result = Token.init(0, .{ .whitespace = Token.Info.Whitespace { .len = len } });
+                    ts.state.info.start = result.info;
+                    return result;
+                } };
+                
+                self.incrByByte();
+                while (self.getUtf8()) |char| : (self.incrByUtf8()) switch (char) {
                     ' ',
                     '\t',
                     '\n',
                     '\r',
-                    => {
-                        self.incrByByte();
-                        while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch(char) {
-                            ' ',
-                            '\t',
-                            '\n',
-                            '\r',
-                            => continue,
-                            '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
-                            '>' => {
-                                self.incrByByte();
-                                switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                                    '<' => return self.tokenizeAfterLeftAngleBracket(),
-                                    else => todo()
-                                }
-                            },
-                            else => todo()
-                        } else todo();
-                    },
-                    
-                    '/' => return self.tokenizeAfterElementOpenWhitespaceSlash(),
-                    
-                    '>' => {
-                        self.incrByByte();
-                        switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-                            '<' => return self.tokenizeAfterLeftAngleBracket(),
-                            else => todo()
-                        }
-                    },
-                    else => unreachable,
-                },
-                
-                .element_close_tag => {
-                    std.debug.assert(self.getUtf8().? == '>');
-                    self.incrByByte();
-                    switch (self.getUtf8() orelse return null) {
-                        else => todo()
-                    }
-                },
-                
+                    => continue,
+                    '<' => return Closure.retWhitespace(self),
+                    else => todo("Error for content in prologue.", .{}),
+                } else return Closure.retWhitespace(self);
+            },
+            
+            '<' => return self.tokenizeAfterLeftAngleBracket(),
+            else => todo("Error for content in prologue.", .{}),
+        },
+        .in_root => |prev_tok| switch (prev_tok) {
+            .element_open => return self.tokenizeAfterElementOpenOrAttributeAndWhitespace(),
+            .element_close_tag => todo("Tokenize after 'element_close_tag'.", .{}),
+            .element_close_inline => todo("Tokenize after 'element_close_inline'.", .{}),
+            .attribute_name => todo("Tokenize attributes.", .{}),
+            
+            .attribute_value_segment => todo("Tokenize attributes.", .{}),
+            
+            .comment => todo("Tokenize after 'comment'.", .{}),
+            .cdata => todo("Tokenize after 'cdata'.", .{}),
+            .text => todo("Tokenize after 'text'.", .{}),
+            .entity_reference => todo("Tokenize after 'entity_reference'.", .{}),
+            .whitespace => todo("Tokenize after 'whitespace'.", .{}),
+            .pi_target => todo("Tokenize after 'pi_target'.", .{}),
+            .pi_token => todo("Tokenize after 'pi_token'.", .{}),
+        },
+        .trailing => {
+            std.debug.assert(self.getDepth() == 0);
+            if (self.state.info.trailing) |prev_tok| switch (prev_tok) {
+                .element_open => unreachable,
+                .element_close_tag => todo("Tokenize after 'element_close_tag'.", .{}),
                 .element_close_inline => {
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
+                    
+                    const start_index = self.getIndex();
+                    if (self.getUtf8() == null) return null;
+                    
+                    self.incrByUtf8WhileWhitespace();
+                    
+                    const len = self.getIndex() - start_index;
+                    const info = Token.Info.Whitespace { .len = len };
+                    const result = Token.init(start_index, .{ .whitespace = info });
+                    return self.setTrailing(result);
+                },
+                .attribute_name => todo("Tokenize after 'attribute_name'.", .{}),
+                .attribute_value_segment => todo("Tokenize after 'attribute_value_segment'.", .{}),
+                .comment => todo("Tokenize after 'comment'.", .{}),
+                .cdata => todo("Tokenize after 'cdata'.", .{}),
+                .text => todo("Tokenize after 'text'.", .{}),
+                .entity_reference => todo("Tokenize after 'entity_reference'.", .{}),
+                .whitespace => {
                     switch (self.getUtf8() orelse return null) {
-                        else => todo()
+                        else => todo("Consider this invariant.", .{})
                     }
                 },
-                
-                .attribute_name => |attribute_name| {
-                    _ = attribute_name;
-                    todo();
-                },
-                
-                .attribute_value_segment => |attribute_value_segment| {
-                    _ = attribute_value_segment;
-                    todo();
-                },
-                
-                .comment => |comment| {
-                    _ = comment;
-                    todo();
-                },
-                
-                .cdata => |cdata| {
-                    _ = cdata;
-                    todo();
-                },
-                
-                .text => |text| {
-                    _ = text;
-                    todo();
-                },
-                
-                .whitespace => |whitespace| {
-                    _ = whitespace;
-                    todo();
-                },
-                
-                .pi_target => |pi_target| {
-                    _ = pi_target;
-                    todo();
-                },
-                
-                .pi_token => |pi_token| {
-                    _ = pi_token;
-                    todo();
-                },
-            }
-        },
-    }
-}
-
-inline fn todo() noreturn {
-    unreachable;
-}
-
-fn tokenizeAfterElementOpenWhitespaceSlash(self: *TokenStream) NextRet {
-    const start_index = self.getIndex();
-    self.incrByByte();
-    switch (self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag)) {
-        '>' => return self.returnToken(Token.init(start_index, .element_close_inline)),
-        else => return self.returnError(Error.ExpectedClosingTag),
-    }
-}
-
-fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
-    std.debug.assert(self.getUtf8().? == '<');
-    const start_index = self.getIndex();
-    
-    self.incrByByte();
-    switch (self.getUtf8() orelse return self.returnError(Error.Malformed)) {
-        '/' => {
-            self.incrByByte();
-            if (!xml.isValidUtf8NameStartChar(self.getUtf8() orelse return self.returnError(Error.ExpectedClosingTag))) {
-                return self.returnError(Error.InvalidNameStartChar);
-            }
-            
-            self.incrByUtf8Len();
-            
-            var prefix_len: usize = 0;
-            var identifier_len: usize = 1;
-            
-            blk_while0: while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                => while (self.getUtf8()) |notnamechar| : (self.incrByUtf8Len()) switch (notnamechar) {
-                    ' ',
-                    '\t',
-                    '\n',
-                    '\r',
-                    => {},
-                    '>' => break :blk_while0,
-                    else => return self.returnError(Error.ExpectedClosingTag),
-                } else return self.returnError(Error.ExpectedClosingTag),
-                
-                ':' => {
-                    if (prefix_len != 0) {
-                        return self.returnError(Error.InvalidNameChar);
-                    }
-                    
-                    prefix_len = identifier_len;
-                    identifier_len = 0;
-                    
-                    self.incrByByte();
-                    const maybe_codepoint = self.getUtf8();
-                    if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
-                        return self.returnError(Error.InvalidNameStartChar);
-                    }
-                    
-                    identifier_len += unicode.utf8CodepointSequenceLength(maybe_codepoint.?) catch unreachable;
-                },
-                
-                '>' => break,
-                
-                else => {
-                    if (!xml.isValidUtf8NameChar(char))
-                        return self.returnError(Error.InvalidNameChar)
-                    else {
-                        identifier_len += unicode.utf8CodepointSequenceLength(char) catch unreachable;
-                    }
-                },
-            } else return self.returnError(Error.ExpectedClosingTag);
-            
-            std.debug.assert(self.getUtf8().? == '>');
-            
-            const info = .{ .prefix_len = prefix_len, .identifier_len = identifier_len, .full_len = (self.getIndex() + 1) - start_index };
-            const result = Token.initTag(start_index, .element_close_tag, info);
-            return self.returnToken(result);
-        },
-        
-        '?' => todo(),
-        '!' => todo(),
-        
-        else => {
-            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
-                return self.returnError(Error.InvalidNameStartChar);
-            }
-            
-            self.incrByUtf8Len();
-            
-            var prefix_len: usize = 0;
-            
-            while (self.getUtf8()) |char| : (self.incrByUtf8Len()) switch (char) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                '/',
-                '>',
-                => break,
-                
-                ':' => {
-                    if (prefix_len != 0) {
-                        return self.returnError(Error.InvalidNameChar);
-                    }
-                    prefix_len = self.getIndex() - (start_index + ("<".len));
-                    
-                    self.incrByByte();
-                    const maybe_codepoint = self.getUtf8();
-                    if (maybe_codepoint == null or !xml.isValidUtf8NameStartChar(maybe_codepoint.?)) {
-                        return self.returnError(Error.InvalidNameStartChar);
-                    }
-                },
-                
-                else => if (!xml.isValidUtf8NameChar(char))
-                    return self.returnError(Error.InvalidNameChar),
-            } else return self.returnError(Error.ExpectedClosingTag);
-            
-            std.debug.assert(switch (self.getUtf8().?) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                '/',
-                '>',
-                => true,
-                else => false,
-            });
-            
-            const info = .{ .prefix_len = prefix_len, .full_len = (self.getIndex() - start_index) };
-            const result = Token.initTag(start_index, .element_open, info);
-            return self.returnToken(result);
+                .pi_target => todo("Tokenize after 'pi_target'.", .{}),
+                .pi_token => todo("Tokenize after 'pi_token'.", .{}),
+            } else todo("Consider this state (null trailing value).", .{});
         }
     }
 }
 
 
 
-fn returnToken(self: *TokenStream, tok: Token) NextRet {
-    self.state.info = .{ .last_tok = tok.info };
-    return @as(NextRet, tok);
+inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
+    std.debug.panic("TODO: " ++ fmt ++ "\n", args);
 }
 
-fn returnError(self: *TokenStream, err: Error) NextRet {
-    self.state.info = .{ .err = err };
-    return @as(NextRet, err);
+const State = struct {
+    index: usize = 0,
+    depth: usize = 0,
+    info: Info = .{ .start = null },
+    last_quote: ?QuoteType = null,
+    
+    const Info = union(enum) {
+        end,
+        start: ?std.meta.Tag(Token.Info),
+        in_root: std.meta.Tag(Token.Info),
+        trailing: ?std.meta.Tag(Token.Info),
+    };
+    
+    const QuoteType = enum(u8) {
+        single = '\'',
+        double = '"',
+        
+        pub fn init(char: u8) QuoteType {
+            std.debug.assert(switch (char) {
+                '\'',
+                '"',
+                => true,
+                else => false,
+            });
+            return @intToEnum(QuoteType, char);
+        }
+        
+        pub fn initUtf8(char: u21) QuoteType {
+            std.debug.assert(unicode.utf8CodepointSequenceLength(char) catch unreachable == 1);
+            return QuoteType.init(@intCast(u8, char));
+        }
+        
+        pub fn value(self: QuoteType) u8 {
+            return @enumToInt(self);
+        }
+    };
+};
+
+fn tokenizeAfterElementOpenForwardSlash(self: *TokenStream) NextRet {
+    const start_index = self.getIndex();
+    std.debug.assert(self.getUtf8().? == '/');
+    self.incrByByte();
+    if (self.getUtf8() orelse todo("Error if / is followed by EOF where '>' was expected", .{}) != '>') {
+        todo("Error if / is followed by EOF where '>' was expected", .{});
+    }
+    
+    self.state.depth -= 1;
+    const result = Token.init(start_index, .element_close_inline);
+    if (self.getDepth() == 0) return self.setTrailing(result);
+    return self.setInRoot(result);
+}
+
+fn tokenizeAfterElementOpenOrAttributeAndWhitespace(self: *TokenStream) NextRet {
+    
+    std.debug.assert(!xml.isValidUtf8NameCharOrColon(self.getUtf8().?));
+    self.incrByUtf8WhileWhitespace();
+    
+    switch (self.getUtf8() orelse todo("Error for premature EOF after unclosed element tag.", .{})) {
+        '/' => return self.tokenizeAfterElementOpenForwardSlash(),
+        '>' => todo("Tokenize after element open tag.", .{}),
+        else => {
+            const Closure = struct {
+                fn retAttrName(ts: *TokenStream, start_idx: usize, prefix_len: usize) NextRet {
+                    const len = ts.getIndex() - start_idx;
+                    const info = Token.Info.AttributeName { .prefix_len = prefix_len, .full_len = len };
+                    const result = Token.init(start_idx, .{ .attribute_name = info });
+                    return ts.setInRoot(result);
+                }
+            };
+            
+            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) todo("Error on invalid attribute name start char.", .{});
+            const start_index = self.getIndex();
+            self.incrByUtf8();
+            
+            self.incrByUtf8While(xml.isValidUtf8NameChar);
+            switch (self.getUtf8() orelse todo("Error on invalid attribute name char or premature EOF.", .{})) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                '=',
+                => return Closure.retAttrName(self, start_index, 0),
+                
+                ':' => {
+                    const prefix_len = self.getIndex() - start_index;
+                    self.incrByByte();
+                    
+                    if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) todo("Error on invalid attribute name start char.", .{});
+                    self.incrByUtf8();
+                    
+                    self.incrByUtf8While(xml.isValidUtf8NameChar);
+                    return Closure.retAttrName(self, start_index, prefix_len);
+                },
+                
+                else => todo("Error on invalid attribute name char", .{}),
+            }
+        },
+    }
+}
+
+fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
+    const start_index = self.getIndex();
+    std.debug.assert(self.getUtf8().? == '<');
+    self.incrByByte();
+    
+    switch (self.getUtf8() orelse todo("Error for ending file immediately after '<'.", .{})) {
+        '?' => todo("Tokenize preprocessing instructions.", .{}),
+        '!' => todo("Tokenize after '!'.", .{}),
+        '/' => todo("Tokenize element close tags.", .{}),
+        else => {
+            const Closure = struct { fn retName(ts: *TokenStream, start_idx: usize, prefix_len: usize) NextRet {
+                std.debug.assert(ts.buffer[start_idx] == '<');
+                const len = ts.getIndex() - start_idx;
+                const info = Token.Info.ElementOpen { .prefix_len = prefix_len, .full_len = len };
+                const result = Token.init(start_idx, .{ .element_open = info });
+                ts.state.depth += 1;
+                return ts.setInRoot(result);
+            } };
+            
+            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
+                todo("Error for invalid start char for element name.", .{});
+            }
+            
+            self.incrByUtf8();
+            self.incrByUtf8While(xml.isValidUtf8NameChar);
+            switch (self.getUtf8() orelse todo("Error for ending file immediately after element name", .{})) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                '/',
+                '>',
+                => return Closure.retName(self, start_index, 0),
+                ':' => {
+                    const prefix_len = self.getIndex() - (start_index + ("<".len));
+                    self.incrByByte();
+                    if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
+                        todo("Error for invalid start char for element name.", .{});
+                    }
+                    
+                    self.incrByUtf8();
+                    self.incrByUtf8While(xml.isValidUtf8NameChar);
+                    switch (self.getUtf8() orelse todo("Error for ending file immediately after element name", .{})) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        '/',
+                        '>',
+                        => return Closure.retName(self, start_index, prefix_len),
+                        else => todo("Error for invalid name char", .{})
+                    }
+                },
+                else => todo("Error for invalid name char", .{}),
+            }
+        }
+    }
 }
 
 
 
-/// Expects and asserts that the current UTF8 codepoint is valid.
-fn incrByUtf8Len(self: *TokenStream) void {
+fn incrByUtf8WhileWhitespace(self: *TokenStream) void {
+    self.incrByUtf8While(struct{ fn isSpace(char: u21) bool { return switch (char) {
+        ' ',
+        '\t',
+        '\n',
+        '\r',
+        => true,
+        else => false,
+    }; } }.isSpace);
+}
+
+fn incrByUtf8While(self: *TokenStream, comptime matchFn: fn(u21)bool) void {
+    while (self.getUtf8()) |char| : (self.incrByUtf8())
+        if (!matchFn(char)) break;
+}
+
+fn incrByUtf8(self: *TokenStream) void {
     const codepoint = self.getUtf8() orelse return;
     self.state.index += unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
 }
 
-/// Asserts that the current utf8 codepoint is exactly one byte long,
-/// thus ensuring that subsequent traversal will be valid.
 fn incrByByte(self: *TokenStream) void {
     requirements: {
         const codepoint = self.getUtf8() orelse std.debug.panic("Invalid UTF8 codepoint or EOF encountered when trying to increment by a single byte.", .{});
@@ -322,6 +332,35 @@ fn incrByByte(self: *TokenStream) void {
         break :requirements;
     }
     self.state.index += 1;
+}
+
+
+
+fn setEnd(self: *TokenStream, ret: NextRet) NextRet {
+    self.state.info = .end;
+    return ret;
+}
+
+fn setInRoot(self: *TokenStream, tok: Token) NextRet {
+    self.state.info = .{ .in_root = tok.info };
+    return tok;
+}
+
+fn setTrailing(self: *TokenStream, maybe_tok: ?Token) NextRet {
+    self.state.info = .{ .trailing = if (maybe_tok) |tok| tok.info else null };
+    return @as(NextRet, maybe_tok orelse null);
+}
+
+
+
+fn getDepth(self: TokenStream) usize { return self.state.depth; }
+fn getIndex(self: TokenStream) usize { return self.state.index; }
+
+fn getByte(self: TokenStream) ?u8 {
+    const index = self.getIndex();
+    const buffer = self.buffer;
+    const in_range = (index < buffer.len);
+    return if (in_range) buffer[index] else null;
 }
 
 fn getUtf8(self: TokenStream) ?u21 {
@@ -335,161 +374,109 @@ fn getUtf8(self: TokenStream) ?u21 {
     return unicode.utf8Decode(self.buffer[beg..end]) catch null;
 }
 
-fn getByte(self: TokenStream) ?u8 {
-    const index = self.state.index;
-    const buffer = self.buffer;
-    const in_range = (index < buffer.len);
-    return if (in_range) buffer[index] else null;
+
+
+test "empty source" {
+    var ts = TokenStream.init("");
+    try testing.expectEqual(ts.next(), null);
 }
 
-/// For convenience
-fn getIndex(self: TokenStream) usize {
-    return self.state.index;
-}
-
-
-
-const State = struct {
-    index: usize = 0,
-    info: Info = .start,
+test "whitespace source" {
+    var ts = TokenStream.init(undefined);
     
-    const Info = union(enum) {
-        err: Error,
-        start,
-        last_tok: Token.Info,
+    @setEvalBranchQuota(4_000);
+    const spaces = .{ " ", "\t", "\n", "\r" };
+    const spaces0 = .{""} ++ spaces;
+    inline for (spaces0) |s0|
+    inline for (spaces) |s1|
+    inline for (spaces) |s2|
+    inline for (spaces) |s3|
+    inline for (.{1, 2, 3}) |mul|
+    {
+        const whitespace = (s0 ++ s1 ++ s2 ++ s3) ** mul;
+        ts.reset(whitespace);
+        try Token.tests.expectWhitespace(ts.buffer, try ts.next().?, whitespace);
+        try testing.expectEqual(ts.next(), null);
     };
-};
-
-
-test {
-    comptime {
-        _ = tests;
-    }
 }
 
-const tests = struct {
+test "empty tag close inline" {
+    var ts = TokenStream.init(undefined);
     
-    const expect_token_equal_to = struct {
-        fn elementOpen(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
-            const tok: Token = try (maybe_tok orelse error.NullToken);
-            
-            const full_slice: []const u8 = blk: {
-                const to_be_joined: []const []const u8 = if (prefix) |prfx| &.{ "<", prfx, ":", name } else &.{ "<", name };
-                break :blk try std.mem.concat(testing.allocator, u8, to_be_joined);
-            };
-            defer testing.allocator.free(full_slice);
-            
-            try testing.expect(tok.info == .element_open);
-            try testing.expectEqualStrings(tok.slice(src), full_slice);
-            try testing.expectEqualStrings(tok.method(.element_open, "name", src), name);
-            if (prefix) |prfx| {
-                try testing.expectEqualStrings(tok.method(.element_open, "prefix", src).?, prfx);
-            } else {
-                try testing.expectEqual(tok.method(.element_open, "prefix", src), null);
-            }
-        }
+    @setEvalBranchQuota(4_000);
+    const spaces = .{ " ", "\t", "\n", "\r" };
+    const spaces0 = .{""} ++ spaces;
+    inline for (spaces0) |s0|
+    inline for (spaces) |s1|
+    inline for (spaces) |s2|
+    inline for (spaces) |s3|
+    inline for (.{1, 2, 3}) |mul|
+    {
+        const whitespace = (s0 ++ s1 ++ s2 ++ s3) ** mul;
+        ts.reset("<empty" ++ whitespace ++ "/>");
+        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
+        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
+        try testing.expectEqual(ts.next(), null);
         
-        fn elementCloseTag(src: []const u8, maybe_tok: NextRet, prefix: ?[]const u8, name: []const u8) !void {
-            const tok: Token = try (maybe_tok orelse error.NullToken);
-            
-            try testing.expect(tok.info == .element_close_tag);
-            
-            try testing.expectEqualStrings(tok.slice(src)[0..2], "</");
-            try testing.expectEqualStrings(tok.slice(src)[tok.slice(src).len - 1..], ">");
-            
-            try testing.expectEqualStrings(tok.method(.element_close_tag, "name", src), name);
-            if (prefix) |prfx| {
-                try testing.expectEqualStrings(tok.method(.element_close_tag, "prefix", src).?, prfx);
-            } else {
-                try testing.expectEqual(tok.method(.element_close_tag, "prefix", src), null);
-            }
-        }
+        ts.reset("<pre:empty" ++ whitespace ++ "/>");
+        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, "pre", "empty");
+        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
+        try testing.expectEqual(ts.next(), null);
         
-        fn elementCloseInline(src: []const u8, maybe_tok: NextRet) !void {
-            const tok: Token = try (maybe_tok orelse error.NullToken);
-            try testing.expect(tok.info == .element_close_inline);
-            try testing.expectEqualStrings(tok.slice(src), "/>");
-        }
-        
-        fn @"null"(maybe_tok: NextRet) !void {
-            try testing.expect(maybe_tok == null);
-        }
-        
-        fn @"error"(maybe_tok: NextRet, err: Error) !void {
-            try testing.expectError(err, maybe_tok orelse return error.NullToken);
-        }
+        ts.reset(whitespace ++ "<root" ++ whitespace ++ "/>" ++ whitespace);
+        try Token.tests.expectWhitespace(ts.buffer, try ts.next().?, whitespace);
+        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "root");
+        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
+        try Token.tests.expectWhitespace(ts.buffer, try ts.next().?, whitespace);
+        try testing.expectEqual(ts.next(), null);
     };
     
-    fn expectElementOpen(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
-        try expect_token_equal_to.elementOpen(ts.buffer, ts.next(), prefix, name);
-    }
+}
+
+test "empty tag with attribute" {
+    var ts = TokenStream.init(undefined);
     
-    fn expectElementCloseTag(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
-        try expect_token_equal_to.elementCloseTag(ts.buffer, ts.next(), prefix, name);
-    }
-    
-    fn expectElementCloseInline(ts: *TokenStream) !void {
-        try expect_token_equal_to.elementCloseInline(ts.buffer, ts.next());
-    }
-    
-    fn expectNull(ts: *TokenStream) !void {
-        try expect_token_equal_to.@"null"(ts.next());
-    }
-    
-    fn expectError(ts: *TokenStream, err: Error) !void {
-        try expect_token_equal_to.@"error"(ts.next(), err);
-    }
-    
-    test "simple empty tags 1" {
-        var ts: TokenStream = undefined;
+    @setEvalBranchQuota(4_000);
+    inline for (.{ "=", "=  ", " = ", "  =" }) |eql|
+    inline for (.{ "'", "\"" }) |quote|
+    inline for (.{ "", " " }) |whitespace|
+    {
+        ts.reset("<empty " ++ "foo" ++ eql ++ quote ++ quote ++ whitespace ++ "/>");
+        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
+        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, null, "foo");
+        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .empty_quotes);
+        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
+        try testing.expectEqual(ts.next(), null);
         
-        inline for (.{
-            "<empty/>",
-            "<empty    />",
-        }) |src| {
-            ts.reset(src);
-            try expectElementOpen(&ts, null, "empty");
-            try expectElementCloseInline(&ts);
-            try expectNull(&ts);
-        }
+        ts.reset("<empty " ++ "foo:bar" ++ eql ++ quote ++ quote ++ whitespace ++ "/>");
+        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
+        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, "foo", "bar");
+        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .empty_quotes);
+        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
+        try testing.expectEqual(ts.next(), null);
         
-        inline for (.{
-            "<pree:empty/>",
-            "<pree:empty    />",
-        }) |src| {
-            ts.reset(src);
-            try expectElementOpen(&ts, "pree", "empty");
-            try expectElementCloseInline(&ts);
-            try expectNull(&ts);
-        }
-    }
-    
-    test "simple empty tags 2" {
-        var ts: TokenStream = undefined;
+        ts.reset("<empty " ++ "foo" ++ eql ++ quote ++ "bar" ++ quote ++ whitespace ++ "/>");
+        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
+        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, null, "foo");
+        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .text = "bar" });
+        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
+        try testing.expectEqual(ts.next(), null);
         
-        inline for (.{
-            "<empty></empty>",
-            "<empty></empty    >",
-            "<empty    ></empty>",
-            "<empty    ></empty    >",
-        }) |src| {
-            ts.reset(src);
-            try expectElementOpen(&ts, null, "empty");
-            try expectElementCloseTag(&ts, null, "empty");
-            try expectNull(&ts);
-        }
+        ts.reset("<empty " ++ "foo:bar" ++ eql ++ quote ++ "baz" ++ quote ++ whitespace ++ "/>");
+        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
+        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, "foo", "bar");
+        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .text = "baz" });
+        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
+        try testing.expectEqual(ts.next(), null);
         
-        inline for (.{
-            "<pree:empty></pree:empty>",
-            "<pree:empty></pree:empty    >",
-            "<pree:empty    ></pree:empty>",
-            "<pree:empty    ></pree:empty    >",
-        }) |src| {
-            ts.reset(src);
-            try expectElementOpen(&ts, "pree", "empty");
-            try expectElementCloseTag(&ts, "pree", "empty");
-            try expectNull(&ts);
-        }
-    }
-    
-};
+        
+        ts.reset("<empty " ++ "foo" ++ eql ++ quote ++ "&lt;bar&gt;" ++ quote ++ whitespace ++ "/>");
+        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
+        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, null, "foo");
+        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .entity_reference = .{ .name = "lt" } });
+        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .text = "bar" });
+        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .entity_reference = .{ .name = "gt" } });
+        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
+        try testing.expectEqual(ts.next(), null);
+    };
+}

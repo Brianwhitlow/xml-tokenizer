@@ -1,4 +1,5 @@
 const std = @import("std");
+const meta = std.meta;
 const debug = std.debug;
 
 const Token = @This();
@@ -12,54 +13,12 @@ pub fn init(index: usize, info: Info) Token {
     };
 }
 
-pub fn initTag(index: usize, comptime tag: std.meta.Tag(Info), value: std.meta.TagPayload(Info, tag)) Token {
+pub fn initTag(index: usize, comptime tag: meta.Tag(Info), value: meta.TagPayload(Info, tag)) Token {
     return Token.init(index, @unionInit(Info, @tagName(tag), value));
 }
 
 pub fn slice(self: Token, src: []const u8) []const u8 {
     return self.info.slice(self.index, src);
-}
-
-pub fn method(self: Token, comptime field: std.meta.Tag(Info), comptime func_name: []const u8, src: []const u8) blk_type: {
-    const tag_name = @tagName(field);
-    const FieldType = @TypeOf(@field(@unionInit(Info, tag_name, undefined), tag_name));
-    
-    const func = @field(FieldType, func_name);
-    const FuncType = @TypeOf(func);
-    
-    break :blk_type switch (@typeInfo(FuncType)) {
-        .Fn,
-        .BoundFn,
-        => |info| info.return_type.?,
-        else => unreachable
-    };
-} {
-    std.debug.assert(std.meta.activeTag(self.info) == field);
-    
-    const tag_name = @tagName(field);
-    const FieldType = @TypeOf(@field(@unionInit(Info, tag_name, undefined), tag_name));
-    
-    const func = @field(FieldType, func_name);
-    comptime std.debug.assert(switch (@TypeOf(func)) {
-        fn(FieldType, usize, []const u8) []const u8,
-        fn(FieldType, usize, []const u8) ?[]const u8,
-        => true,
-        else => false
-    });
-    
-    return func(@field(self.info, tag_name), self.index, src);
-}
-
-fn allVariantsHaveSliceFunc(comptime Union: type) bool {
-    inline for (std.meta.fields(Union)) |field_info| {
-        const FieldType = field_info.field_type;
-        return @hasDecl(FieldType, "slice") and switch (@TypeOf(@field(FieldType, "slice"))) {
-            fn (FieldType, usize, []const u8) []const u8,
-            fn (FieldType, usize, []const u8) ?[]const u8,
-            => true,
-            else => false,
-        };
-    }
 }
 
 pub const Info = union(enum) {
@@ -73,18 +32,35 @@ pub const Info = union(enum) {
     comment: Comment,
     cdata: CharDataSection,
     text: Text,
+    entity_reference: EntityReference,
     whitespace: Whitespace,
     
     pi_target: ProcessingInstructionsTarget,
     pi_token: ProcessingInstructionsToken,
     
-    // Assert that all info variants have a `slice` method
+    
+    
+    // Assert that all variants of Union have a `slice` method
+    fn allVariantsHaveSliceFunc(comptime Union: type) bool {
+        inline for (meta.fields(Union)) |field_info| {
+            const FieldType = field_info.field_type;
+            return @hasDecl(FieldType, "slice") and switch (@TypeOf(@field(FieldType, "slice"))) {
+                fn (FieldType, usize, []const u8) []const u8,
+                fn (FieldType, usize, []const u8) ?[]const u8,
+                => true,
+                else => false,
+            };
+        }
+    }
+    
     comptime {
         std.debug.assert(allVariantsHaveSliceFunc(@This()));
     }
     
+    
+    
     pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-        inline for (comptime std.meta.fieldNames(Info)) |field_name| {
+        inline for (comptime meta.fieldNames(Info)) |field_name| {
             if (@field(Info, field_name) == self) {
                 return @field(self, field_name).slice(index, src);
             }
@@ -188,15 +164,16 @@ pub const Info = union(enum) {
     };
     
     pub const AttributeValueSegment = union(enum) {
-        text: @This().Text,
-        entity_ref: @This().EntityRef,
+        text: Length,
+        entity_reference: EntityReference,
+        empty_quotes: EmptyQuotes,
         
         comptime {
             std.debug.assert(allVariantsHaveSliceFunc(@This()));
         }
         
         pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-            inline for (comptime std.meta.fieldNames(@This())) |name| {
+            inline for (comptime meta.fieldNames(@This())) |name| {
                 if (@field(@This(), name) == self)
                     return @field(self, name).slice(index, src);
             }
@@ -204,30 +181,13 @@ pub const Info = union(enum) {
             unreachable;
         }
         
-        pub const Text = struct {
-            len: usize,
-            
-            pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+        pub const EmptyQuotes = struct {
+            pub fn slice(_: @This(), index: usize, src: []const u8) []const u8 {
                 const beg = index;
-                const end = beg + self.len;
-                return src[beg..end];
-            }
-        };
-        
-        pub const EntityRef = struct {
-            len: usize,
-            
-            pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-                const beg = index;
-                const end = beg + self.len;
-                return src[beg..end];
-            }
-            
-            pub fn name(self: @This(), index: usize, src: []const u8) []const u8 {
-                const sliced = self.slice(index, src);
-                const beg = ("&".len);
-                const end = sliced.len - (";".len);
-                return sliced[beg..end];
+                const end = beg + 0;
+                const result = src[beg..end];
+                std.debug.assert(std.mem.eql(u8, result, ""));
+                return result;
             }
         };
     };
@@ -235,6 +195,24 @@ pub const Info = union(enum) {
     pub const Comment = DataSection("<!--", "-->");
     pub const CharDataSection = DataSection("<![CDATA[", "]]>");
     pub const Text = Length;
+    
+    pub const EntityReference = struct {
+        len: usize,
+        
+        pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
+            const beg = index;
+            const end = beg + self.len;
+            return src[beg..end];
+        }
+        
+        pub fn name(self: @This(), index: usize, src: []const u8) []const u8 {
+            const sliced = self.slice(index, src);
+            const beg = ("&".len);
+            const end = sliced.len - (";".len);
+            return sliced[beg..end];
+        }
+    };
+    
     pub const Whitespace = Length;
     
     pub const ProcessingInstructionsTarget = struct {
@@ -266,7 +244,7 @@ pub const Info = union(enum) {
         }
         
         pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
-            inline for (comptime std.meta.fieldNames(@This())) |name| {
+            inline for (comptime meta.fieldNames(@This())) |name| {
                 if (@field(@This(), name) == self)
                     return @field(self, name).slice(index, src);
             }
@@ -308,6 +286,8 @@ pub const Info = union(enum) {
         };
     };
     
+    
+    
     const Length = struct {
         len: usize,
         
@@ -320,11 +300,11 @@ pub const Info = union(enum) {
     
     fn DataSection(comptime start_tag: []const u8, comptime end_tag: []const u8) type {
         return struct {
-            full_len: usize,
+            len: usize,
             
             pub fn slice(self: @This(), index: usize, src: []const u8) []const u8 {
                 const beg = index;
-                const end = beg + self.full_len;
+                const end = beg + self.len;
                 return src[beg..end];
             }
             
@@ -335,5 +315,111 @@ pub const Info = union(enum) {
                 return sliced[beg..end];
             }
         };
+    }
+};
+
+pub const tests = struct {
+    const testing = std.testing;
+    
+    pub fn expectElementOpen(src: []const u8, tok: Token, prefix: ?[]const u8, name: []const u8) !void {
+        const full_slice: []const u8 = try std.mem.concat(testing.allocator, u8, @as([]const []const u8, if (prefix) |prfx| &.{ "<", prfx, ":", name } else &.{ "<", name }));
+        defer testing.allocator.free(full_slice);
+        
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .element_open), tok.info);
+        try testing.expectEqualStrings(full_slice, tok.slice(src));
+        try testing.expectEqualStrings(name, tok.info.element_open.name(tok.index, src));
+        if (prefix) |prfx|
+            try testing.expectEqualStrings(prfx, tok.info.element_open.prefix(tok.index, src) orelse return error.NullPrefix)
+        else
+            try testing.expectEqual(@as(?[]const u8, null), tok.info.element_open.prefix(tok.index, src));
+    }
+    
+    pub fn expectAttributeName(src: []const u8, tok: Token, prefix: ?[]const u8, name: []const u8) !void {
+        const full_slice: []const u8 = if (prefix) |prfx| @as([]const u8, try std.mem.concat(testing.allocator, u8, &.{ prfx, ":", name })) else name;
+        defer if (prefix != null) testing.allocator.free(full_slice);
+        
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .attribute_name), tok.info);
+        try testing.expectEqualStrings(full_slice, tok.slice(src));
+        try testing.expectEqualStrings(name, tok.info.attribute_name.name(tok.index, src));
+        if (prefix) |prfx|
+            try testing.expectEqualStrings(prfx, tok.info.attribute_name.prefix(tok.index, src) orelse return error.NullPrefix)
+        else
+            try testing.expectEqual(@as(?[]const u8, null), tok.info.attribute_name.prefix(tok.index, src));
+    }
+    
+    pub fn expectElementCloseTag(src: []const u8, tok: Token, prefix: ?[]const u8, name: []const u8) !void {
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .element_close_tag), tok.info);
+        try testing.expectEqualStrings("</", tok.slice(src)[0..2]);
+        try testing.expectEqualStrings(">", tok.slice(src)[tok.slice(src).len - 1..]);
+        try testing.expectEqualStrings(name, tok.info.element_close_tag.name(tok.index, src));
+        if (prefix) |prfx|
+            try testing.expectEqualStrings(prfx, tok.info.element_close_tag.prefix(tok.index, src) orelse return error.NullPrefix)
+        else
+            try testing.expectEqual(@as(?[]const u8, null), tok.info.element_close_tag.prefix(tok.index, src));
+    }
+    
+    pub fn expectElementCloseInline(src: []const u8, tok: Token) !void {
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .element_close_inline), tok.info);
+        try testing.expectEqualStrings("/>", tok.slice(src));
+    }
+    
+    pub fn expectText(src: []const u8, tok: Token, content: []const u8) !void {
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .text), tok.info);
+        try testing.expectEqualStrings(content, tok.slice(src));
+    }
+    
+    pub fn expectWhitespace(src: []const u8, tok: Token, content: []const u8) !void {
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .whitespace), tok.info);
+        try testing.expectEqualStrings(content, tok.slice(src));
+    }
+    
+    pub fn expectEntityReference(src: []const u8, tok: Token, name: []const u8) !void {
+        const full_slice = try std.mem.concat(testing.allocator, u8, &.{ "&", name, ";" });
+        defer testing.allocator.free(full_slice);
+        
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .entity_reference), tok.info);
+        try testing.expectEqualStrings(full_slice, tok.slice(src));
+        try testing.expectEqualStrings(name, tok.info.entity_reference.name(tok.index, src));
+    }
+    
+    pub fn expectComment(src: []const u8, tok: Token, content: []const u8) !void {
+        const full_slice = try std.mem.concat(testing.allocator, u8, &.{ "<!--", content, "-->" });
+        defer testing.allocator.free(full_slice);
+        
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .comment), tok.info);
+        try testing.expectEqualStrings(full_slice, tok.slice(src));
+        try testing.expectEqualStrings(content, tok.info.comment.data(tok.index, src));
+    }
+    
+    pub const AttributeValueSegment = union(meta.Tag(Token.Info.AttributeValueSegment)) {
+        empty_quotes,
+        text: []const u8,
+        entity_reference: struct{ name: []const u8 },
+    };
+    
+    pub fn expectAttributeValueSegment(src: []const u8, tok: Token, segment: AttributeValueSegment) !void {
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .attribute_value_segment), tok.info);
+        try testing.expectEqual(meta.activeTag(segment), tok.info.attribute_value_segment);
+        
+        const full_slice: []const u8 = switch (segment) {
+            .empty_quotes => "",
+            .text => |text| text,
+            .entity_reference => |entity_reference| try std.mem.concat(testing.allocator, u8, &.{ "&", entity_reference.name, ";" }),
+        };
+        defer switch (segment) {
+            .empty_quotes => {},
+            .text => {},
+            .entity_reference => testing.allocator.free(full_slice),
+        };
+        
+        try testing.expectEqualStrings(full_slice, tok.slice(src));
+        switch (segment) {
+            .empty_quotes => {},
+            .text => {},
+            .entity_reference => |entity_reference| {
+                const name = tok.info.attribute_value_segment.entity_reference.name(tok.index, src);
+                try testing.expectEqualStrings(entity_reference.name, name);
+            }
+        }
     }
 };
