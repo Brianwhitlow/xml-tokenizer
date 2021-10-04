@@ -347,6 +347,38 @@ pub const tests = struct {
             try testing.expectEqual(@as(?[]const u8, null), tok.info.attribute_name.prefix(tok.index, src));
     }
     
+    pub const AttributeValueSegment = union(meta.Tag(Token.Info.AttributeValueSegment)) {
+        empty_quotes,
+        text: []const u8,
+        entity_reference: []const u8,
+    };
+    
+    pub fn expectAttributeValueSegment(src: []const u8, tok: Token, segment: AttributeValueSegment) !void {
+        try testing.expectEqual(@as(meta.Tag(Token.Info), .attribute_value_segment), tok.info);
+        try testing.expectEqual(meta.activeTag(segment), tok.info.attribute_value_segment);
+        
+        const full_slice: []const u8 = switch (segment) {
+            .empty_quotes => "",
+            .text => |text| text,
+            .entity_reference => |entity_reference| try std.mem.concat(testing.allocator, u8, &.{ "&", entity_reference, ";" }),
+        };
+        defer switch (segment) {
+            .empty_quotes => {},
+            .text => {},
+            .entity_reference => testing.allocator.free(full_slice),
+        };
+        
+        try testing.expectEqualStrings(full_slice, tok.slice(src));
+        switch (segment) {
+            .empty_quotes => {},
+            .text => {},
+            .entity_reference => |entity_reference| {
+                const name = tok.info.attribute_value_segment.entity_reference.name(tok.index, src);
+                try testing.expectEqualStrings(entity_reference, name);
+            }
+        }
+    }
+    
     pub fn expectElementCloseTag(src: []const u8, tok: Token, prefix: ?[]const u8, name: []const u8) !void {
         try testing.expectEqual(@as(meta.Tag(Token.Info), .element_close_tag), tok.info);
         try testing.expectEqualStrings("</", tok.slice(src)[0..2]);
@@ -389,37 +421,5 @@ pub const tests = struct {
         try testing.expectEqual(@as(meta.Tag(Token.Info), .comment), tok.info);
         try testing.expectEqualStrings(full_slice, tok.slice(src));
         try testing.expectEqualStrings(content, tok.info.comment.data(tok.index, src));
-    }
-    
-    pub const AttributeValueSegment = union(meta.Tag(Token.Info.AttributeValueSegment)) {
-        empty_quotes,
-        text: []const u8,
-        entity_reference: struct{ name: []const u8 },
-    };
-    
-    pub fn expectAttributeValueSegment(src: []const u8, tok: Token, segment: AttributeValueSegment) !void {
-        try testing.expectEqual(@as(meta.Tag(Token.Info), .attribute_value_segment), tok.info);
-        try testing.expectEqual(meta.activeTag(segment), tok.info.attribute_value_segment);
-        
-        const full_slice: []const u8 = switch (segment) {
-            .empty_quotes => "",
-            .text => |text| text,
-            .entity_reference => |entity_reference| try std.mem.concat(testing.allocator, u8, &.{ "&", entity_reference.name, ";" }),
-        };
-        defer switch (segment) {
-            .empty_quotes => {},
-            .text => {},
-            .entity_reference => testing.allocator.free(full_slice),
-        };
-        
-        try testing.expectEqualStrings(full_slice, tok.slice(src));
-        switch (segment) {
-            .empty_quotes => {},
-            .text => {},
-            .entity_reference => |entity_reference| {
-                const name = tok.info.attribute_value_segment.entity_reference.name(tok.index, src);
-                try testing.expectEqualStrings(entity_reference.name, name);
-            }
-        }
     }
 };

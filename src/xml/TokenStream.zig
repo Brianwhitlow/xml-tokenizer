@@ -84,12 +84,52 @@ pub fn next(self: *TokenStream) NextRet {
             else => todo("Error for content in prologue.", .{}),
         },
         .in_root => |prev_tok| switch (prev_tok) {
-            .element_open => return self.tokenizeAfterElementOpenOrAttributeAndWhitespace(),
+            
+            .element_open => return self.tokenizeAfterElementOpenOrAttribute(),
+            
             .element_close_tag => todo("Tokenize after 'element_close_tag'.", .{}),
             .element_close_inline => todo("Tokenize after 'element_close_inline'.", .{}),
-            .attribute_name => todo("Tokenize attributes.", .{}),
             
-            .attribute_value_segment => todo("Tokenize attributes.", .{}),
+            .attribute_name => {
+                self.incrByUtf8WhileWhitespace();
+                switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where equals was expected", .{})) {
+                    '=' => {},
+                    else => todo("Error for character '{u}' where '=' or whitespace was expected", .{self.getUtf8().?}),
+                }
+                
+                std.debug.assert(self.getByte().? == '=');
+                self.incrByByte();
+                
+                self.incrByUtf8WhileWhitespace();
+                switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where string quote was expected.", .{})) {
+                    '"',
+                    '\'',
+                    => {
+                        std.debug.assert(self.state.last_quote == null);
+                        self.state.last_quote = State.QuoteType.init(self.getByte().?);
+                        
+                        self.incrByByte();
+                        const subsequent_char = self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where string content or string terminator was expected.", .{});
+                        if (self.state.last_quote.?.value() == subsequent_char) {
+                            return self.setInRoot(Token.init(self.getIndex(), .{ .attribute_value_segment = .empty_quotes }));
+                        }
+                        
+                        return self.tokenizeAttributeValueSegment();
+                    },
+                    else => todo("Error for character '{u}' where string quote was expected.", .{self.getUtf8().?}),
+                }
+            },
+            
+            .attribute_value_segment => {
+                std.debug.assert(self.state.last_quote != null);
+                if (self.getByte() orelse todo("Error for EOF or invalid UTF8 where character was expected", .{}) == self.state.last_quote.?.value()) {
+                    self.state.last_quote = null;
+                    self.incrByByte();
+                    return self.tokenizeAfterElementOpenOrAttribute();
+                }
+                
+                return self.tokenizeAttributeValueSegment();
+            },
             
             .comment => todo("Tokenize after 'comment'.", .{}),
             .cdata => todo("Tokenize after 'cdata'.", .{}),
@@ -194,7 +234,81 @@ fn tokenizeAfterElementOpenForwardSlash(self: *TokenStream) NextRet {
     return self.setInRoot(result);
 }
 
-fn tokenizeAfterElementOpenOrAttributeAndWhitespace(self: *TokenStream) NextRet {
+fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
+    std.debug.assert(self.state.last_quote != null);
+    std.debug.assert(self.state.info.in_root == .attribute_name or self.state.info.in_root == .attribute_value_segment);
+    
+    const Closure = struct {
+        fn tokenizeAfterAmpersand(ts: *TokenStream) NextRet {
+            std.debug.assert(ts.getByte().? == '&');
+            
+            const start_index = ts.getIndex();
+            ts.incrByByte();
+            
+            if (!xml.isValidUtf8NameStartChar(ts.getUtf8() orelse todo("Error for EOF or invalid UTF8 where entity reference name start char was expected.", .{}))) {
+                return todo("Error for invalid entity reference name start char.", .{});
+            }
+            
+            ts.incrByUtf8();
+            ts.incrByUtf8While(xml.isValidUtf8NameCharOrColon);
+            
+            if (ts.getUtf8() orelse todo ("Error for EOF or invalid UTF8 where entity reference semicolon ';' terminator was expected.", .{}) != ';') {
+                return todo("Error for character '{u}' where semicolon ';' terminator was expected.", .{ts.getUtf8().?});
+            }
+            
+            const len = (ts.getIndex() + 1) - start_index;
+            const info = Token.Info.AttributeValueSegment { .entity_reference = .{ .len = len } };
+            const result = Token.init(start_index, .{ .attribute_value_segment = info });
+            return ts.setInRoot(result);
+        }
+        
+        fn tokenizeString(ts: *TokenStream) NextRet {
+            std.debug.assert(ts.getUtf8().? != '&' and ts.getUtf8().? != ts.state.last_quote.?.value());
+            
+            const start_index = ts.getIndex();
+            switch (ts.state.last_quote.?) {
+                .double => ts.incrByUtf8While(struct { fn func(char: u21) bool { return char != '<' and char != '&' and char != '"'; }}.func),
+                .single => ts.incrByUtf8While(struct { fn func(char: u21) bool { return char != '<' and char != '&' and char != '\''; }}.func),
+            }
+            
+            if (ts.getByte() orelse todo("Error for EOF before string termination", .{}) == '<') {
+                return todo("Error for encountering '<' in attribute string.", .{});
+            }
+            
+            const len = ts.getIndex() - start_index;
+            const info = Token.Info.AttributeValueSegment { .text = .{ .len = len } };
+            const result = Token.init(start_index, .{ .attribute_value_segment = info });
+            return ts.setInRoot(result);
+        }
+    };
+    
+    switch (self.getUtf8().?) {
+        '&' => return Closure.tokenizeAfterAmpersand(self),
+        ';' => {
+            self.incrByByte();
+            if (self.state.last_quote.?.value() == self.getByte() orelse todo("Error for EOF or invalid UTF8 where attribute string content or attribute string terminator was expected.", .{})) {
+                self.incrByByte();
+                return self.tokenizeAfterElementOpenOrAttribute();
+            }
+            
+            if ('&' == self.getByte().?){
+                return Closure.tokenizeAfterAmpersand(self);
+            }
+            
+            return Closure.tokenizeString(self);
+        },
+        else => {
+            if (self.state.last_quote.?.value() == self.getByte().?) {
+                self.incrByByte();
+                return self.tokenizeAfterElementOpenOrAttribute();
+            }
+            std.debug.assert(self.buffer[self.getIndex() - 1] == self.state.last_quote.?.value());
+            return Closure.tokenizeString(self);
+        },
+    }
+}
+
+fn tokenizeAfterElementOpenOrAttribute(self: *TokenStream) NextRet {
     
     std.debug.assert(!xml.isValidUtf8NameCharOrColon(self.getUtf8().?));
     self.incrByUtf8WhileWhitespace();
@@ -354,6 +468,7 @@ fn setTrailing(self: *TokenStream, maybe_tok: ?Token) NextRet {
 
 
 fn getDepth(self: TokenStream) usize { return self.state.depth; }
+
 fn getIndex(self: TokenStream) usize { return self.state.index; }
 
 fn getByte(self: TokenStream) ?u8 {
@@ -375,6 +490,61 @@ fn getUtf8(self: TokenStream) ?u21 {
 }
 
 
+
+const tests = struct {
+    fn expectElementOpen(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
+        try Token.tests.expectElementOpen(ts.buffer, try (ts.next() orelse error.NullToken), prefix, name);
+    }
+    
+    fn expectElementCloseTag(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
+        try Token.tests.expectElementCloseTag(ts.buffer, try (ts.next() orelse error.NullToken), prefix, name);
+    }
+    
+    fn expectElementCloseInline(ts: *TokenStream) !void {
+        try Token.tests.expectElementCloseInline(ts.buffer, try (ts.next() orelse error.NullToken));
+    }
+    
+    fn expectText(ts: *TokenStream, content: []const u8) !void {
+        try Token.tests.expectText(ts.buffer, try (ts.next() orelse error.NullToken), content);
+    }
+    
+    fn expectWhitespace(ts: *TokenStream, content: []const u8) !void {
+        try Token.tests.expectWhitespace(ts.buffer, try (ts.next() orelse error.NullToken), content);
+    }
+    
+    fn expectEntityReference(ts: *TokenStream, name: []const u8) !void {
+        try Token.tests.expectEntityReference(ts.buffer, try (ts.next() orelse error.NullToken), name);
+    }
+    
+    fn expectComment(ts: *TokenStream, content: []const u8) !void {
+        try Token.tests.expectComment(ts.buffer, try (ts.next() orelse error.NullToken), content);
+    }
+    
+    fn expectAttributeName(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
+        try Token.tests.expectAttributeName(ts.buffer, try (ts.next() orelse error.NullToken), prefix, name);
+    }
+    
+    fn expectAttributeValueSegment(ts: *TokenStream, segment: Token.tests.AttributeValueSegment) !void {
+        try Token.tests.expectAttributeValueSegment(ts.buffer, try (ts.next() orelse error.NullToken), segment);
+    }
+    
+    fn expectAttribute(ts: *TokenStream, prefix: ?[]const u8, name: []const u8, segments: []const Token.tests.AttributeValueSegment) !void {
+        try expectAttributeName(ts, prefix, name);
+        for (segments) |segment| {
+            try expectAttributeValueSegment(ts, segment);
+        }
+    }
+    
+    
+    
+    fn expectNull(ts: *TokenStream) !void {
+        try testing.expectEqual(@as(NextRet, null), ts.next());
+    }
+    
+    fn expectError(ts: *TokenStream, err: Error) !void {
+        try testing.expectError(err, ts.next() orelse return error.NullToken);
+    }
+};
 
 test "empty source" {
     var ts = TokenStream.init("");
@@ -440,43 +610,79 @@ test "empty tag with attribute" {
     inline for (.{ "=", "=  ", " = ", "  =" }) |eql|
     inline for (.{ "'", "\"" }) |quote|
     inline for (.{ "", " " }) |whitespace|
+    inline for (.{ @as(?[]const u8, "pre"), null }) |maybe_prefix|
     {
-        ts.reset("<empty " ++ "foo" ++ eql ++ quote ++ quote ++ whitespace ++ "/>");
-        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
-        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, null, "foo");
-        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .empty_quotes);
-        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
-        try testing.expectEqual(ts.next(), null);
+        const other_quote = if (quote[0] == '"') "'" else "\"";
+        const prefix = if (maybe_prefix) |prfx| prfx ++ ":" else "";
         
-        ts.reset("<empty " ++ "foo:bar" ++ eql ++ quote ++ quote ++ whitespace ++ "/>");
-        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
-        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, "foo", "bar");
-        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .empty_quotes);
-        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
-        try testing.expectEqual(ts.next(), null);
+        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ quote ++ whitespace ++ "/>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .empty_quotes });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
         
-        ts.reset("<empty " ++ "foo" ++ eql ++ quote ++ "bar" ++ quote ++ whitespace ++ "/>");
-        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
-        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, null, "foo");
-        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .text = "bar" });
-        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
-        try testing.expectEqual(ts.next(), null);
+        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "bar" ++ quote ++ whitespace ++ "/>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .text = "bar" } });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
         
-        ts.reset("<empty " ++ "foo:bar" ++ eql ++ quote ++ "baz" ++ quote ++ whitespace ++ "/>");
-        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
-        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, "foo", "bar");
-        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .text = "baz" });
-        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
-        try testing.expectEqual(ts.next(), null);
+        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "&quot;" ++ quote ++ whitespace ++ "/>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .entity_reference = "quot" } });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
         
+        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ other_quote ++ quote ++ whitespace ++ "/>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .text = other_quote } });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
         
-        ts.reset("<empty " ++ "foo" ++ eql ++ quote ++ "&lt;bar&gt;" ++ quote ++ whitespace ++ "/>");
-        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
-        try Token.tests.expectAttributeName(ts.buffer, try ts.next().?, null, "foo");
-        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .entity_reference = .{ .name = "lt" } });
-        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .text = "bar" });
-        try Token.tests.expectAttributeValueSegment(ts.buffer, try ts.next().?, .{ .entity_reference = .{ .name = "gt" } });
-        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
-        try testing.expectEqual(ts.next(), null);
+        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ other_quote ++ "barbaz" ++ other_quote ++ quote ++ whitespace ++ "/>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .text = other_quote ++ "barbaz" ++ other_quote } });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ other_quote ++ "&apos;" ++ other_quote ++ quote ++ whitespace ++ "/>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{
+            .{ .text = other_quote },
+            .{ .entity_reference = "apos" },
+            .{ .text = other_quote },
+        });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "&quot;bar&quot;" ++ quote ++ whitespace ++ "/>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{
+            .{ .entity_reference = "quot" },
+            .{ .text = "bar" },
+            .{ .entity_reference = "quot" },
+        });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "bar&amp;baz" ++ quote ++ whitespace ++ "/>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{
+            .{ .text = "bar" },
+            .{ .entity_reference = "amp" },
+            .{ .text = "baz" },
+        });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
+        
+        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "&lt;&apos;&gt;" ++ quote ++ whitespace ++ "/>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{
+            .{ .entity_reference = "lt" },
+            .{ .entity_reference = "apos" },
+            .{ .entity_reference = "gt" },
+        });
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
     };
 }
