@@ -603,7 +603,7 @@ test "empty tag close inline" {
     
 }
 
-test "empty tag with attribute stress testing" {
+test "empty tag with attributes stress testing" {
     var ts = TokenStream.init(undefined);
     
     @setEvalBranchQuota(4_000);
@@ -682,4 +682,15 @@ test "empty tag with attribute stress testing" {
         try tests.expectElementCloseInline(&ts);
         try tests.expectNull(&ts);
     };
+}
+
+test "empty tag with multiple attributes" {
+    var ts = TokenStream.init(undefined);
+    
+    ts.reset("<empty foo:bar=\"baz\" fi:fo = 'fum' />");
+    try tests.expectElementOpen(&ts, null, "empty");
+    try tests.expectAttribute(&ts, "foo", "bar", &.{ .{ .text = "baz" } });
+    try tests.expectAttribute(&ts, "fi", "fo", &.{ .{ .text = "fum" } });
+    try tests.expectElementCloseInline(&ts);
+    try tests.expectNull(&ts);
 }
