@@ -685,9 +685,7 @@ test "empty tag with attributes stress testing" {
 }
 
 test "empty tag with multiple attributes" {
-    var ts = TokenStream.init(undefined);
-    
-    ts.reset("<empty foo:bar=\"baz\" fi:fo = 'fum' />");
+    var ts = TokenStream.init("<empty foo:bar=\"baz\" fi:fo = 'fum' />");
     try tests.expectElementOpen(&ts, null, "empty");
     try tests.expectAttribute(&ts, "foo", "bar", &.{ .{ .text = "baz" } });
     try tests.expectAttribute(&ts, "fi", "fo", &.{ .{ .text = "fum" } });
