@@ -28,12 +28,9 @@ pub const Error = error {
 pub const NextRet = ?(Error!Token);
 
 pub fn next(self: *TokenStream) NextRet {
-    
-    //const on_start = self.state;
-    //defer std.debug.assert(!meta.eql(on_start.info, self.state.info));
-    
     switch (self.state.info) {
         .end => return null,
+        
         .start => if (self.state.info.start) |prev_tok| switch (prev_tok) {
             .element_open => unreachable,
             .element_close_tag => unreachable,
@@ -83,6 +80,7 @@ pub fn next(self: *TokenStream) NextRet {
             '<' => return self.tokenizeAfterLeftAngleBracket(),
             else => todo("Error for content in prologue.", .{}),
         },
+        
         .in_root => |prev_tok| switch (prev_tok) {
             
             .element_open => return self.tokenizeAfterElementOpenOrAttribute(),
@@ -139,6 +137,7 @@ pub fn next(self: *TokenStream) NextRet {
             .pi_target => todo("Tokenize after 'pi_target'.", .{}),
             .pi_token => todo("Tokenize after 'pi_token'.", .{}),
         },
+        
         .trailing => {
             std.debug.assert(self.getDepth() == 0);
             if (self.state.info.trailing) |prev_tok| switch (prev_tok) {
@@ -302,6 +301,7 @@ fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
                 self.incrByByte();
                 return self.tokenizeAfterElementOpenOrAttribute();
             }
+            
             std.debug.assert(self.buffer[self.getIndex() - 1] == self.state.last_quote.?.value());
             return Closure.tokenizeString(self);
         },
@@ -548,7 +548,7 @@ const tests = struct {
 
 test "empty source" {
     var ts = TokenStream.init("");
-    try testing.expectEqual(ts.next(), null);
+    try tests.expectNull(&ts);
 }
 
 test "whitespace source" {
@@ -565,8 +565,8 @@ test "whitespace source" {
     {
         const whitespace = (s0 ++ s1 ++ s2 ++ s3) ** mul;
         ts.reset(whitespace);
-        try Token.tests.expectWhitespace(ts.buffer, try ts.next().?, whitespace);
-        try testing.expectEqual(ts.next(), null);
+        try tests.expectWhitespace(&ts, whitespace);
+        try tests.expectNull(&ts);
     };
 }
 
@@ -584,21 +584,21 @@ test "empty tag close inline" {
     {
         const whitespace = (s0 ++ s1 ++ s2 ++ s3) ** mul;
         ts.reset("<empty" ++ whitespace ++ "/>");
-        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "empty");
-        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
-        try testing.expectEqual(ts.next(), null);
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
         
         ts.reset("<pre:empty" ++ whitespace ++ "/>");
-        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, "pre", "empty");
-        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
-        try testing.expectEqual(ts.next(), null);
+        try tests.expectElementOpen(&ts, "pre", "empty");
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectNull(&ts);
         
         ts.reset(whitespace ++ "<root" ++ whitespace ++ "/>" ++ whitespace);
-        try Token.tests.expectWhitespace(ts.buffer, try ts.next().?, whitespace);
-        try Token.tests.expectElementOpen(ts.buffer, try ts.next().?, null, "root");
-        try Token.tests.expectElementCloseInline(ts.buffer, try ts.next().?);
-        try Token.tests.expectWhitespace(ts.buffer, try ts.next().?, whitespace);
-        try testing.expectEqual(ts.next(), null);
+        try tests.expectWhitespace(&ts, whitespace);
+        try tests.expectElementOpen(&ts, null, "root");
+        try tests.expectElementCloseInline(&ts);
+        try tests.expectWhitespace(&ts, whitespace);
+        try tests.expectNull(&ts);
     };
     
 }
@@ -627,17 +627,24 @@ test "empty tag with attribute" {
         try tests.expectElementCloseInline(&ts);
         try tests.expectNull(&ts);
         
-        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "&quot;" ++ quote ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .entity_reference = "quot" } });
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
+        inline for (.{ 1, 2, 3, 4 }) |mul| {
+            const entity_ref_name = "quot";
+            const entity_ref = "&quot;";
+            ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ (entity_ref ** mul) ++ quote ++ whitespace ++ "/>");
+            try tests.expectElementOpen(&ts, null, "empty");
+            try tests.expectAttribute(&ts, maybe_prefix, "foo", &(.{ .{ .entity_reference = entity_ref_name } } ** mul));
+            try tests.expectElementCloseInline(&ts);
+            try tests.expectNull(&ts);
+        }
         
-        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ other_quote ++ quote ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .text = other_quote } });
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
+        inline for (.{ 1, 2, 3, 4 }) |mul| {
+            const attr_text = (other_quote ** mul);
+            ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++  attr_text ++ quote ++ whitespace ++ "/>");
+            try tests.expectElementOpen(&ts, null, "empty");
+            try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .text = attr_text } });
+            try tests.expectElementCloseInline(&ts);
+            try tests.expectNull(&ts);
+        }
         
         ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ other_quote ++ "barbaz" ++ other_quote ++ quote ++ whitespace ++ "/>");
         try tests.expectElementOpen(&ts, null, "empty");
@@ -671,16 +678,6 @@ test "empty tag with attribute" {
             .{ .text = "bar" },
             .{ .entity_reference = "amp" },
             .{ .text = "baz" },
-        });
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
-        
-        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "&lt;&apos;&gt;" ++ quote ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{
-            .{ .entity_reference = "lt" },
-            .{ .entity_reference = "apos" },
-            .{ .entity_reference = "gt" },
         });
         try tests.expectElementCloseInline(&ts);
         try tests.expectNull(&ts);
