@@ -369,41 +369,21 @@ fn tokenizeAfterElementTagOrAttribute(self: *TokenStream) NextRet {
             }
         },
         else => {
-            const Closure = struct {
-                fn retAttrName(ts: *TokenStream, start_idx: usize, prefix_len: usize) NextRet {
-                    const len = ts.getIndex() - start_idx;
-                    const info = Token.Info.AttributeName { .prefix_len = prefix_len, .full_len = len };
-                    const result = Token.init(start_idx, .{ .attribute_name = info });
-                    return ts.setInRoot(result);
-                }
+            const start_index = self.getIndex();
+            const tokenized_identifier = self.tokenizePrefixedIdentifier() catch |err| switch (err) {
+                error.NoName => todo("Error for no name where one was expected.", .{}),
+                error.InvalidNameStartChar => todo("Error for invalid name start char.", .{}),
+                error.PrematureEof => todo("Error for premature EOF.", .{}),
             };
             
-            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) todo("Error on invalid attribute name start char.", .{});
-            const start_index = self.getIndex();
-            self.incrByUtf8();
+            const prefix_len = tokenized_identifier.prefix_len;
+            const full_len = prefix_len + @as(usize, if (prefix_len == 0) 0 else 1) + tokenized_identifier.identifier_len;
             
-            self.incrByUtf8While(xml.isValidUtf8NameChar);
-            switch (self.getUtf8() orelse todo("Error on invalid attribute name char or premature EOF.", .{})) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                '=',
-                => return Closure.retAttrName(self, start_index, 0),
-                
-                ':' => {
-                    const prefix_len = self.getIndex() - start_index;
-                    self.incrByByte();
-                    
-                    if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) todo("Error on invalid attribute name start char.", .{});
-                    self.incrByUtf8();
-                    
-                    self.incrByUtf8While(xml.isValidUtf8NameChar);
-                    return Closure.retAttrName(self, start_index, prefix_len);
-                },
-                
-                else => todo("Error on invalid attribute name char", .{}),
-            }
+            std.debug.assert(full_len == (self.getIndex() - start_index));
+            
+            const info = Token.Info.AttributeName { .prefix_len = prefix_len, .full_len = full_len };
+            const result = Token.init(start_index, .{ .attribute_name = info });
+            return self.setInRoot(result);
         },
     }
 }
