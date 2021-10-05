@@ -227,8 +227,8 @@ fn tokenizeAfterElementOpenForwardSlash(self: *TokenStream) NextRet {
         todo("Error if / is followed by EOF where '>' was expected", .{});
     }
     
-    self.state.depth -= 1;
     const result = Token.init(start_index, .element_close_inline);
+    self.state.depth -= 1;
     if (self.getDepth() == 0) return self.setTrailing(result);
     return self.setInRoot(result);
 }
@@ -315,7 +315,13 @@ fn tokenizeAfterElementOpenOrAttribute(self: *TokenStream) NextRet {
     
     switch (self.getUtf8() orelse todo("Error for premature EOF after unclosed element tag.", .{})) {
         '/' => return self.tokenizeAfterElementOpenForwardSlash(),
-        '>' => todo("Tokenize after element open tag.", .{}),
+        '>' => {
+            self.incrByByte();
+            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 immediately after unclosed element open tag.", .{})) {
+                '<' => return self.tokenizeAfterLeftAngleBracket(),
+                else => todo("Tokenize content.", .{}),
+            }
+        },
         else => {
             const Closure = struct {
                 fn retAttrName(ts: *TokenStream, start_idx: usize, prefix_len: usize) NextRet {
@@ -364,24 +370,93 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
     switch (self.getUtf8() orelse todo("Error for ending file immediately after '<'.", .{})) {
         '?' => todo("Tokenize preprocessing instructions.", .{}),
         '!' => todo("Tokenize after '!'.", .{}),
-        '/' => todo("Tokenize element close tags.", .{}),
-        else => {
-            const Closure = struct { fn retName(ts: *TokenStream, start_idx: usize, prefix_len: usize) NextRet {
-                std.debug.assert(ts.buffer[start_idx] == '<');
-                const len = ts.getIndex() - start_idx;
-                const info = Token.Info.ElementOpen { .prefix_len = prefix_len, .full_len = len };
-                const result = Token.init(start_idx, .{ .element_open = info });
-                ts.state.depth += 1;
-                return ts.setInRoot(result);
-            } };
+        '/' => {
+            const Closure = struct {
+                fn retCloseTagName(ts: *TokenStream, start_idx: usize, prefix_len: usize, identifier_len: usize) NextRet {
+                    std.debug.assert(ts.buffer[start_idx] == '<');
+                    std.debug.assert(prefix_len == 0 or ts.buffer[prefix_len] == ':');
+                    std.debug.assert(ts.buffer[ts.getIndex()] == '>');
+                    const full_len = (ts.getIndex() + 1) - start_idx;
+                    const info = Token.Info.ElementCloseTag { .prefix_len = prefix_len, .identifier_len = identifier_len, .full_len = full_len };
+                    const result = Token.init(start_idx, .{ .element_close_tag = info });
+                    
+                    ts.state.depth -= 1;
+                    if (ts.getDepth() == 0) return ts.setTrailing(result);
+                    
+                    return ts.setInRoot(result);
+                }
+            };
             
-            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
-                todo("Error for invalid start char for element name.", .{});
+            self.incrByByte();
+            const name_start_char = self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag name start char was expected.", .{});
+            if (!xml.isValidUtf8NameStartChar(name_start_char)) {
+                return todo("Error for invalid element close tag name start char.", .{});
             }
             
             self.incrByUtf8();
             self.incrByUtf8While(xml.isValidUtf8NameChar);
-            switch (self.getUtf8() orelse todo("Error for ending file immediately after element name", .{})) {
+            switch (self.getUtf8() orelse todo("Error EOF or invalid UTF8 where element close tag name terminator was expected.", .{})) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => {
+                    const identifier_len = self.getIndex() - (start_index + "</".len);
+                    self.incrByUtf8WhileWhitespace();
+                    switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag terminator was expected.", .{})) {
+                        '>' => return Closure.retCloseTagName(self, start_index, 0, identifier_len),
+                        else => todo("Error for character '{u}' where element close tag terminator '>' was expected.", .{self.getUtf8().?}),
+                    }
+                },
+                '>' => return Closure.retCloseTagName(self, start_index, 0, self.getIndex() - (start_index + "</".len)),
+                ':' => {
+                    const prefix_len = self.getIndex() - (start_index + ("</".len));
+                    self.incrByByte();
+                    if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
+                        todo("Error for invalid start char for element close tag name.", .{});
+                    }
+                    
+                    self.incrByUtf8();
+                    self.incrByUtf8While(xml.isValidUtf8NameChar);
+                    switch (self.getUtf8() orelse todo("Error for ending file immediately after element name", .{})) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        => {
+                            const identifier_len = self.getIndex() - (start_index + "</".len);
+                            self.incrByUtf8WhileWhitespace();
+                            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag terminator was expected.", .{})) {
+                                '>' => return Closure.retCloseTagName(self, start_index, prefix_len, identifier_len),
+                                else => todo("Error for character '{u}' where element close tag terminator '>' was expected.", .{self.getUtf8().?}),
+                            }
+                        },
+                        '>' => return Closure.retCloseTagName(self, start_index, prefix_len, self.getIndex() - (start_index + "</".len)),
+                        else => todo("Error for invalid element close tag name char", .{})
+                    }
+                },
+                else => todo("Error for invalid element close tag name char.", .{}),
+            }
+        },
+        else => {
+            const Closure = struct {
+                fn retName(ts: *TokenStream, start_idx: usize, prefix_len: usize) NextRet {
+                    std.debug.assert(ts.buffer[start_idx] == '<');
+                    const len = ts.getIndex() - start_idx;
+                    const info = Token.Info.ElementOpen { .prefix_len = prefix_len, .full_len = len };
+                    const result = Token.init(start_idx, .{ .element_open = info });
+                    ts.state.depth += 1;
+                    return ts.setInRoot(result);
+                }
+            };
+            
+            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
+                todo("Error for invalid start char for element open name.", .{});
+            }
+            
+            self.incrByUtf8();
+            self.incrByUtf8While(xml.isValidUtf8NameChar);
+            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element open name terminator was expected.", .{})) {
                 ' ',
                 '\t',
                 '\n',
@@ -398,7 +473,7 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
                     
                     self.incrByUtf8();
                     self.incrByUtf8While(xml.isValidUtf8NameChar);
-                    switch (self.getUtf8() orelse todo("Error for ending file immediately after element name", .{})) {
+                    switch (self.getUtf8() orelse todo("Error for ending file immediately after element name.", .{})) {
                         ' ',
                         '\t',
                         '\n',
@@ -406,10 +481,10 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
                         '/',
                         '>',
                         => return Closure.retName(self, start_index, prefix_len),
-                        else => todo("Error for invalid name char", .{})
+                        else => todo("Error for invalid element open name char.", .{})
                     }
                 },
-                else => todo("Error for invalid name char", .{}),
+                else => todo("Error for invalid element open name char.", .{}),
             }
         }
     }
@@ -600,8 +675,40 @@ test "empty tag close inline" {
         try tests.expectWhitespace(&ts, whitespace);
         try tests.expectNull(&ts);
     };
-    
 }
+
+test "empty tag close non-inline" {
+    var ts = TokenStream.init(undefined);
+    
+    @setEvalBranchQuota(4_000);
+    const spaces = .{ " ", "\t", "\n", "\r" };
+    const spaces0 = .{""} ++ spaces;
+    inline for (spaces0) |s0|
+    inline for (spaces) |s1|
+    inline for (spaces) |s2|
+    inline for (spaces) |s3|
+    inline for (.{1, 2, 3}) |mul|
+    {
+        const whitespace = (s0 ++ s1 ++ s2 ++ s3) ** mul;
+        ts.reset("<empty></empty>");
+        try tests.expectElementOpen(&ts, null, "empty");
+        try tests.expectElementCloseTag(&ts, null, "empty");
+        try tests.expectNull(&ts);
+        
+        ts.reset("<pre:empty></pre:empty>");
+        try tests.expectElementOpen(&ts, "pre", "empty");
+        try tests.expectElementCloseTag(&ts, "pre", "empty");
+        try tests.expectNull(&ts);
+        
+        ts.reset(whitespace ++ "<root></root>" ++ whitespace);
+        try tests.expectWhitespace(&ts, whitespace);
+        try tests.expectElementOpen(&ts, null, "root");
+        try tests.expectElementCloseTag(&ts, null, "root");
+        try tests.expectWhitespace(&ts, whitespace);
+        try tests.expectNull(&ts);
+    };
+}
+
 
 test "empty tag with attributes stress testing" {
     var ts = TokenStream.init(undefined);
