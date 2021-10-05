@@ -417,116 +417,86 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
         '?' => todo("Tokenize preprocessing instructions.", .{}),
         '!' => todo("Tokenize after '!'.", .{}),
         '/' => {
-            const Closure = struct {
-                const Mode = enum { after_fwd_slash, after_colon };
-                inline fn tokenizeElementCloseTag(ts: *TokenStream, comptime mode: Mode, start_idx: usize, prefix_len: usize) NextRet {
-                    std.debug.assert(ts.buffer[start_idx] == '<');
-                    switch (mode) {
-                        .after_fwd_slash => {
-                            std.debug.assert(ts.getByte().? == '/');
-                            std.debug.assert(prefix_len == 0);
-                        },
-                        .after_colon => {
-                            std.debug.assert(ts.getByte().? == ':');
-                            std.debug.assert(prefix_len != 0);
-                        },
-                    }
-                    
-                    ts.incrByByte();
-                    const start_char = ts.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag name start char was expected.", .{});
-                    if (!xml.isValidUtf8NameStartChar(start_char)) {
-                        return todo("Error for character '{u}' where element close tag name start char was expected.", .{start_char});
-                    }
-                    
-                    ts.incrByUtf8();
-                    ts.incrByUtf8While(xml.isValidUtf8NameChar);
-                    switch (ts.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag name terminator was expected.", .{})) {
-                        ' ',
-                        '\t',
-                        '\n',
-                        '\r',
-                        '>'
-                        => {
-                            const colon_offset = switch (mode) {
-                                .after_fwd_slash => ("".len),
-                                .after_colon => (":".len),
-                            };
-                            
-                            const identifier_len = ts.getIndex() - (start_idx + "</".len + prefix_len + colon_offset);
-                            ts.incrByUtf8WhileWhitespace();
-                            if (ts.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag terminator was expected.", .{}) != '>') {
-                                return todo("Error for character {u} where element close tag terminator '>' was expected.", .{ts.getUtf8().?});
-                            }
-                            const full_len = (ts.getIndex() + 1) - start_idx;
-                            const info = Token.Info.ElementCloseTag { .prefix_len = prefix_len, .identifier_len = identifier_len, .full_len = full_len };
-                            const result = Token.init(start_idx, .{ .element_close_tag = info });
-                            return ts.subDepth(result);
-                        },
-                        else => {
-                            if (ts.getUtf8().? == ':' and mode == .after_fwd_slash) {
-                                return @This().tokenizeElementCloseTag(ts, .after_colon, start_idx, ts.getIndex() - (start_idx + "</".len));
-                            }
-                            todo("Error for character '{u}' where element close tag name terminator was expected.", .{ts.getUtf8().?});
-                        }
-                    }
+            self.incrByByte();
+            
+            const prefixed_identifier = self.tokenizePrefixedIdentifier() catch |err| switch (err) {
+                error.NoName => todo("Error for no name where one was expected.", .{}),
+                error.InvalidNameStartChar => todo("Error for invalid name start char.", .{}),
+                error.PrematureEof => todo("Error for premature EOF.", .{}),
+            };
+            
+            const info = Token.Info.ElementCloseTag {
+                .prefix_len = prefixed_identifier.prefix_len,
+                .identifier_len = prefixed_identifier.identifier_len,
+                .full_len = blk: {
+                    self.incrByUtf8WhileWhitespace();
+                    break :blk switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag terminator was expected.", .{})) {
+                        '>' => (self.getIndex() + 1) - start_index,
+                        else => todo("Error for character '{u}' where element close tag terminator was expected.", .{self.getUtf8().?}),
+                    };
                 }
             };
             
-            return Closure.tokenizeElementCloseTag(self, .after_fwd_slash, start_index, 0);
+            const result = Token.init(start_index, .{ .element_close_tag = info });
+            return self.subDepth(result);
         },
+        
         else => {
-            const Closure = struct {
-                fn retName(ts: *TokenStream, start_idx: usize, prefix_len: usize) NextRet {
-                    std.debug.assert(ts.buffer[start_idx] == '<');
-                    const len = ts.getIndex() - start_idx;
-                    const info = Token.Info.ElementOpen { .prefix_len = prefix_len, .full_len = len };
-                    const result = Token.init(start_idx, .{ .element_open = info });
-                    ts.state.depth += 1;
-                    return ts.setInRoot(result);
-                }
+            const prefixed_identifier = self.tokenizePrefixedIdentifier() catch |err| switch (err) {
+                error.NoName => todo("Error for no name where one was expected.", .{}),
+                error.InvalidNameStartChar => todo("Error for invalid name start char.", .{}),
+                error.PrematureEof => todo("Error for premature EOF.", .{}),
             };
             
-            if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
-                todo("Error for invalid start char for element open name.", .{});
-            }
+            const info = Token.Info.ElementOpen {
+                .prefix_len = prefixed_identifier.prefix_len,
+                .full_len = self.getIndex() - start_index,
+            };
             
-            self.incrByUtf8();
-            self.incrByUtf8While(xml.isValidUtf8NameChar);
-            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element open name terminator was expected.", .{})) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                '/',
-                '>',
-                => return Closure.retName(self, start_index, 0),
-                ':' => {
-                    const prefix_len = self.getIndex() - (start_index + ("<".len));
-                    self.incrByByte();
-                    if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
-                        todo("Error for invalid start char for element name.", .{});
-                    }
-                    
-                    self.incrByUtf8();
-                    self.incrByUtf8While(xml.isValidUtf8NameChar);
-                    switch (self.getUtf8() orelse todo("Error for ending file immediately after element name.", .{})) {
-                        ' ',
-                        '\t',
-                        '\n',
-                        '\r',
-                        '/',
-                        '>',
-                        => return Closure.retName(self, start_index, prefix_len),
-                        else => todo("Error for invalid element open name char.", .{})
-                    }
-                },
-                else => todo("Error for invalid element open name char.", .{}),
-            }
+            const result = Token.init(start_index, .{ .element_open = info });
+            self.state.depth += 1;
+            return self.setInRoot(result);
         }
     }
 }
 
-// TODO: use this instead of manually decrementing depth.
+
+const IdentifierLength = struct { identifier_len: usize };
+fn tokenizeIdentifier(self: *TokenStream) error { NoName, InvalidNameStartChar }!IdentifierLength {
+    const start_index = self.getIndex();
+    const name_start_char = self.getUtf8() orelse return error.NoName;
+    if (!xml.isValidUtf8NameStartChar(name_start_char)) {
+        return error.InvalidNameStartChar;
+    }
+    
+    self.incrByUtf8();
+    self.incrByUtf8While(xml.isValidUtf8NameChar);
+    
+    return IdentifierLength { .identifier_len = self.getIndex() - start_index };
+}
+
+const PrefixedIdentifierLength = struct { prefix_len: usize, identifier_len: usize };
+fn tokenizePrefixedIdentifier(self: *TokenStream) error { NoName, InvalidNameStartChar, PrematureEof }!PrefixedIdentifierLength {
+    const tokenized_first = try self.tokenizeIdentifier();
+    switch (self.getUtf8() orelse return error.PrematureEof) {
+        ':' => {
+            self.incrByByte();
+            const tokenized_second = try self.tokenizeIdentifier();
+            return PrefixedIdentifierLength {
+                .prefix_len = tokenized_first.identifier_len,
+                .identifier_len = tokenized_second.identifier_len,
+            };
+        },
+        else => return PrefixedIdentifierLength {
+            .prefix_len = 0,
+            .identifier_len = tokenized_first.identifier_len,
+        },
+    }
+}
+
+
+
+
 fn subDepth(self: *TokenStream, ret: Token) NextRet {
     std.debug.assert(self.state.depth != 0);
     std.debug.assert(self.state.info == .in_root);
@@ -886,7 +856,7 @@ test "whitespace content" {
     };
 }
 
-test "UTF8 content" {
+test "utf8 content" {
     var ts = TokenStream.init(undefined);
     const utf8_content =
         // edited to exclude any ampersands and left/right angle brackets
@@ -1080,7 +1050,7 @@ test "UTF8 content" {
     try tests.expectElementCloseTag(&ts, null, "root");
 }
 
-test "Mixed content & tags" {
+test "mixed content & tags" {
     var ts = TokenStream.init(
         \\<root>
         \\    <child>
