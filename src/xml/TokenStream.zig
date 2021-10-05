@@ -337,7 +337,7 @@ fn tokenizeAfterElementTagOrAttribute(self: *TokenStream) NextRet {
         '/' => return self.tokenizeAfterElementOpenForwardSlash(),
         '>' => {
             self.incrByByte();
-            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 immediately after unclosed element open tag.", .{})) {
+            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where content or closing tags were expected.", .{})) {
                 '<' => return self.tokenizeAfterLeftAngleBracket(),
                 else => {
                     const start_index = self.getIndex();
@@ -1078,4 +1078,32 @@ test "UTF8 content" {
     try tests.expectElementOpen(&ts, null, "root");
     try tests.expectText(&ts, utf8_content);
     try tests.expectElementCloseTag(&ts, null, "root");
+}
+
+test "Mixed content & tags" {
+    var ts = TokenStream.init(
+        \\<root>
+        \\    <child>
+        \\    header
+        \\    <node>inner<content/> </node>
+        \\    footer
+        \\    </child>
+        \\</root>
+    );
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectWhitespace(&ts, "\n    ");
+    try tests.expectElementOpen(&ts, null, "child");
+    try tests.expectText(&ts, "\n    header\n    ");
+    try tests.expectElementOpen(&ts, null, "node");
+    try tests.expectText(&ts, "inner");
+    try tests.expectElementOpen(&ts, null, "content");
+    try tests.expectElementCloseInline(&ts);
+    try tests.expectWhitespace(&ts, " ");
+    try tests.expectElementCloseTag(&ts, null, "node");
+    try tests.expectText(&ts, "\n    footer\n    ");
+    try tests.expectElementCloseTag(&ts, null, "child");
+    std.debug.assert(ts.getDepth() == 1);
+    try tests.expectWhitespace(&ts, "\n");
+    try tests.expectElementCloseTag(&ts, null, "root");
+    try tests.expectNull(&ts);
 }
