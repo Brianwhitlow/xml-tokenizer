@@ -83,10 +83,14 @@ pub fn next(self: *TokenStream) NextRet {
         
         .in_root => |prev_tok| switch (prev_tok) {
             
-            .element_open => return self.tokenizeAfterElementOpenOrAttribute(),
+            .element_open => return self.tokenizeAfterElementTagOrAttribute(),
             
-            .element_close_tag => todo("Tokenize after 'element_close_tag'.", .{}),
-            .element_close_inline => todo("Tokenize after 'element_close_inline'.", .{}),
+            .element_close_tag,
+            .element_close_inline,
+            => {
+                std.debug.assert(self.getByte().? == '>');
+                return self.tokenizeAfterElementTagOrAttribute();
+            },
             
             .attribute_name => {
                 self.incrByUtf8WhileWhitespace();
@@ -123,7 +127,7 @@ pub fn next(self: *TokenStream) NextRet {
                 if (self.getByte() orelse todo("Error for EOF or invalid UTF8 where character was expected", .{}) == self.state.last_quote.?.value()) {
                     self.state.last_quote = null;
                     self.incrByByte();
-                    return self.tokenizeAfterElementOpenOrAttribute();
+                    return self.tokenizeAfterElementTagOrAttribute();
                 }
                 
                 return self.tokenizeAttributeValueSegment();
@@ -144,7 +148,8 @@ pub fn next(self: *TokenStream) NextRet {
                 .element_open => unreachable,
                 
                 .element_close_tag,
-                .element_close_inline => {
+                .element_close_inline,
+                => {
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
                     
@@ -297,7 +302,7 @@ fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
             self.incrByByte();
             if (self.state.last_quote.?.value() == self.getByte() orelse todo("Error for EOF or invalid UTF8 where attribute string content or attribute string terminator was expected.", .{})) {
                 self.incrByByte();
-                return self.tokenizeAfterElementOpenOrAttribute();
+                return self.tokenizeAfterElementTagOrAttribute();
             }
             
             if ('&' == self.getByte().?){
@@ -309,7 +314,7 @@ fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
         else => {
             if (self.state.last_quote.?.value() == self.getByte().?) {
                 self.incrByByte();
-                return self.tokenizeAfterElementOpenOrAttribute();
+                return self.tokenizeAfterElementTagOrAttribute();
             }
             
             std.debug.assert(self.buffer[self.getIndex() - 1] == self.state.last_quote.?.value());
@@ -318,8 +323,7 @@ fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
     }
 }
 
-fn tokenizeAfterElementOpenOrAttribute(self: *TokenStream) NextRet {
-    
+fn tokenizeAfterElementTagOrAttribute(self: *TokenStream) NextRet {
     std.debug.assert(!xml.isValidUtf8NameCharOrColon(self.getUtf8().?));
     self.incrByUtf8WhileWhitespace();
     
@@ -724,6 +728,20 @@ test "empty tag close non-inline" {
     };
 }
 
+test "empty but nested tags" {
+    var ts = TokenStream.init("<tag0><tag1><tag2><empty/></tag2></tag1></tag0>");
+    try tests.expectElementOpen(&ts, null, "tag0");
+    try tests.expectElementOpen(&ts, null, "tag1");
+    try tests.expectElementOpen(&ts, null, "tag2");
+    
+    try tests.expectElementOpen(&ts, null, "empty");
+    try tests.expectElementCloseInline(&ts);
+    
+    try tests.expectElementCloseTag(&ts, null, "tag2");
+    try tests.expectElementCloseTag(&ts, null, "tag1");
+    try tests.expectElementCloseTag(&ts, null, "tag0");
+    try tests.expectNull(&ts);
+}
 
 test "empty tag with attributes stress testing" {
     var ts = TokenStream.init(undefined);
