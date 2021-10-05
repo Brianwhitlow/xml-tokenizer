@@ -142,21 +142,30 @@ pub fn next(self: *TokenStream) NextRet {
             std.debug.assert(self.getDepth() == 0);
             if (self.state.info.trailing) |prev_tok| switch (prev_tok) {
                 .element_open => unreachable,
-                .element_close_tag => todo("Tokenize after 'element_close_tag'.", .{}),
+                
+                .element_close_tag,
                 .element_close_inline => {
                     std.debug.assert(self.getUtf8().? == '>');
                     self.incrByByte();
                     
                     const start_index = self.getIndex();
-                    if (self.getUtf8() == null) return null;
-                    
-                    self.incrByUtf8WhileWhitespace();
-                    
-                    const len = self.getIndex() - start_index;
-                    const info = Token.Info.Whitespace { .len = len };
-                    const result = Token.init(start_index, .{ .whitespace = info });
-                    return self.setTrailing(result);
+                    switch (self.getUtf8() orelse return self.setEnd(null)) {
+                        ' ',
+                        '\t',
+                        '\n',
+                        '\r',
+                        => {
+                            self.incrByUtf8WhileWhitespace();
+                            const len = self.getIndex() - start_index;
+                            const info = Token.Info.Whitespace { .len = len };
+                            const result = Token.init(start_index, .{ .whitespace = info });
+                            return self.setTrailing(result);
+                        },
+                        '<' => todo("Tokenize trailing tags.", .{}),
+                        else => todo("Error for content in trailing section.", .{}),
+                    }
                 },
+                
                 .attribute_name => todo("Tokenize after 'attribute_name'.", .{}),
                 .attribute_value_segment => todo("Tokenize after 'attribute_value_segment'.", .{}),
                 .comment => todo("Tokenize after 'comment'.", .{}),
@@ -164,7 +173,8 @@ pub fn next(self: *TokenStream) NextRet {
                 .text => todo("Tokenize after 'text'.", .{}),
                 .entity_reference => todo("Tokenize after 'entity_reference'.", .{}),
                 .whitespace => {
-                    switch (self.getUtf8() orelse return null) {
+                    switch (self.getUtf8() orelse return self.setEnd(null)) {
+                        '<' => todo("Tokenize trailing tags after whitespace.", .{}),
                         else => todo("Consider this invariant.", .{})
                     }
                 },
@@ -372,71 +382,61 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
         '!' => todo("Tokenize after '!'.", .{}),
         '/' => {
             const Closure = struct {
-                fn retCloseTagName(ts: *TokenStream, start_idx: usize, prefix_len: usize, identifier_len: usize) NextRet {
+                const Mode = enum { after_fwd_slash, after_colon };
+                inline fn tokenizeElementCloseTag(ts: *TokenStream, comptime mode: Mode, start_idx: usize, prefix_len: usize) NextRet {
                     std.debug.assert(ts.buffer[start_idx] == '<');
-                    std.debug.assert(prefix_len == 0 or ts.buffer[prefix_len] == ':');
-                    std.debug.assert(ts.buffer[ts.getIndex()] == '>');
-                    const full_len = (ts.getIndex() + 1) - start_idx;
-                    const info = Token.Info.ElementCloseTag { .prefix_len = prefix_len, .identifier_len = identifier_len, .full_len = full_len };
-                    const result = Token.init(start_idx, .{ .element_close_tag = info });
-                    
-                    ts.state.depth -= 1;
-                    if (ts.getDepth() == 0) return ts.setTrailing(result);
-                    
-                    return ts.setInRoot(result);
-                }
-            };
-            
-            self.incrByByte();
-            const name_start_char = self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag name start char was expected.", .{});
-            if (!xml.isValidUtf8NameStartChar(name_start_char)) {
-                return todo("Error for invalid element close tag name start char.", .{});
-            }
-            
-            self.incrByUtf8();
-            self.incrByUtf8While(xml.isValidUtf8NameChar);
-            switch (self.getUtf8() orelse todo("Error EOF or invalid UTF8 where element close tag name terminator was expected.", .{})) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                => {
-                    const identifier_len = self.getIndex() - (start_index + "</".len);
-                    self.incrByUtf8WhileWhitespace();
-                    switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag terminator was expected.", .{})) {
-                        '>' => return Closure.retCloseTagName(self, start_index, 0, identifier_len),
-                        else => todo("Error for character '{u}' where element close tag terminator '>' was expected.", .{self.getUtf8().?}),
-                    }
-                },
-                '>' => return Closure.retCloseTagName(self, start_index, 0, self.getIndex() - (start_index + "</".len)),
-                ':' => {
-                    const prefix_len = self.getIndex() - (start_index + ("</".len));
-                    self.incrByByte();
-                    if (!xml.isValidUtf8NameStartChar(self.getUtf8().?)) {
-                        todo("Error for invalid start char for element close tag name.", .{});
+                    switch (mode) {
+                        .after_fwd_slash => {
+                            std.debug.assert(ts.getByte().? == '/');
+                            std.debug.assert(prefix_len == 0);
+                        },
+                        .after_colon => {
+                            std.debug.assert(ts.getByte().? == ':');
+                            std.debug.assert(prefix_len != 0);
+                        },
                     }
                     
-                    self.incrByUtf8();
-                    self.incrByUtf8While(xml.isValidUtf8NameChar);
-                    switch (self.getUtf8() orelse todo("Error for ending file immediately after element name", .{})) {
+                    ts.incrByByte();
+                    const start_char = ts.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag name start char was expected.", .{});
+                    if (!xml.isValidUtf8NameStartChar(start_char)) {
+                        return todo("Error for character '{u}' where element close tag name start char was expected.", .{start_char});
+                    }
+                    
+                    ts.incrByUtf8();
+                    ts.incrByUtf8While(xml.isValidUtf8NameChar);
+                    switch (ts.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag name terminator was expected.", .{})) {
                         ' ',
                         '\t',
                         '\n',
                         '\r',
+                        '>'
                         => {
-                            const identifier_len = self.getIndex() - (start_index + "</".len);
-                            self.incrByUtf8WhileWhitespace();
-                            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag terminator was expected.", .{})) {
-                                '>' => return Closure.retCloseTagName(self, start_index, prefix_len, identifier_len),
-                                else => todo("Error for character '{u}' where element close tag terminator '>' was expected.", .{self.getUtf8().?}),
+                            const colon_offset = switch (mode) {
+                                .after_fwd_slash => ("".len),
+                                .after_colon => (":".len),
+                            };
+                            
+                            const identifier_len = ts.getIndex() - (start_idx + "</".len + prefix_len + colon_offset);
+                            ts.incrByUtf8WhileWhitespace();
+                            if (ts.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag terminator was expected.", .{}) != '>') {
+                                return todo("Error for character {u} where element close tag terminator '>' was expected.", .{ts.getUtf8().?});
                             }
+                            const full_len = (ts.getIndex() + 1) - start_idx;
+                            const info = Token.Info.ElementCloseTag { .prefix_len = prefix_len, .identifier_len = identifier_len, .full_len = full_len };
+                            const result = Token.init(start_idx, .{ .element_close_tag = info });
+                            return ts.subDepth(result);
                         },
-                        '>' => return Closure.retCloseTagName(self, start_index, prefix_len, self.getIndex() - (start_index + "</".len)),
-                        else => todo("Error for invalid element close tag name char", .{})
+                        else => {
+                            if (ts.getUtf8().? == ':' and mode == .after_fwd_slash) {
+                                return @This().tokenizeElementCloseTag(ts, .after_colon, start_idx, ts.getIndex() - (start_idx + "</".len));
+                            }
+                            todo("Error for character '{u}' where element close tag name terminator was expected.", .{ts.getUtf8().?});
+                        }
                     }
-                },
-                else => todo("Error for invalid element close tag name char.", .{}),
-            }
+                }
+            };
+            
+            return Closure.tokenizeElementCloseTag(self, .after_fwd_slash, start_index, 0);
         },
         else => {
             const Closure = struct {
@@ -488,6 +488,21 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
             }
         }
     }
+}
+
+// TODO: use this instead of manually decrementing depth.
+fn subDepth(self: *TokenStream, ret: Token) NextRet {
+    std.debug.assert(self.state.depth != 0);
+    std.debug.assert(self.state.info == .in_root);
+    std.debug.assert(switch (ret.info) {
+        .element_close_inline,
+        .element_close_tag,
+        => true,
+        else => false,
+    });
+    self.state.depth -= 1;
+    if (self.getDepth() == 0) return self.setTrailing(ret);
+    return self.setInRoot(ret);
 }
 
 
