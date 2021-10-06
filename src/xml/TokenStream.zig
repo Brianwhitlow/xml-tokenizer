@@ -169,11 +169,9 @@ pub fn next(self: *TokenStream) NextRet {
                 .cdata => todo("Tokenize after 'cdata'.", .{}),
                 .text => todo("Tokenize after 'text'.", .{}),
                 .entity_reference => todo("Tokenize after 'entity_reference'.", .{}),
-                .whitespace => {
-                    switch (self.getUtf8() orelse return self.setEnd(null)) {
-                        '<' => todo("Tokenize trailing tags after whitespace.", .{}),
-                        else => todo("Consider this invariant.", .{})
-                    }
+                .whitespace => switch (self.getUtf8() orelse return self.setEnd(null)) {
+                    '<' => todo("Tokenize trailing tags after whitespace.", .{}),
+                    else => todo("Consider this invariant.", .{})
                 },
                 .pi_target => todo("Tokenize after 'pi_target'.", .{}),
                 .pi_token => todo("Tokenize after 'pi_token'.", .{}),
