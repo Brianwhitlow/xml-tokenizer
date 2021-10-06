@@ -343,7 +343,6 @@ fn tokenizeAfterElementTagOrAttribute(self: *TokenStream) NextRet {
                     
                     const len = self.getIndex() - start_index;
                     if (non_whitespace_chars) {
-                        std.debug.assert(self.getUtf8().? == '<');
                         const info = Token.Info.Text { .len = len };
                         const result = Token.init(start_index, .{ .text = info });
                         return self.setInRoot(result);
