@@ -43,11 +43,9 @@ pub fn next(self: *TokenStream) NextRet {
             .cdata => unreachable,
             .text => unreachable,
             .entity_reference => unreachable,
-            .whitespace => {
-                switch (self.getUtf8() orelse return null) {
-                    '<' => return self.tokenizeAfterLeftAngleBracket(),
-                    else => todo("Error for character {u} where tag start '<' was expected.", .{self.getUtf8().?}),
-                }
+            .whitespace => switch (self.getUtf8() orelse return null) {
+                '<' => return self.tokenizeAfterLeftAngleBracket(),
+                else => todo("Error for character {u} where tag start '<' was expected.", .{self.getUtf8().?}),
             },
             
             .pi_target => todo("Tokenize after prologue processing instructions target.", .{}),
