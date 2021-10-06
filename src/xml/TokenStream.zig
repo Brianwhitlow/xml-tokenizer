@@ -562,6 +562,7 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
 }
 
 
+
 const IdentifierLength = struct { identifier_len: usize };
 fn tokenizeIdentifierUsing(self: *TokenStream, comptime verifierFunc: fn(char: u21)bool) error { NoName, InvalidNameStartChar }!IdentifierLength {
     const start_index = self.getIndex();
@@ -1221,6 +1222,15 @@ test "prologue comment" {
         try tests.expectComment(&ts, content);
         try tests.expectNull(&ts);
     }
+}
+
+test "multiple consecutive comments" {
+    var ts = TokenStream.init(undefined);
+    
+    ts.reset("<!--1--><!--2-->");
+    try tests.expectComment(&ts, "1");
+    try tests.expectComment(&ts, "2");
+    try tests.expectNull(&ts);
 }
 
 test "comment in root" {
