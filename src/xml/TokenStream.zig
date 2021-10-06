@@ -58,23 +58,12 @@ pub fn next(self: *TokenStream) NextRet {
             '\n',
             '\r',
             => {
-                const Closure = struct { fn retWhitespace(ts: *TokenStream) NextRet {
-                    const len = ts.getIndex() - 0;
-                    const result = Token.init(0, .{ .whitespace = Token.Info.Whitespace { .len = len } });
-                    ts.state.info.start = result.info;
-                    return result;
-                } };
-                
                 self.incrByByte();
-                while (self.getUtf8()) |char| : (self.incrByUtf8()) switch (char) {
-                    ' ',
-                    '\t',
-                    '\n',
-                    '\r',
-                    => continue,
-                    '<' => return Closure.retWhitespace(self),
-                    else => todo("Error for content in prologue.", .{}),
-                } else return Closure.retWhitespace(self);
+                self.incrByUtf8WhileWhitespace();
+                const len = self.getIndex() - 0;
+                const result = Token.init(0, .{ .whitespace = Token.Info.Whitespace { .len = len } });
+                self.state.info.start = result.info;
+                return @as(NextRet, result);
             },
             
             '<' => return self.tokenizeAfterLeftAngleBracket(),
