@@ -46,7 +46,7 @@ pub fn next(self: *TokenStream) NextRet {
             .whitespace => {
                 switch (self.getUtf8() orelse return null) {
                     '<' => return self.tokenizeAfterLeftAngleBracket(),
-                    else => unreachable,
+                    else => todo("Error for character {u} where tag start '<' was expected.", .{self.getUtf8().?}),
                 }
             },
             
