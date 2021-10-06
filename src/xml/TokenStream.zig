@@ -384,6 +384,13 @@ fn tokenizeAfterElementTagOrAttribute(self: *TokenStream) NextRet {
         },
         
         else => {
+            std.debug.assert(switch (self.state.info.in_root) {
+                .element_open,
+                .attribute_value_segment,
+                => true,
+                else => false,
+            });
+            
             const start_index = self.getIndex();
             const tokenized_identifier = self.tokenizePrefixedIdentifier() catch |err| switch (err) {
                 error.NoName => todo("Error for no name where one was expected.", .{}),
@@ -643,6 +650,20 @@ const tests = struct {
     fn expectError(ts: *TokenStream, err: Error) !void {
         try testing.expectError(err, ts.next() orelse return error.NullToken);
     }
+    
+    const ExpectedStream = struct {
+        const ExpectedTok = union(enum) {
+            element_open: PrefixName,
+            element_close_tag: PrefixName,
+            element_close_inline,
+            
+            
+            const PrefixName = struct {
+                prefix: ?[]const u8,
+                name: []const u8,
+            };
+        };
+    };
 };
 
 test "empty source" {
