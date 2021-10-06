@@ -377,9 +377,9 @@ fn tokenizeAfterElementTagOrAttribute(self: *TokenStream) NextRet {
             };
             
             const prefix_len = tokenized_identifier.prefix_len;
-            const full_len = prefix_len + @as(usize, if (prefix_len == 0) 0 else 1) + tokenized_identifier.identifier_len;
+            const full_len = self.getIndex() - start_index;
             
-            std.debug.assert(full_len == (self.getIndex() - start_index));
+            std.debug.assert(full_len == (prefix_len + @as(usize, if (prefix_len == 0) 0 else 1) + tokenized_identifier.identifier_len));
             
             const info = Token.Info.AttributeName { .prefix_len = prefix_len, .full_len = full_len };
             const result = Token.init(start_index, .{ .attribute_name = info });
