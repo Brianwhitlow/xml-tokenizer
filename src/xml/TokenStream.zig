@@ -122,21 +122,32 @@ pub fn next(self: *TokenStream) NextRet {
             
             .comment => todo("Tokenize after 'comment'.", .{}),
             .cdata => todo("Tokenize after 'cdata'.", .{}),
-            .entity_reference => todo("Tokenize after 'entity_reference'.", .{}),
             
-            .text,
-            .whitespace => {
-                std.debug.assert(self.getByte().? == '<');
-                return self.tokenizeAfterLeftAngleBracket();
+            .entity_reference => {
+                std.debug.assert(self.getByte().? == ';');
+                self.incrByByte();
+                switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where content was expected.", .{})) {
+                    '<' => return self.tokenizeAfterLeftAngleBracket(),
+                    else => return self.tokenizeContent(),
+                }
             },
+            
+            .whitespace,
+            .text,
+            => switch (self.getByte().?) {
+                '<' => return self.tokenizeAfterLeftAngleBracket(),
+                '&' => return self.tokenizeContent(),
+                else => unreachable,
+            },
+            
             
             .pi_target => todo("Tokenize after 'pi_target'.", .{}),
             .pi_token => todo("Tokenize after 'pi_token'.", .{}),
         },
         
-        .trailing => {
+        .trailing => |prev_tok| {
             std.debug.assert(self.getDepth() == 0);
-            if (self.state.info.trailing) |prev_tok| switch (prev_tok) {
+            switch (prev_tok) {
                 .element_open => unreachable,
                 
                 .element_close_tag,
@@ -163,19 +174,19 @@ pub fn next(self: *TokenStream) NextRet {
                     }
                 },
                 
-                .attribute_name => todo("Tokenize after 'attribute_name'.", .{}),
-                .attribute_value_segment => todo("Tokenize after 'attribute_value_segment'.", .{}),
+                .attribute_name => unreachable,
+                .attribute_value_segment => unreachable,
                 .comment => todo("Tokenize after 'comment'.", .{}),
-                .cdata => todo("Tokenize after 'cdata'.", .{}),
-                .text => todo("Tokenize after 'text'.", .{}),
-                .entity_reference => todo("Tokenize after 'entity_reference'.", .{}),
+                .cdata => unreachable,
+                .text => unreachable,
+                .entity_reference => unreachable,
                 .whitespace => switch (self.getUtf8() orelse return self.setEnd(null)) {
                     '<' => todo("Tokenize trailing tags after whitespace.", .{}),
                     else => todo("Consider this invariant.", .{})
                 },
-                .pi_target => todo("Tokenize after 'pi_target'.", .{}),
-                .pi_token => todo("Tokenize after 'pi_token'.", .{}),
-            } else todo("Consider this state (null trailing value).", .{});
+                .pi_target => unreachable,
+                .pi_token => unreachable,
+            }
         }
     }
 }
@@ -196,7 +207,7 @@ const State = struct {
         end,
         start: ?std.meta.Tag(Token.Info),
         in_root: std.meta.Tag(Token.Info),
-        trailing: ?std.meta.Tag(Token.Info),
+        trailing: std.meta.Tag(Token.Info),
     };
     
     const QuoteType = enum(u8) {
@@ -223,20 +234,6 @@ const State = struct {
         }
     };
 };
-
-fn tokenizeAfterElementOpenForwardSlash(self: *TokenStream) NextRet {
-    const start_index = self.getIndex();
-    std.debug.assert(self.getUtf8().? == '/');
-    self.incrByByte();
-    if (self.getUtf8() orelse todo("Error if / is followed by EOF where '>' was expected", .{}) != '>') {
-        todo("Error if / is followed by EOF where '>' was expected", .{});
-    }
-    
-    const result = Token.init(start_index, .element_close_inline);
-    self.state.depth -= 1;
-    if (self.getDepth() == 0) return self.setTrailing(result);
-    return self.setInRoot(result);
-}
 
 fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
     std.debug.assert(self.state.last_quote != null);
@@ -313,45 +310,79 @@ fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
     }
 }
 
+fn tokenizeContent(self: *TokenStream) NextRet {
+    const start_index = self.getIndex();
+    switch (self.getUtf8().?) {
+        '&' => {
+            self.incrByByte();
+            self.incrByUtf8While(xml.isValidUtf8NameCharOrColon);
+            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where entity reference name terminator ';' was expected.", .{})) {
+                ';' => {
+                    const len = (self.getIndex() + 1) - start_index;
+                    const info = Token.Info.EntityReference { .len = len };
+                    const result = Token.init(start_index, .{ .entity_reference = info });
+                    return self.setInRoot(result);
+                },
+                else => todo("Error for character '{u}' where entity reference name terminator ';' was expected.", .{self.getUtf8().?}),
+            }
+        },
+        
+        else => {
+            var non_whitespace_chars: bool = false;
+            while (self.getUtf8()) |char| : (self.incrByUtf8()) switch (char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => continue,
+                '&' => break,
+                '<' => break,
+                else => non_whitespace_chars = true,
+            } else if (non_whitespace_chars or self.getDepth() != 0) {
+                return todo("Error for EOF where '<' was expected.", .{});
+            }
+            
+            const len = self.getIndex() - start_index;
+            if (non_whitespace_chars) {
+                const info = Token.Info.Text { .len = len };
+                const result = Token.init(start_index, .{ .text = info });
+                return self.setInRoot(result);
+            } else {
+                const info = Token.Info.Whitespace { .len = len };
+                const result = Token.init(start_index, .{ .whitespace = info });
+                return self.setInRoot(result);
+            }
+        }
+    }
+}
+
 fn tokenizeAfterElementTagOrAttribute(self: *TokenStream) NextRet {
     std.debug.assert(self.getDepth() != 0 and self.state.info != .trailing);
     std.debug.assert(!xml.isValidUtf8NameCharOrColon(self.getUtf8().?));
     self.incrByUtf8WhileWhitespace();
     
     switch (self.getUtf8() orelse todo("Error for premature EOF after unclosed element tag.", .{})) {
-        '/' => return self.tokenizeAfterElementOpenForwardSlash(),
+        '/' => {
+            const start_index = self.getIndex();
+            self.incrByByte();
+            if (self.getUtf8() orelse todo("Error if / is followed by EOF where '>' was expected", .{}) != '>') {
+                todo("Error if / is followed by EOF where '>' was expected", .{});
+            }
+            
+            const result = Token.init(start_index, .element_close_inline);
+            self.state.depth -= 1;
+            if (self.getDepth() == 0) return self.setTrailing(result);
+            return self.setInRoot(result);
+        },
+        
         '>' => {
             self.incrByByte();
             switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where content or closing tags were expected.", .{})) {
                 '<' => return self.tokenizeAfterLeftAngleBracket(),
-                else => {
-                    const start_index = self.getIndex();
-                    var non_whitespace_chars: bool = false;
-                    while (self.getUtf8()) |char| : (self.incrByUtf8()) switch (char) {
-                        ' ',
-                        '\t',
-                        '\n',
-                        '\r',
-                        => continue,
-                        '<' => break,
-                        else => non_whitespace_chars = true,
-                    } else if (non_whitespace_chars or self.getDepth() != 0) {
-                        return todo("Error for EOF where '<' was expected.", .{});
-                    }
-                    
-                    const len = self.getIndex() - start_index;
-                    if (non_whitespace_chars) {
-                        const info = Token.Info.Text { .len = len };
-                        const result = Token.init(start_index, .{ .text = info });
-                        return self.setInRoot(result);
-                    } else {
-                        const info = Token.Info.Whitespace { .len = len };
-                        const result = Token.init(start_index, .{ .whitespace = info });
-                        return self.setInRoot(result);
-                    }
-                },
+                else => return self.tokenizeContent(),
             }
         },
+        
         else => {
             const start_index = self.getIndex();
             const tokenized_identifier = self.tokenizePrefixedIdentifier() catch |err| switch (err) {
@@ -426,7 +457,7 @@ fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
 
 
 const IdentifierLength = struct { identifier_len: usize };
-fn tokenizeIdentifier(self: *TokenStream) error { NoName, InvalidNameStartChar }!IdentifierLength {
+fn tokenizeIdentifierUsing(self: *TokenStream, comptime verifierFunc: fn(char: u21)bool) error { NoName, InvalidNameStartChar }!IdentifierLength {
     const start_index = self.getIndex();
     const name_start_char = self.getUtf8() orelse return error.NoName;
     if (!xml.isValidUtf8NameStartChar(name_start_char)) {
@@ -434,9 +465,17 @@ fn tokenizeIdentifier(self: *TokenStream) error { NoName, InvalidNameStartChar }
     }
     
     self.incrByUtf8();
-    self.incrByUtf8While(xml.isValidUtf8NameChar);
+    self.incrByUtf8While(verifierFunc);
     
     return IdentifierLength { .identifier_len = self.getIndex() - start_index };
+}
+
+fn tokenizeIdentifier(self: *TokenStream) error { NoName, InvalidNameStartChar }!IdentifierLength {
+    return self.tokenizeIdentifierUsing(xml.isValidUtf8NameChar);
+}
+
+fn tokenizeIdentifierWithColon(self: *TokenStream) error { NoName, InvalidNameStartChar }!IdentifierLength {
+    return self.tokenizeIdentifierUsing(xml.isValidUtf8NameCharOrColon);
 }
 
 const PrefixedIdentifierLength = struct { prefix_len: usize, identifier_len: usize };
@@ -520,9 +559,9 @@ fn setInRoot(self: *TokenStream, tok: Token) NextRet {
     return tok;
 }
 
-fn setTrailing(self: *TokenStream, maybe_tok: ?Token) NextRet {
-    self.state.info = .{ .trailing = if (maybe_tok) |tok| tok.info else null };
-    return @as(NextRet, maybe_tok orelse null);
+fn setTrailing(self: *TokenStream, tok: Token) NextRet {
+    self.state.info = .{ .trailing = tok.info };
+    return @as(NextRet, tok);
 }
 
 
@@ -1040,4 +1079,25 @@ test "mixed content & tags" {
     try tests.expectWhitespace(&ts, "\n");
     try tests.expectElementCloseTag(&ts, null, "root");
     try tests.expectNull(&ts);
+}
+
+test "entity reference content" {
+    var ts = TokenStream.init(undefined);
+    
+    ts.reset("<root>&amp;</root>");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectEntityReference(&ts, "amp");
+    try tests.expectElementCloseTag(&ts, null, "root");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<root>\t&lt;foo&gt;bar</root>");
+    try tests.expectElementOpen(&ts, null, "root");
+    try tests.expectWhitespace(&ts, "\t");
+    try tests.expectEntityReference(&ts, "lt");
+    try tests.expectText(&ts, "foo");
+    try tests.expectEntityReference(&ts, "gt");
+    try tests.expectText(&ts, "bar");
+    try tests.expectElementCloseTag(&ts, null, "root");
+    try tests.expectNull(&ts);
+    
 }
