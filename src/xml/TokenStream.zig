@@ -278,9 +278,14 @@ fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
             }
             
             ts.incrByUtf8();
-            ts.incrByUtf8While(xml.isValidUtf8NameCharOrColon);
+            ts.incrByUtf8While(xml.isValidUtf8NameChar);
+            const final_utf8 = ts.getUtf8() orelse todo ("Error for EOF or invalid UTF8 where entity reference semicolon ';' terminator was expected.", .{});
             
-            if (ts.getUtf8() orelse todo ("Error for EOF or invalid UTF8 where entity reference semicolon ';' terminator was expected.", .{}) != ';') {
+            if (final_utf8 == ':') {
+                todo("Consider whether entity references should tokenize with colons, or error on them.\n", .{});
+            }
+            
+            if (final_utf8 != ';') {
                 return todo("Error for character '{u}' where semicolon ';' terminator was expected.", .{ts.getUtf8().?});
             }
             
