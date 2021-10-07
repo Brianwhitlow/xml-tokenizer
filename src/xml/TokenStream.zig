@@ -113,6 +113,9 @@ pub fn next(self: *TokenStream) NextRet {
                     '"',
                     '\'',
                     => {
+                        if (self.state.last_quote != null) {
+                            std.debug.panic("last_quote not null: '{}'. Encountered '{c}' at index {}.", .{self.state.last_quote, self.getByte().?, self.getIndex()});
+                        }
                         std.debug.assert(self.state.last_quote == null);
                         self.state.last_quote = State.QuoteType.init(self.getByte().?);
                         
@@ -263,6 +266,7 @@ const State = struct {
 
 fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
     std.debug.assert(self.state.last_quote != null);
+    std.debug.assert(self.getByte().? != self.state.last_quote.?.value());
     std.debug.assert(self.state.info.in_root == .attribute_name or self.state.info.in_root == .attribute_value_segment);
     
     const Closure = struct {
@@ -294,8 +298,8 @@ fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
             
             const start_index = ts.getIndex();
             switch (ts.state.last_quote.?) {
-                .double => ts.incrByUtf8While(struct { fn func(char: u21) bool { return char != '<' and char != '&' and char != '"'; }}.func),
-                .single => ts.incrByUtf8While(struct { fn func(char: u21) bool { return char != '<' and char != '&' and char != '\''; }}.func),
+                .double => ts.incrByUtf8While(struct { fn func(char: u21) bool { return (char != '<') and (char != '&') and (char != '"'); }}.func),
+                .single => ts.incrByUtf8While(struct { fn func(char: u21) bool { return (char != '<') and (char != '&') and (char != '\''); }}.func),
             }
             
             if (ts.getByte() orelse todo("Error for EOF before string termination", .{}) == '<') {
@@ -313,8 +317,9 @@ fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
         '&' => return Closure.tokenizeAfterAmpersand(self),
         ';' => {
             self.incrByByte();
-            if (self.state.last_quote.?.value() == self.getByte() orelse todo("Error for EOF or invalid UTF8 where attribute string content or attribute string terminator was expected.", .{})) {
+            if (self.getByte() orelse todo("Error for EOF or invalid UTF8 where attribute string content or attribute string terminator was expected.", .{}) == self.state.last_quote.?.value()) {
                 self.incrByByte();
+                self.state.last_quote = null;
                 return self.tokenizeAfterElementTagOrAttribute();
             }
             
@@ -856,10 +861,15 @@ test "empty but nested tags" {
 }
 
 test "empty tag with multiple attributes" {
-    var ts = TokenStream.init("<empty foo:bar=\"baz\" fi:fo = 'fum' />");
+    var ts = TokenStream.init("<empty foo:bar=\"baz&amp;\" fi:fo = 'fum' />");
     try tests.expectElementOpen(&ts, null, "empty");
-    try tests.expectAttribute(&ts, "foo", "bar", &.{ .{ .text = "baz" } });
-    try tests.expectAttribute(&ts, "fi", "fo", &.{ .{ .text = "fum" } });
+    try tests.expectAttribute(&ts, "foo", "bar", &.{
+        .{ .text = "baz" },
+        .{ .entity_reference = "amp" }
+    });
+    try tests.expectAttribute(&ts, "fi", "fo", &.{
+        .{ .text = "fum" }
+    });
     try tests.expectElementCloseInline(&ts);
     try tests.expectNull(&ts);
 }
