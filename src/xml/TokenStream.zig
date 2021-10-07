@@ -113,9 +113,6 @@ pub fn next(self: *TokenStream) NextRet {
                     '"',
                     '\'',
                     => {
-                        if (self.state.last_quote != null) {
-                            std.debug.panic("last_quote not null: '{}'. Encountered '{c}' at index {}.", .{self.state.last_quote, self.getByte().?, self.getIndex()});
-                        }
                         std.debug.assert(self.state.last_quote == null);
                         self.state.last_quote = State.QuoteType.init(self.getByte().?);
                         
