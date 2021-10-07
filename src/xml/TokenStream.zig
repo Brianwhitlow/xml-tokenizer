@@ -278,7 +278,7 @@ fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
             }
             
             ts.incrByUtf8();
-            ts.incrByUtf8While(xml.isValidUtf8NameChar);
+            ts.incrByUtf8While(xml.isValidUtf8NameChar); // Maybe use 'xml.isValidUtf8NameCharOrColon'? Refer to below error in if block.
             const final_utf8 = ts.getUtf8() orelse todo ("Error for EOF or invalid UTF8 where entity reference semicolon ';' terminator was expected.", .{});
             
             if (final_utf8 == ':') {
