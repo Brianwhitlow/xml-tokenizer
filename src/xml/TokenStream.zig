@@ -1,10 +1,9 @@
 const std = @import("std");
-const meta = std.meta;
-const testing = std.testing;
+const debug = std.debug;
 const unicode = std.unicode;
+const testing = std.testing;
 
 const xml = @import("../xml.zig");
-pub const Token = @import("Token.zig");
 
 const TokenStream = @This();
 buffer: []const u8,
@@ -21,1266 +20,626 @@ pub fn reset(self: *TokenStream, new_src: ?[]const u8) void {
     self.* = TokenStream.init(new_src orelse self.buffer);
 }
 
-pub const Error = error {
+fn copy(self: TokenStream) TokenStream {
+    return self;
+}
+
+pub const Token = struct {
+    tag: Tag,
+    loc: Loc,
     
+    pub fn init(tag: Tag, loc: Loc) Token {
+        return Token {
+            .tag = tag,
+            .loc = loc,
+        };
+    }
+    
+    pub const Loc = struct {
+        start: usize,
+        end: usize,
+    };
+    
+    pub const Tag = union(enum) {
+        pi_target,
+        pi_string,
+        pi_tok,
+        pi_end,
+        
+        dtd_tok,
+        
+        comment,
+        whitespace,
+        
+        elem_open_tag,
+        elem_close_tag,
+        elem_close_inline,
+        
+        attr_name,
+        attr_val_empty,
+        attr_val_segment_text,
+        attr_val_segment_entity_ref,
+        
+        content_text,
+        content_cdata,
+        content_entity_ref,
+        
+        pub fn hasName(self: @This()) bool {
+            return switch (self) {
+                .dtd_tok => todo("Consider DTD tokens.", .{}),
+                
+                .pi_tok,
+                .pi_string,
+                .pi_end,
+                .comment,
+                .whitespace,
+                .elem_close_inline,
+                .attr_name,
+                .attr_val_empty,
+                .attr_val_segment_text,
+                .content_text,
+                .content_cdata,
+                => false,
+                
+                .pi_target,
+                .elem_open_tag,
+                .elem_close_tag,
+                .attr_val_segment_entity_ref,
+                .content_entity_ref,
+                => true,
+            };
+        }
+        
+        pub fn hasData(self: @This()) bool {
+            return switch (self) {
+                .dtd_tok => todo("Consider DTD tokens.", .{}),
+                
+                .pi_target,
+                .pi_tok,
+                .pi_end,
+                .whitespace,
+                .elem_open_tag,
+                .elem_close_tag,
+                .elem_close_inline,
+                .attr_name,
+                .attr_val_empty,
+                .attr_val_segment_text,
+                .attr_val_segment_entity_ref,
+                .content_text,
+                .content_entity_ref,
+                => false,
+                
+                .pi_string,
+                .comment,
+                .content_cdata,
+                => true,
+            };
+        }
+    };
+    
+    pub fn slice(self: Token, src: []const u8) []const u8 {
+        return src[self.loc.start..self.loc.end];
+    }
+    
+    pub fn name(self: Token, src: []const u8) ?[]const u8 {
+        if (!self.tag.hasName()) return null;
+        const sliced = self.slice(src);
+        
+        const offset_fwd = switch (self.tag) {
+            .pi_target => ("<?").len,
+            .elem_open_tag => ("<").len,
+            .elem_close_tag => ("</").len,
+            .attr_val_segment_entity_ref => ("&").len,
+            .content_entity_ref => ("&").len,
+            else => unreachable,
+        };
+        
+        const offset_bkwd = switch (self.tag) {
+            .pi_target => ("").len,
+            .elem_open_tag => ("").len,
+            .elem_close_tag => ("").len,
+            .attr_val_segment_entity_ref => (";").len,
+            .content_entity_ref => (";").len,
+            else => unreachable,
+        };
+        
+        const beg = 0 + offset_fwd;
+        const end = sliced.len - offset_bkwd;
+        return sliced[beg..end];
+    }
+    
+    pub fn data(self: Token, src: []const u8) ?[]const u8 {
+        if (!self.tag.hasData()) return null;
+        const sliced = self.slice(src);
+        
+        const offset_fwd = switch (self.tag) {
+            .pi_string => blk: {
+                const blk_out = ("'".len);
+                std.debug.assert(blk_out == "\"".len);
+                break :blk blk_out;
+            },
+            .comment => ("<!--".len),
+            .content_cdata => ("<![CDATA[".len),
+            else => unreachable,
+        };
+        
+        const offset_bkwd = switch (self.tag) {
+            .pi_string => blk: {
+                const blk_out = ("'".len);
+                std.debug.assert(blk_out == "\"".len);
+                break :blk blk_out;
+            },
+            .comment => ("-->".len),
+            .content_cdata => ("]]>".len),
+            else => unreachable,
+        };
+        
+        const beg = 0 + offset_fwd;
+        const end = sliced.len - offset_bkwd;
+        return sliced[beg..end];
+    }
 };
 
 pub const NextRet = ?(Error!Token);
+pub const Error = error {};
 
 pub fn next(self: *TokenStream) NextRet {
+    const state: *State = &self.state;
     switch (self.state.info) {
-        .end => return null,
-        
-        .start => if (self.state.info.start) |prev_tok| switch (prev_tok) {
-            .element_open => unreachable,
-            .element_close_tag => unreachable,
-            .element_close_inline => unreachable,
+        .start => {
+            debug.assert(state.index == 0);
+            const start_char = self.getByte() orelse return self.setEndReturnNull();
             
-            .attribute_name => unreachable,
-            .attribute_value_segment => unreachable,
+            const result = switch (start_char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => self.tokenizeWhitespace(),
+                '<' => self.tokenizeAfterLeftAngleBracket() catch |err| switch (err) {
+                    else => todo("Handle {}.", .{err}),
+                },
+                else => return todo("Error for character '{c}' in prologue.", .{self.getByte().?}),
+            };
             
-            .comment => {
-                std.debug.assert(self.getUtf8().? == '>');
-                self.incrByByte();
-                switch (self.getUtf8() orelse return self.setEnd(null)) {
-                    ' ',
-                    '\t',
-                    '\n',
-                    '\r',
-                    => {
-                        self.incrByByte();
-                        self.incrByUtf8WhileWhitespace();
-                        const len = self.getIndex() - 0;
-                        const result = Token.init(0, .{ .whitespace = Token.Info.Whitespace { .len = len } });
-                        self.state.info.start = result.info;
-                        return @as(NextRet, result);
-                    },
-                    '<' => return self.tokenizeAfterLeftAngleBracket(),
-                    else => todo("Error for content in prologue.", .{}),
-                }
-            },
-            
-            .cdata => unreachable,
-            .text => unreachable,
-            .entity_reference => unreachable,
-            .whitespace => switch (self.getUtf8() orelse return self.setEnd(null)) {
-                '<' => return self.tokenizeAfterLeftAngleBracket(),
-                else => todo("Error for character {u} where tag start '<' was expected.", .{self.getUtf8().?}),
-            },
-            
-            .pi_target => todo("Tokenize after prologue processing instructions target.", .{}),
-            .pi_token => todo("Tokenize after prologue processing instructions token.", .{}),
-        } else switch (self.getByte() orelse return self.setEnd(null)) {
-            ' ',
-            '\t',
-            '\n',
-            '\r',
-            => {
-                self.incrByByte();
-                self.incrByUtf8WhileWhitespace();
-                const len = self.getIndex() - 0;
-                const result = Token.init(0, .{ .whitespace = Token.Info.Whitespace { .len = len } });
-                self.state.info.start = result.info;
-                return @as(NextRet, result);
-            },
-            '<' => return self.tokenizeAfterLeftAngleBracket(),
-            else => todo("Error for content in prologue.", .{}),
+            return self.prologueSetStateUsing(result);
         },
         
-        .in_root => |prev_tok| switch (prev_tok) {
-            
-            .element_open => return self.tokenizeAfterElementTagOrAttribute(),
-            
-            .element_close_tag,
-            .element_close_inline,
-            => {
-                std.debug.assert(self.getByte().? == '>');
-                return self.tokenizeAfterElementTagOrAttribute();
-            },
-            
-            .attribute_name => {
-                self.incrByUtf8WhileWhitespace();
-                switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where equals was expected", .{})) {
-                    '=' => {},
-                    else => todo("Error for character '{u}' where '=' or whitespace was expected", .{self.getUtf8().?}),
-                }
+        .prologue => |prologue_tag| {
+            switch (prologue_tag) {
+                .pi_target => todo("Tokenize after prologue 'pi_target'.", .{}),
+                .pi_string => todo("Tokenize after prologue 'pi_string'.", .{}),
+                .pi_tok => todo("Tokenize after prologue 'pi_tok'.", .{}),
+                .pi_end => todo("Tokenize after prologue 'pi_end'.", .{}),
                 
-                std.debug.assert(self.getByte().? == '=');
-                self.incrByByte();
+                .dtd_tok => todo("Tokenize after prologue 'dtd_tok'.", .{}),
                 
-                self.incrByUtf8WhileWhitespace();
-                switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where string quote was expected.", .{})) {
-                    '"',
-                    '\'',
-                    => {
-                        std.debug.assert(self.state.last_quote == null);
-                        self.state.last_quote = State.QuoteType.init(self.getByte().?);
-                        
-                        self.incrByByte();
-                        const subsequent_char = self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where string content or string terminator was expected.", .{});
-                        if (self.state.last_quote.?.value() == subsequent_char) {
-                            return self.setInRoot(Token.init(self.getIndex(), .{ .attribute_value_segment = .empty_quotes }));
-                        }
-                        
-                        return self.tokenizeAttributeValueSegment();
-                    },
-                    else => todo("Error for character '{u}' where string quote was expected.", .{self.getUtf8().?}),
-                }
-            },
-            
-            .attribute_value_segment => {
-                std.debug.assert(self.state.last_quote != null);
-                if (self.getByte() orelse todo("Error for EOF or invalid UTF8 where character was expected", .{}) == self.state.last_quote.?.value()) {
-                    self.state.last_quote = null;
-                    self.incrByByte();
-                    return self.tokenizeAfterElementTagOrAttribute();
-                }
-                
-                return self.tokenizeAttributeValueSegment();
-            },
-            
-            .comment => {
-                std.debug.assert(self.getByte().? == '>');
-                self.incrByByte();
-                switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 while still in root after comment.", .{})) {
-                    '<' => return self.tokenizeAfterLeftAngleBracket(),
-                    else => return self.tokenizeContent(),
-                }
-            },
-            .cdata => todo("Tokenize after 'cdata'.", .{}),
-            
-            .entity_reference => {
-                std.debug.assert(self.getByte().? == ';');
-                self.incrByByte();
-                switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where content was expected.", .{})) {
-                    '<' => return self.tokenizeAfterLeftAngleBracket(),
-                    else => return self.tokenizeContent(),
-                }
-            },
-            
-            .whitespace,
-            .text,
-            => switch (self.getByte().?) {
-                '<' => return self.tokenizeAfterLeftAngleBracket(),
-                '&' => return self.tokenizeContent(),
-                else => unreachable,
-            },
-            
-            
-            .pi_target => todo("Tokenize after 'pi_target'.", .{}),
-            .pi_token => todo("Tokenize after 'pi_token'.", .{}),
-        },
-        
-        .trailing => |prev_tok| {
-            std.debug.assert(self.getDepth() == 0);
-            switch (prev_tok) {
-                .element_open => unreachable,
-                
-                .element_close_tag,
-                .element_close_inline,
-                .comment,
-                => {
-                    std.debug.assert(self.getUtf8().? == '>');
-                    self.incrByByte();
-                    
-                    const start_index = self.getIndex();
-                    switch (self.getUtf8() orelse return self.setEnd(null)) {
+                .comment => {
+                    std.debug.assert(self.getByte().? == '>');
+                    state.index += 1;
+                    switch (self.getByte() orelse {
+                        state.info = .end;
+                        return null;
+                    }) {
                         ' ',
                         '\t',
                         '\n',
                         '\r',
                         => {
-                            self.incrByUtf8WhileWhitespace();
-                            const len = self.getIndex() - start_index;
-                            const info = Token.Info.Whitespace { .len = len };
-                            const result = Token.init(start_index, .{ .whitespace = info });
-                            return self.setTrailing(result);
+                            const result = self.tokenizeWhitespace();
+                            state.info.prologue = result.tag;
+                            return @as(NextRet, result);
                         },
-                        '<' => return self.tokenizeAfterLeftAngleBracket(),
-                        else => todo("Error for content in trailing section.", .{}),
+                        '<' => {
+                            const result = self.tokenizeAfterLeftAngleBracket() catch |err| switch (err) {
+                                else => todo("Handle {}.", .{err}),
+                            };
+                            
+                            return self.prologueSetStateUsing(result);
+                        },
+                        else => todo("Error for character '{u}' in prologue.", .{self.getByte().?})
                     }
                 },
-                
-                .attribute_name => unreachable,
-                .attribute_value_segment => unreachable,
-                .cdata => unreachable,
-                .text => unreachable,
-                .entity_reference => unreachable,
-                .whitespace => switch (self.getUtf8() orelse return self.setEnd(null)) {
-                    '<' => return self.tokenizeAfterLeftAngleBracket(),
-                    else => todo("Error for content in trailing section.", .{})
+                .whitespace => {
+                    if ('<' != self.getByte() orelse return self.setEndReturnNull()) return todo("Error for character '{c}' in prologue.", .{self.getByte().?});
+                    
+                    const result = self.tokenizeAfterLeftAngleBracket() catch |err| switch (err) {
+                        else => todo("Handle {}.", .{err}),
+                    };
+                    
+                    return self.prologueSetStateUsing(result);
                 },
-                .pi_target => unreachable,
-                .pi_token => unreachable,
+                
+                .elem_open_tag => unreachable,
+                .elem_close_tag => unreachable,
+                .elem_close_inline => unreachable,
+                
+                .attr_name => unreachable,
+                .attr_val_empty => unreachable,
+                .attr_val_segment_text => unreachable,
+                .attr_val_segment_entity_ref => unreachable,
+                
+                .content_text => unreachable,
+                .content_cdata => unreachable,
+                .content_entity_ref => unreachable,
             }
-        }
+        },
+        
+        .root => |root_tag| {
+            _ = root_tag;
+            todo("Tokenize after root_tag.", .{});
+        },
+        
+        .trailing => |trailing_tag| {
+            _ = trailing_tag;
+            todo("Tokenize after trailing_tag.", .{});
+        },
+        
+        .cached_err => |cached_err| {
+            state.info = .end;
+            return cached_err;
+        },
+        
+        .end => return null,
     }
 }
 
-
-
 inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
-    std.debug.panic("TODO: " ++ fmt ++ "\n", args);
+    debug.panic("TODO: " ++ fmt ++ "\n", args);
 }
 
 const State = struct {
     index: usize = 0,
     depth: usize = 0,
-    info: Info = .{ .start = null },
-    last_quote: ?QuoteType = null,
+    last_quote: ?StringQuote = null,
+    info: Info = .start,
     
     const Info = union(enum) {
+        start,
+        prologue: Token.Tag,
+        root: Token.Tag,
+        trailing: Token.Tag,
+        cached_err: Error,
         end,
-        start: ?std.meta.Tag(Token.Info),
-        in_root: std.meta.Tag(Token.Info),
-        trailing: std.meta.Tag(Token.Info),
     };
     
-    const QuoteType = enum(u8) {
+    const StringQuote = enum(u8) {
+        const Self = @This();
         single = '\'',
         double = '"',
         
-        pub fn init(char: u8) QuoteType {
-            std.debug.assert(switch (char) {
+        fn init(char: u8) Self {
+            return switch (char) {
                 '\'',
                 '"',
-                => true,
-                else => false,
-            });
-            return @intToEnum(QuoteType, char);
+                => @intToEnum(Self, char),
+                else => unreachable,
+            };
         }
         
-        pub fn initUtf8(char: u21) QuoteType {
-            std.debug.assert(unicode.utf8CodepointSequenceLength(char) catch unreachable == 1);
-            return QuoteType.init(@intCast(u8, char));
+        fn initUtf8(codepoint: u21) Self {
+            return switch (codepoint) {
+                '\'',
+                '"',
+                => return Self.init(@intCast(u8, codepoint)),
+                else => unreachable,
+            };
         }
         
-        pub fn value(self: QuoteType) u8 {
+        fn value(self: Self) u8 {
             return @enumToInt(self);
         }
     };
 };
 
-fn tokenizeAttributeValueSegment(self: *TokenStream) NextRet {
-    std.debug.assert(self.state.last_quote != null);
-    std.debug.assert(self.getByte().? != self.state.last_quote.?.value());
-    std.debug.assert(self.state.info.in_root == .attribute_name or self.state.info.in_root == .attribute_value_segment);
-    
-    const Closure = struct {
-        fn tokenizeAfterAmpersand(ts: *TokenStream) NextRet {
-            std.debug.assert(ts.getByte().? == '&');
-            
-            const start_index = ts.getIndex();
-            ts.incrByByte();
-            
-            if (!xml.isValidUtf8NameStartChar(ts.getUtf8() orelse todo("Error for EOF or invalid UTF8 where entity reference name start char was expected.", .{}))) {
-                return todo("Error for invalid entity reference name start char.", .{});
-            }
-            
-            ts.incrByUtf8();
-            ts.incrByUtf8While(xml.isValidUtf8NameChar); // Maybe use 'xml.isValidUtf8NameCharOrColon'? Refer to below error in if block.
-            const final_utf8 = ts.getUtf8() orelse todo ("Error for EOF or invalid UTF8 where entity reference semicolon ';' terminator was expected.", .{});
-            
-            if (final_utf8 == ':') {
-                todo("Consider whether entity references should tokenize with colons, or error on them.\n", .{});
-            }
-            
-            if (final_utf8 != ';') {
-                return todo("Error for character '{u}' where semicolon ';' terminator was expected.", .{ts.getUtf8().?});
-            }
-            
-            const len = (ts.getIndex() + 1) - start_index;
-            const info = Token.Info.AttributeValueSegment { .entity_reference = .{ .len = len } };
-            const result = Token.init(start_index, .{ .attribute_value_segment = info });
-            return ts.setInRoot(result);
-        }
-        
-        fn tokenizeString(ts: *TokenStream) NextRet {
-            std.debug.assert(ts.getUtf8().? != '&' and ts.getUtf8().? != ts.state.last_quote.?.value());
-            
-            const start_index = ts.getIndex();
-            switch (ts.state.last_quote.?) {
-                .double => ts.incrByUtf8While(struct { fn func(char: u21) bool { return (char != '<') and (char != '&') and (char != '"'); }}.func),
-                .single => ts.incrByUtf8While(struct { fn func(char: u21) bool { return (char != '<') and (char != '&') and (char != '\''); }}.func),
-            }
-            
-            if (ts.getByte() orelse todo("Error for EOF before string termination", .{}) == '<') {
-                return todo("Error for encountering '<' in attribute string.", .{});
-            }
-            
-            const len = ts.getIndex() - start_index;
-            const info = Token.Info.AttributeValueSegment { .text = .{ .len = len } };
-            const result = Token.init(start_index, .{ .attribute_value_segment = info });
-            return ts.setInRoot(result);
-        }
-    };
-    
-    switch (self.getUtf8().?) {
-        '&' => return Closure.tokenizeAfterAmpersand(self),
-        ';' => {
-            self.incrByByte();
-            if (self.getByte() orelse todo("Error for EOF or invalid UTF8 where attribute string content or attribute string terminator was expected.", .{}) == self.state.last_quote.?.value()) {
-                self.incrByByte();
-                self.state.last_quote = null;
-                return self.tokenizeAfterElementTagOrAttribute();
-            }
-            
-            if ('&' == self.getByte().?){
-                return Closure.tokenizeAfterAmpersand(self);
-            }
-            
-            return Closure.tokenizeString(self);
-        },
-        else => {
-            if (self.state.last_quote.?.value() == self.getByte().?) {
-                self.incrByByte();
-                return self.tokenizeAfterElementTagOrAttribute();
-            }
-            
-            std.debug.assert(self.buffer[self.getIndex() - 1] == self.state.last_quote.?.value());
-            return Closure.tokenizeString(self);
-        },
-    }
+fn setEndReturnNull(self: *TokenStream) NextRet {
+    self.state.info = .end;
+    return null;
 }
 
-fn tokenizeContent(self: *TokenStream) NextRet {
-    std.debug.assert(self.getUtf8().? != '<' and self.getUtf8().? != '>');
-    
-    const start_index = self.getIndex();
-    switch (self.getUtf8().?) {
-        '&' => {
-            self.incrByByte();
-            self.incrByUtf8While(xml.isValidUtf8NameCharOrColon);
-            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where entity reference name terminator ';' was expected.", .{})) {
-                ';' => {
-                    const len = (self.getIndex() + 1) - start_index;
-                    const info = Token.Info.EntityReference { .len = len };
-                    const result = Token.init(start_index, .{ .entity_reference = info });
-                    return self.setInRoot(result);
-                },
-                else => todo("Error for character '{u}' where entity reference name terminator ';' was expected.", .{self.getUtf8().?}),
-            }
-        },
-        
-        else => {
-            var non_whitespace_chars: bool = false;
-            while (self.getUtf8()) |char| : (self.incrByUtf8()) switch (char) {
-                ' ',
-                '\t',
-                '\n',
-                '\r',
-                => continue,
-                '&' => break,
-                '<' => break,
-                else => non_whitespace_chars = true,
-            } else if (non_whitespace_chars or self.getDepth() != 0) {
-                return todo("Error for EOF where '<' was expected.", .{});
-            }
-            
-            const len = self.getIndex() - start_index;
-            if (non_whitespace_chars) {
-                const info = Token.Info.Text { .len = len };
-                const result = Token.init(start_index, .{ .text = info });
-                return self.setInRoot(result);
-            } else {
-                const info = Token.Info.Whitespace { .len = len };
-                const result = Token.init(start_index, .{ .whitespace = info });
-                return self.setInRoot(result);
-            }
-        }
-    }
-}
 
-fn tokenizeAfterElementTagOrAttribute(self: *TokenStream) NextRet {
-    std.debug.assert(self.getDepth() != 0 and self.state.info != .trailing);
-    std.debug.assert(!xml.isValidUtf8NameCharOrColon(self.getUtf8().?));
-    self.incrByUtf8WhileWhitespace();
-    
-    switch (self.getUtf8() orelse todo("Error for premature EOF after unclosed element tag.", .{})) {
-        '/' => {
-            const start_index = self.getIndex();
-            self.incrByByte();
-            if (self.getUtf8() orelse todo("Error if / is followed by EOF where '>' was expected", .{}) != '>') {
-                todo("Error if / is followed by EOF where '>' was expected", .{});
-            }
-            
-            const result = Token.init(start_index, .element_close_inline);
-            self.state.depth -= 1;
-            if (self.getDepth() == 0) return self.setTrailing(result);
-            return self.setInRoot(result);
-        },
-        
-        '>' => {
-            self.incrByByte();
-            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where content or closing tags were expected.", .{})) {
-                '<' => return self.tokenizeAfterLeftAngleBracket(),
-                else => return self.tokenizeContent(),
-            }
-        },
-        
-        else => {
-            std.debug.assert(switch (self.state.info.in_root) {
-                .element_open,
-                .attribute_value_segment,
-                => true,
-                else => false,
-            });
-            
-            const start_index = self.getIndex();
-            const tokenized_identifier = self.tokenizePrefixedIdentifier() catch |err| switch (err) {
-                error.NoName => todo("Error for no name where one was expected.", .{}),
-                error.InvalidNameStartChar => todo("Error for invalid name start char.", .{}),
-                error.PrematureEof => todo("Error for premature EOF.", .{}),
-            };
-            
-            const prefix_len = tokenized_identifier.prefix_len;
-            const full_len = self.getIndex() - start_index;
-            
-            std.debug.assert(full_len == (prefix_len + @as(usize, if (prefix_len == 0) 0 else 1) + tokenized_identifier.identifier_len));
-            
-            const info = Token.Info.AttributeName { .prefix_len = prefix_len, .full_len = full_len };
-            const result = Token.init(start_index, .{ .attribute_name = info });
-            return self.setInRoot(result);
-        },
-    }
-}
 
-fn tokenizeAfterLeftAngleBracket(self: *TokenStream) NextRet {
-    const start_index = self.getIndex();
-    std.debug.assert(self.getUtf8().? == '<');
-    self.incrByByte();
+fn tokenizeAfterLeftAngleBracket(self: *TokenStream) error {
+    ImmediateEof,
+    BangEof,
+    BangDashEof,
+    BangDashInvalid,
+    UnclosedCommentEof,
+    DashDashEof,
+    DashDashInvalid
+}!Token {
+    const state: *State = &self.state;
+    std.debug.assert(self.getByte().? == '<');
     
-    switch (self.getUtf8() orelse todo("Error for ending file immediately after '<'.", .{})) {
-        '?' => todo("Tokenize preprocessing instructions.", .{}),
+    const start_index = state.index;
+    state.index += 1;
+    switch (self.getByte() orelse return error.ImmediateEof) {
+        '?' => todo("Tokenize after '<?'.", .{}),
         '!' => {
-            self.incrByByte();
-            switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where '-' or '[' was expected.", .{})) {
+            state.index += 1;
+            switch (self.getByte() orelse return error.BangEof) {
                 '-' => {
-                    self.incrByByte();
-                    if (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where '-' was expected.", .{}) != '-') {
-                        todo("Error for character '{u}' where '-' was expected.", .{self.getUtf8().?});
+                    state.index += 1;
+                    if ((self.getByte() orelse return error.BangDashEof) != '-') {
+                        return error.BangDashInvalid;
                     }
                     
-                    self.incrByByte();
-                    while (true) {
-                        self.incrByUtf8While(struct { fn func(char: u21) bool { return char != '-'; } }.func);
-                        
-                        self.incrByByte();
-                        if (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where '-' was expected.", .{}) != '-') {
-                            continue;
+                    state.index += 1;
+                    while (self.getUtf8()) |char| {
+                        if (char == '-') {
+                            state.index += 1;
+                            if ((self.getByte() orelse return error.UnclosedCommentEof) != '-') continue;
+                            
+                            state.index += 1;
+                            if ((self.getByte() orelse return error.DashDashEof) != '>') return error.DashDashInvalid;
+                            
+                            break;
                         }
-                        
-                        self.incrByByte();
-                        if (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where '-' was expected.", .{}) != '>') {
-                            return todo("Error for character '{u}' where '>' was expected.", .{self.getUtf8().?});
-                        }
-                        
-                        break;
-                    }
+                        state.index += unicode.utf8CodepointSequenceLength(char) catch unreachable;
+                    } else return error.UnclosedCommentEof;
                     
-                    if (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where '>' was expected.", .{}) != '>') {
-                        return todo("Error for character '{u}' where '>' was expected.", .{self.getUtf8().?});
-                    }
-                    
-                    const len = (self.getIndex() + 1) - start_index;
-                    const info = Token.Info.Comment { .len = len };
-                    const result = Token.init(start_index, .{ .comment = info });
-                    
-                    if (self.getDepth() == 0) {
-                        switch (self.state.info) {
-                            .start => {
-                                self.state.info.start = result.info;
-                                return @as(NextRet, result);
-                            },
-                            .trailing => return self.setTrailing(result),
-                            .in_root => unreachable,
-                            .end => unreachable,
-                        }
-                    }
-                    
-                    return self.setInRoot(result);
+                    std.debug.assert(self.getByte().? == '>');
+                    return Token.init(.comment, .{ .start = start_index, .end = state.index + 1 });
                 },
-                '[' => todo("Tokenize CDATA sections?", .{}),
-                else => todo("Error for character '{u}' where '-' or '[' was expected.", .{self.getUtf8().?}),
+                '[' => todo("Tokenize after '<!['.", .{}),
+                else => todo("Error for character '{c}' where '-' or '[' was expected.", .{self.getByte().?}),
             }
         },
-        
-        '/' => {
-            std.debug.assert(self.getDepth() != 0);
-            std.debug.assert(switch (self.state.info) {
-                .in_root => true,
-                else => false,
-            });
-            
-            self.incrByByte();
-            
-            const prefixed_identifier = self.tokenizePrefixedIdentifier() catch |err| switch (err) {
-                error.NoName => todo("Error for no name where one was expected.", .{}),
-                error.InvalidNameStartChar => todo("Error for invalid name start char.", .{}),
-                error.PrematureEof => todo("Error for premature EOF.", .{}),
-            };
-            
-            const info = Token.Info.ElementCloseTag {
-                .prefix_len = prefixed_identifier.prefix_len,
-                .identifier_len = prefixed_identifier.identifier_len,
-                .full_len = blk: {
-                    self.incrByUtf8WhileWhitespace();
-                    break :blk switch (self.getUtf8() orelse todo("Error for EOF or invalid UTF8 where element close tag terminator was expected.", .{})) {
-                        '>' => (self.getIndex() + 1) - start_index,
-                        else => todo("Error for character '{u}' where element close tag terminator was expected.", .{self.getUtf8().?}),
-                    };
-                }
-            };
-            
-            const result = Token.init(start_index, .{ .element_close_tag = info });
-            return self.subDepth(result);
-        },
-        
-        else => {
-            switch (self.state.info) {
-                .start => {
-                    std.debug.assert(self.getDepth() == 0);
-                },
-                .in_root => {
-                    std.debug.assert(self.getDepth() != 0);
-                },
-                .trailing => {
-                    return todo("Error for element tag in trailing section.", .{});
-                },
-                .end => unreachable,
-            }
-            
-            const prefixed_identifier = self.tokenizePrefixedIdentifier() catch |err| switch (err) {
-                error.NoName => todo("Error for no name where one was expected.", .{}),
-                error.InvalidNameStartChar => todo("Error for invalid name start char.", .{}),
-                error.PrematureEof => todo("Error for premature EOF.", .{}),
-            };
-            
-            const info = Token.Info.ElementOpen {
-                .prefix_len = prefixed_identifier.prefix_len,
-                .full_len = self.getIndex() - start_index,
-            };
-            
-            const result = Token.init(start_index, .{ .element_open = info });
-            self.state.depth += 1;
-            return self.setInRoot(result);
-        }
+        else => todo("Tokenize after '<{c}'", .{self.getByte().?}),
     }
 }
 
-
-
-const IdentifierLength = struct { identifier_len: usize };
-fn tokenizeIdentifierUsing(self: *TokenStream, comptime verifierFunc: fn(char: u21)bool) error { NoName, InvalidNameStartChar }!IdentifierLength {
-    const start_index = self.getIndex();
-    const name_start_char = self.getUtf8() orelse return error.NoName;
-    if (!xml.isValidUtf8NameStartChar(name_start_char)) {
-        return error.InvalidNameStartChar;
-    }
-    
-    self.incrByUtf8();
-    self.incrByUtf8While(verifierFunc);
-    
-    return IdentifierLength { .identifier_len = self.getIndex() - start_index };
-}
-
-fn tokenizeIdentifier(self: *TokenStream) error { NoName, InvalidNameStartChar }!IdentifierLength {
-    return self.tokenizeIdentifierUsing(xml.isValidUtf8NameChar);
-}
-
-fn tokenizeIdentifierWithColon(self: *TokenStream) error { NoName, InvalidNameStartChar }!IdentifierLength {
-    return self.tokenizeIdentifierUsing(xml.isValidUtf8NameCharOrColon);
-}
-
-const PrefixedIdentifierLength = struct { prefix_len: usize, identifier_len: usize };
-fn tokenizePrefixedIdentifier(self: *TokenStream) error { NoName, InvalidNameStartChar, PrematureEof }!PrefixedIdentifierLength {
-    const tokenized_first = try self.tokenizeIdentifier();
-    switch (self.getUtf8() orelse return error.PrematureEof) {
-        ':' => {
-            self.incrByByte();
-            const tokenized_second = try self.tokenizeIdentifier();
-            return PrefixedIdentifierLength {
-                .prefix_len = tokenized_first.identifier_len,
-                .identifier_len = tokenized_second.identifier_len,
-            };
-        },
-        else => return PrefixedIdentifierLength {
-            .prefix_len = 0,
-            .identifier_len = tokenized_first.identifier_len,
-        },
-    }
-}
-
-
-
-
-fn subDepth(self: *TokenStream, ret: Token) NextRet {
-    std.debug.assert(self.state.depth != 0);
-    std.debug.assert(self.state.info == .in_root);
-    std.debug.assert(switch (ret.info) {
-        .element_close_inline,
-        .element_close_tag,
-        => true,
-        else => false,
-    });
-    self.state.depth -= 1;
-    if (self.getDepth() == 0) return self.setTrailing(ret);
-    return self.setInRoot(ret);
-}
-
-
-
-fn incrByUtf8WhileWhitespace(self: *TokenStream) void {
-    self.incrByUtf8While(struct{ fn isSpace(char: u21) bool { return switch (char) {
+fn tokenizeWhitespace(self: *TokenStream) Token {
+    const state: *State = &self.state;
+    std.debug.assert(switch (self.getByte().?) {
         ' ',
         '\t',
         '\n',
         '\r',
         => true,
         else => false,
-    }; } }.isSpace);
+    });
+    
+    const start_index = state.index;
+    state.index += 1;
+    while (self.getByte()) |subsequent_char| switch (subsequent_char) {
+        ' ',
+        '\t',
+        '\n',
+        '\r',
+        => state.index += 1,
+        else => break,
+    };
+    
+    return Token.init(.whitespace, .{ .start = start_index, .end = state.index });
 }
 
-fn incrByUtf8While(self: *TokenStream, comptime matchFn: fn(u21)bool) void {
-    while (self.getUtf8()) |char| : (self.incrByUtf8())
-        if (!matchFn(char)) break;
-}
 
-fn incrByUtf8(self: *TokenStream) void {
-    const codepoint = self.getUtf8() orelse return;
-    self.state.index += unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
-}
 
-fn incrByByte(self: *TokenStream) void {
-    requirements: {
-        const codepoint = self.getUtf8() orelse std.debug.panic("Invalid UTF8 codepoint or EOF encountered when trying to increment by a single byte.", .{});
-        const codepoint_len = unicode.utf8CodepointSequenceLength(codepoint) catch unreachable;
-        std.debug.assert(codepoint_len == 1);
-        break :requirements;
+fn prologueSetStateUsing(self: *TokenStream, result: Token) NextRet {
+    const state: *State = &self.state;
+    switch (result.tag) {
+        .pi_target => todo("Tokenize pi_target.", .{}),
+        .pi_string => unreachable,
+        .pi_tok => unreachable,
+        .pi_end => unreachable,
+        
+        .dtd_tok => todo("Tokenize dtd_tok.", .{}),
+        
+        .comment => state.info = .{ .prologue = result.tag },
+        .whitespace => state.info = .{ .prologue = result.tag },
+        
+        .elem_open_tag => todo("Tokenize elem_open_tag.", .{}),
+        .elem_close_tag => unreachable,
+        .elem_close_inline => unreachable,
+        
+        .attr_name => unreachable,
+        .attr_val_empty => unreachable,
+        .attr_val_segment_text => unreachable,
+        .attr_val_segment_entity_ref => unreachable,
+        
+        .content_text => unreachable,
+        .content_cdata => {
+            const err = todo("Assign error to CDATA section in prologue.", .{});
+            state.info = .{ .cached_err = err };
+            return @as(NextRet, err);
+        },
+        .content_entity_ref => unreachable,
     }
-    self.state.index += 1;
+    
+    return @as(NextRet, result);
 }
 
 
-
-fn setEnd(self: *TokenStream, ret: NextRet) NextRet {
-    self.state.info = .end;
-    return ret;
-}
-
-fn setInRoot(self: *TokenStream, tok: Token) NextRet {
-    self.state.info = .{ .in_root = tok.info };
-    return tok;
-}
-
-fn setTrailing(self: *TokenStream, tok: Token) NextRet {
-    self.state.info = .{ .trailing = tok.info };
-    return @as(NextRet, tok);
-}
-
-
-
-fn getDepth(self: TokenStream) usize { return self.state.depth; }
-
-fn getIndex(self: TokenStream) usize { return self.state.index; }
 
 fn getByte(self: TokenStream) ?u8 {
-    const index = self.getIndex();
+    const index = self.state.index;
     const buffer = self.buffer;
     const in_range = (index < buffer.len);
     return if (in_range) buffer[index] else null;
 }
 
 fn getUtf8(self: TokenStream) ?u21 {
-    const start_byte = self.getByte() orelse return null;
-    const sequence_len = unicode.utf8ByteSequenceLength(start_byte) catch return null;
-    
-    const beg = self.state.index;
-    const end = beg + sequence_len;
-    if (end > self.buffer.len) return null;
-    
-    return unicode.utf8Decode(self.buffer[beg..end]) catch null;
+    return blk: {
+        const start_byte = self.getByte() orelse break :blk null;
+        const sequence_len = unicode.utf8ByteSequenceLength(start_byte) catch break :blk null;
+        
+        const beg = self.state.index;
+        const end = beg + sequence_len;
+        if (end > self.buffer.len) break :blk null;
+        
+        break :blk unicode.utf8Decode(self.buffer[beg..end]) catch null;
+    };
 }
 
 
-
 const tests = struct {
-    fn expectElementOpen(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
-        try Token.tests.expectElementOpen(ts.buffer, try (ts.next() orelse error.NullToken), prefix, name);
-    }
-    
-    fn expectElementCloseTag(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
-        try Token.tests.expectElementCloseTag(ts.buffer, try (ts.next() orelse error.NullToken), prefix, name);
-    }
-    
-    fn expectElementCloseInline(ts: *TokenStream) !void {
-        try Token.tests.expectElementCloseInline(ts.buffer, try (ts.next() orelse error.NullToken));
-    }
-    
-    fn expectText(ts: *TokenStream, content: []const u8) !void {
-        try Token.tests.expectText(ts.buffer, try (ts.next() orelse error.NullToken), content);
-    }
-    
-    fn expectWhitespace(ts: *TokenStream, content: []const u8) !void {
-        try Token.tests.expectWhitespace(ts.buffer, try (ts.next() orelse error.NullToken), content);
-    }
-    
-    fn expectEntityReference(ts: *TokenStream, name: []const u8) !void {
-        try Token.tests.expectEntityReference(ts.buffer, try (ts.next() orelse error.NullToken), name);
-    }
-    
-    fn expectComment(ts: *TokenStream, content: []const u8) !void {
-        try Token.tests.expectComment(ts.buffer, try (ts.next() orelse error.NullToken), content);
-    }
-    
-    fn expectAttributeName(ts: *TokenStream, prefix: ?[]const u8, name: []const u8) !void {
-        try Token.tests.expectAttributeName(ts.buffer, try (ts.next() orelse error.NullToken), prefix, name);
-    }
-    
-    fn expectAttributeValueSegment(ts: *TokenStream, segment: Token.tests.AttributeValueSegment) !void {
-        try Token.tests.expectAttributeValueSegment(ts.buffer, try (ts.next() orelse error.NullToken), segment);
-    }
-    
-    fn expectAttribute(ts: *TokenStream, prefix: ?[]const u8, name: []const u8, segments: []const Token.tests.AttributeValueSegment) !void {
-        try expectAttributeName(ts, prefix, name);
-        for (segments) |segment| {
-            try expectAttributeValueSegment(ts, segment);
+    const token = struct {
+        fn expectTokenTagAndSlice(src: []const u8, tok: Token, expected_tag: Token.Tag, expected_slice_components: []const []const u8) !void {
+            std.debug.assert(expected_slice_components.len != 0);
+            try testing.expectEqual(expected_tag, tok.tag);
+            
+            const expected_slice: []const u8 = try std.mem.concat(testing.allocator, u8, expected_slice_components);
+            defer testing.allocator.free(expected_slice);
+            try testing.expectEqualStrings(expected_slice, tok.slice(src));
         }
-    }
+        
+        fn expectProcessingInstructionsTarget(src: []const u8, tok: Token, name: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .pi_target, &.{ "<?", name });
+            try testing.expectEqualStrings(tok.name(src).?, name);
+        }
+        
+        fn expectProcessingInstructionsToken(src: []const u8, tok: Token, slice: []const u8) !void {
+            _ = src;
+            _ = tok;
+            _ = slice;
+            todo("Consider this test.", .{});
+        }
+        
+        fn expectProcessingInstructionsEnd(src: []const u8, tok: Token) !void {
+            try expectTokenTagAndSlice(src, tok, .pi_end, .{ "?>" });
+        }
+        
+        fn expectDtdToken() !void {
+            todo("Consider how to test DTD tokens.", .{});
+        }
+        
+        fn expectComment(src: []const u8, tok: Token, data: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .comment, &.{ "<!--", data, "-->" });
+            try testing.expectEqualStrings(data, tok.data(src).?);
+        }
+        
+        fn expectWhitespace(src: []const u8, tok: Token, whitespace: []const u8) !void {
+            debug.assert(whitespace.len != 0 and for (whitespace) |char| switch (char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => {},
+                else => break false,
+            } else true);
+            
+            try expectTokenTagAndSlice(src, tok, .whitespace, &.{ whitespace });
+        }
+        
+        fn expectElementOpenTag(src: []const u8, tok: Token, name: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .elem_open_tag, &.{ "<", name });
+            try testing.expectEqualStrings(name, tok.name(src).?);
+        }
+        
+        fn expectElementCloseTag(src: []const u8, tok: Token, name: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .elem_close_tag, &.{ "</", name });
+            try testing.expectEqualStrings(name, tok.name(src).?);
+        }
+        
+        fn expectElementCloseInline(src: []const u8, tok: Token) !void {
+            try expectTokenTagAndSlice(src, tok, .elem_close_inline, &.{ "/>" });
+        }
+        
+        fn expectAttributeName(src: []const u8, tok: Token, name: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .attr_name, &.{ name });
+        }
+        
+        fn expectAttributeValueSegmentEmpty(src: []const u8, tok: Token) !void {
+            try expectTokenTagAndSlice(src, tok, .attr_val_empty, &.{ "" });
+        }
+        
+        fn expectAttributeValueSegmentText(src: []const u8, tok: Token, data: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .attr_val_segment_text, &.{ data });
+        }
+        
+        fn expectAttributeValueSegmentEntityRef(src: []const u8, tok: Token, name: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .attr_val_segment_entity_ref, &.{ "&", name, ";" });
+            try testing.expectEqualStrings(name, tok.name(src).?);
+        }
+        
+        fn expectContentText(src: []const u8, tok: Token, data: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .content_text, &.{ data });
+        }
+        
+        fn expectContentCharData(src: []const u8, tok: Token, data: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .content_cdata, &.{ "<![CDATA[", data, "]]>" });
+            try testing.expectEqualStrings(data, tok.data(src).?);
+        }
+        
+        fn expectContentEntityReference(src: []const u8, tok: Token, name: []const u8) !void {
+            try expectTokenTagAndSlice(src, tok, .content_entity_ref, &.{ "&", name, ";" });
+            try testing.expectEqualStrings(name, tok.name(src).?);
+        }
+    };
     
-    
-    
-    fn expectNull(ts: *TokenStream) !void {
-        try testing.expectEqual(@as(NextRet, null), ts.next());
-    }
-    
-    fn expectError(ts: *TokenStream, err: Error) !void {
-        try testing.expectError(err, ts.next() orelse return error.NullToken);
-    }
+    const token_stream = struct {
+        
+        fn expectWhitespace(ts: *TokenStream, whitespace: []const u8) !void {
+            const tok = try (ts.next() orelse error.NullToken);
+            try token.expectWhitespace(ts.buffer, tok, whitespace);
+        }
+        
+        fn expectComment(ts: *TokenStream, data: []const u8) !void {
+            const tok = try (ts.next() orelse error.NullToken);
+            try token.expectComment(ts.buffer, tok, data);
+        }
+        
+        
+        
+        fn expectError(ts: *TokenStream, err: TokenStream.Error) !void {
+            try testing.expectError(err, ts.next());
+        }
+        
+        fn expectNull(ts: *TokenStream) !void {
+            const T = TokenStream.NextRet;
+            const expected = @as(T, null);
+            const actual = ts.next();
+            try testing.expectEqual(expected, actual);
+        }
+    };
 };
+
 
 test "empty source" {
     var ts = TokenStream.init("");
-    try tests.expectNull(&ts);
+    try tests.token_stream.expectNull(&ts);
 }
 
 test "whitespace source" {
     var ts = TokenStream.init(undefined);
     
-    @setEvalBranchQuota(4_000);
-    const spaces = .{ " ", "\t", "\n", "\r" };
-    const spaces0 = .{""} ++ spaces;
-    inline for (spaces0) |s0|
+    const spaces = [_][1:0]u8{ " ".*, "\t".*, "\n".*, "\r".* };
+    inline for (spaces) |s0|
     inline for (spaces) |s1|
     inline for (spaces) |s2|
     inline for (spaces) |s3|
-    inline for (.{1, 2, 3}) |mul|
+    inline for (.{1, 2, 3}) |mul0|
+    inline for (.{1, 2, 3}) |mul1|
     {
-        const whitespace = (s0 ++ s1 ++ s2 ++ s3) ** mul;
-        ts.reset(whitespace);
-        try tests.expectWhitespace(&ts, whitespace);
-        try tests.expectNull(&ts);
+        @setEvalBranchQuota(12_000);
+        const whitespace = ((s0 ** mul1) ++ (s1 ** mul1) ++ (s2 ** mul1) ++ (s3 ** mul1)) ** mul0;
+        ts.reset(&whitespace);
+        try tests.token_stream.expectWhitespace(&ts, &whitespace);
+        try tests.token_stream.expectNull(&ts);
     };
 }
 
-test "empty tag close inline" {
-    var ts = TokenStream.init(undefined);
-    
-    @setEvalBranchQuota(4_000);
-    const spaces = .{ " ", "\t", "\n", "\r" };
-    const spaces0 = .{""} ++ spaces;
-    inline for (spaces0) |s0|
-    inline for (spaces) |s1|
-    inline for (spaces) |s2|
-    inline for (spaces) |s3|
-    inline for (.{1, 2, 3}) |mul|
-    {
-        const whitespace = (s0 ++ s1 ++ s2 ++ s3) ** mul;
-        ts.reset("<empty" ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
-        
-        ts.reset("<pre:empty" ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, "pre", "empty");
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
-        
-        ts.reset(whitespace ++ "<root" ++ whitespace ++ "/>" ++ whitespace);
-        try tests.expectWhitespace(&ts, whitespace);
-        try tests.expectElementOpen(&ts, null, "root");
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectWhitespace(&ts, whitespace);
-        try tests.expectNull(&ts);
-    };
-}
-
-test "empty tag close non-inline" {
-    var ts = TokenStream.init(undefined);
-    
-    @setEvalBranchQuota(4_000);
-    const spaces = .{ " ", "\t", "\n", "\r" };
-    const spaces0 = .{""} ++ spaces;
-    inline for (spaces0) |s0|
-    inline for (spaces) |s1|
-    inline for (spaces) |s2|
-    inline for (spaces) |s3|
-    inline for (.{1, 2, 3}) |mul|
-    {
-        const whitespace = (s0 ++ s1 ++ s2 ++ s3) ** mul;
-        ts.reset("<empty></empty>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectElementCloseTag(&ts, null, "empty");
-        try tests.expectNull(&ts);
-        
-        ts.reset("<pre:empty></pre:empty>");
-        try tests.expectElementOpen(&ts, "pre", "empty");
-        try tests.expectElementCloseTag(&ts, "pre", "empty");
-        try tests.expectNull(&ts);
-        
-        ts.reset(whitespace ++ "<root></root>" ++ whitespace);
-        try tests.expectWhitespace(&ts, whitespace);
-        try tests.expectElementOpen(&ts, null, "root");
-        try tests.expectElementCloseTag(&ts, null, "root");
-        try tests.expectWhitespace(&ts, whitespace);
-        try tests.expectNull(&ts);
-    };
-}
-
-test "empty but nested tags" {
-    var ts = TokenStream.init("<tag0><tag1><tag2><empty/></tag2></tag1></tag0>");
-    try tests.expectElementOpen(&ts, null, "tag0");
-    try tests.expectElementOpen(&ts, null, "tag1");
-    try tests.expectElementOpen(&ts, null, "tag2");
-    
-    try tests.expectElementOpen(&ts, null, "empty");
-    try tests.expectElementCloseInline(&ts);
-    
-    try tests.expectElementCloseTag(&ts, null, "tag2");
-    try tests.expectElementCloseTag(&ts, null, "tag1");
-    try tests.expectElementCloseTag(&ts, null, "tag0");
-    try tests.expectNull(&ts);
-}
-
-test "empty tag with multiple attributes" {
-    var ts = TokenStream.init("<empty foo:bar=\"baz&amp;\" fi:fo = 'fum' />");
-    try tests.expectElementOpen(&ts, null, "empty");
-    try tests.expectAttribute(&ts, "foo", "bar", &.{
-        .{ .text = "baz" },
-        .{ .entity_reference = "amp" }
-    });
-    try tests.expectAttribute(&ts, "fi", "fo", &.{
-        .{ .text = "fum" }
-    });
-    try tests.expectElementCloseInline(&ts);
-    try tests.expectNull(&ts);
-}
-
-test "empty tag with attributes stress testing" {
-    var ts = TokenStream.init(undefined);
-    
-    @setEvalBranchQuota(4_000);
-    inline for (.{ "=", "=  ", " = ", "  =" }) |eql|
-    inline for (.{ "'", "\"" }) |quote|
-    inline for (.{ "", " " }) |whitespace|
-    inline for (.{ @as(?[]const u8, "pre"), null }) |maybe_prefix|
-    {
-        const other_quote = if (quote[0] == '"') "'" else "\"";
-        const prefix = if (maybe_prefix) |prfx| prfx ++ ":" else "";
-        
-        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ quote ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .empty_quotes });
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
-        
-        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "bar" ++ quote ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .text = "bar" } });
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
-        
-        inline for (.{ 1, 2, 3, 4 }) |mul| {
-            const entity_ref_name = "quot";
-            const entity_ref = "&quot;";
-            ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ (entity_ref ** mul) ++ quote ++ whitespace ++ "/>");
-            try tests.expectElementOpen(&ts, null, "empty");
-            try tests.expectAttribute(&ts, maybe_prefix, "foo", &(.{ .{ .entity_reference = entity_ref_name } } ** mul));
-            try tests.expectElementCloseInline(&ts);
-            try tests.expectNull(&ts);
-        }
-        
-        inline for (.{ 1, 2, 3, 4 }) |mul| {
-            const attr_text = (other_quote ** mul);
-            ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++  attr_text ++ quote ++ whitespace ++ "/>");
-            try tests.expectElementOpen(&ts, null, "empty");
-            try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .text = attr_text } });
-            try tests.expectElementCloseInline(&ts);
-            try tests.expectNull(&ts);
-        }
-        
-        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ other_quote ++ "barbaz" ++ other_quote ++ quote ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{ .{ .text = other_quote ++ "barbaz" ++ other_quote } });
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
-        
-        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ other_quote ++ "&apos;" ++ other_quote ++ quote ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{
-            .{ .text = other_quote },
-            .{ .entity_reference = "apos" },
-            .{ .text = other_quote },
-        });
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
-        
-        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "&quot;bar&quot;" ++ quote ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{
-            .{ .entity_reference = "quot" },
-            .{ .text = "bar" },
-            .{ .entity_reference = "quot" },
-        });
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
-        
-        ts.reset("<empty " ++ prefix ++ "foo" ++ eql ++ quote ++ "bar&amp;baz" ++ quote ++ whitespace ++ "/>");
-        try tests.expectElementOpen(&ts, null, "empty");
-        try tests.expectAttribute(&ts, maybe_prefix, "foo", &.{
-            .{ .text = "bar" },
-            .{ .entity_reference = "amp" },
-            .{ .text = "baz" },
-        });
-        try tests.expectElementCloseInline(&ts);
-        try tests.expectNull(&ts);
-    };
-}
-
-test "whitespace content" {
-    var ts = TokenStream.init(undefined);
-    
-    @setEvalBranchQuota(4_000);
-    const spaces = .{ " ", "\t", "\n", "\r" };
-    const spaces0 = .{""} ++ spaces;
-    inline for (spaces0) |s0|
-    inline for (spaces) |s1|
-    inline for (spaces) |s2|
-    inline for (spaces) |s3|
-    inline for (.{1, 2, 3}) |mul|
-    {
-        const whitespace = (s0 ++ s1 ++ s2 ++ s3) ** mul;
-        ts.reset("<root>" ++ whitespace ++ "</root>");
-        try tests.expectElementOpen(&ts, null, "root");
-        try tests.expectWhitespace(&ts, whitespace);
-        try tests.expectElementCloseTag(&ts, null, "root");
-        try tests.expectNull(&ts);
-    };
-}
-
-test "utf8 content" {
-    var ts = TokenStream.init(undefined);
-    const utf8_content =
-        // edited to exclude any ampersands and left/right angle brackets
-        \\
-        \\      ði ıntəˈnæʃənəl fəˈnɛtık əsoʊsiˈeıʃn
-        \\      Y [ˈʏpsilɔn], Yen [jɛn], Yoga [ˈjoːgɑ]
-        \\
-        \\    APL:
-        \\
-        \\      ((V⍳V)=⍳⍴V)/V←,V    ⌷←⍳→⍴∆∇⊃‾⍎⍕⌈
-        \\
-        \\    Nicer typography in plain text files:
-        \\
-        \\      ╔══════════════════════════════════════════╗
-        \\      ║                                          ║
-        \\      ║   • ‘single’ and “double” quotes         ║
-        \\      ║                                          ║
-        \\      ║   • Curly apostrophes: “We’ve been here” ║
-        \\      ║                                          ║
-        \\      ║   • Latin-1 apostrophe and accents: '´`  ║
-        \\      ║                                          ║
-        \\      ║   • ‚deutsche‘ „Anführungszeichen“       ║
-        \\      ║                                          ║
-        \\      ║   • †, ‡, ‰, •, 3–4, —, −5/+5, ™, …      ║
-        \\      ║                                          ║
-        \\      ║   • ASCII safety test: 1lI|, 0OD, 8B     ║
-        \\      ║                      ╭─────────╮         ║
-        \\      ║   • the euro symbol: │ 14.95 € │         ║
-        \\      ║                      ╰─────────╯         ║
-        \\      ╚══════════════════════════════════════════╝
-        \\
-        \\    Greek (in Polytonic):
-        \\
-        \\      The Greek anthem:
-        \\
-        \\      Σὲ γνωρίζω ἀπὸ τὴν κόψη
-        \\      τοῦ σπαθιοῦ τὴν τρομερή,
-        \\      σὲ γνωρίζω ἀπὸ τὴν ὄψη
-        \\      ποὺ μὲ βία μετράει τὴ γῆ.
-        \\
-        \\      ᾿Απ᾿ τὰ κόκκαλα βγαλμένη
-        \\      τῶν ῾Ελλήνων τὰ ἱερά
-        \\      καὶ σὰν πρῶτα ἀνδρειωμένη
-        \\      χαῖρε, ὦ χαῖρε, ᾿Ελευθεριά!
-        \\
-        \\      From a speech of Demosthenes in the 4th century BC:
-        \\
-        \\      Οὐχὶ ταὐτὰ παρίσταταί μοι γιγνώσκειν, ὦ ἄνδρες ᾿Αθηναῖοι,
-        \\      ὅταν τ᾿ εἰς τὰ πράγματα ἀποβλέψω καὶ ὅταν πρὸς τοὺς
-        \\      λόγους οὓς ἀκούω· τοὺς μὲν γὰρ λόγους περὶ τοῦ
-        \\      τιμωρήσασθαι Φίλιππον ὁρῶ γιγνομένους, τὰ δὲ πράγματ᾿ 
-        \\      εἰς τοῦτο προήκοντα,  ὥσθ᾿ ὅπως μὴ πεισόμεθ᾿ αὐτοὶ
-        \\      πρότερον κακῶς σκέψασθαι δέον. οὐδέν οὖν ἄλλο μοι δοκοῦσιν
-        \\      οἱ τὰ τοιαῦτα λέγοντες ἢ τὴν ὑπόθεσιν, περὶ ἧς βουλεύεσθαι,
-        \\      οὐχὶ τὴν οὖσαν παριστάντες ὑμῖν ἁμαρτάνειν. ἐγὼ δέ, ὅτι μέν
-        \\      ποτ᾿ ἐξῆν τῇ πόλει καὶ τὰ αὑτῆς ἔχειν ἀσφαλῶς καὶ Φίλιππον
-        \\      τιμωρήσασθαι, καὶ μάλ᾿ ἀκριβῶς οἶδα· ἐπ᾿ ἐμοῦ γάρ, οὐ πάλαι
-        \\      γέγονεν ταῦτ᾿ ἀμφότερα· νῦν μέντοι πέπεισμαι τοῦθ᾿ ἱκανὸν
-        \\      προλαβεῖν ἡμῖν εἶναι τὴν πρώτην, ὅπως τοὺς συμμάχους
-        \\      σώσομεν. ἐὰν γὰρ τοῦτο βεβαίως ὑπάρξῃ, τότε καὶ περὶ τοῦ
-        \\      τίνα τιμωρήσεταί τις καὶ ὃν τρόπον ἐξέσται σκοπεῖν· πρὶν δὲ
-        \\      τὴν ἀρχὴν ὀρθῶς ὑποθέσθαι, μάταιον ἡγοῦμαι περὶ τῆς
-        \\      τελευτῆς ὁντινοῦν ποιεῖσθαι λόγον.
-        \\
-        \\      Δημοσθένους, Γ´ ᾿Ολυνθιακὸς
-        \\
-        \\    Georgian:
-        \\
-        \\      From a Unicode conference invitation:
-        \\
-        \\      გთხოვთ ახლავე გაიაროთ რეგისტრაცია Unicode-ის მეათე საერთაშორისო
-        \\      კონფერენციაზე დასასწრებად, რომელიც გაიმართება 10-12 მარტს,
-        \\      ქ. მაინცში, გერმანიაში. კონფერენცია შეჰკრებს ერთად მსოფლიოს
-        \\      ექსპერტებს ისეთ დარგებში როგორიცაა ინტერნეტი და Unicode-ი,
-        \\      ინტერნაციონალიზაცია და ლოკალიზაცია, Unicode-ის გამოყენება
-        \\      ოპერაციულ სისტემებსა, და გამოყენებით პროგრამებში, შრიფტებში,
-        \\      ტექსტების დამუშავებასა და მრავალენოვან კომპიუტერულ სისტემებში.
-        \\
-        \\    Russian:
-        \\
-        \\      From a Unicode conference invitation:
-        \\
-        \\      Зарегистрируйтесь сейчас на Десятую Международную Конференцию по
-        \\      Unicode, которая состоится 10-12 марта 1997 года в Майнце в Германии.
-        \\      Конференция соберет широкий круг экспертов по  вопросам глобального
-        \\      Интернета и Unicode, локализации и интернационализации, воплощению и
-        \\      применению Unicode в различных операционных системах и программных
-        \\      приложениях, шрифтах, верстке и многоязычных компьютерных системах.
-        \\
-        \\    Thai (UCS Level 2):
-        \\
-        \\      Excerpt from a poetry on The Romance of The Three Kingdoms (a Chinese
-        \\      classic 'San Gua'):
-        \\
-        \\      [----------------------------|------------------------]
-        \\        ๏ แผ่นดินฮั่นเสื่อมโทรมแสนสังเวช  พระปกเกศกองบู๊กู้ขึ้นใหม่
-        \\      สิบสองกษัตริย์ก่อนหน้าแลถัดไป       สององค์ไซร้โง่เขลาเบาปัญญา
-        \\        ทรงนับถือขันทีเป็นที่พึ่ง           บ้านเมืองจึงวิปริตเป็นนักหนา
-        \\      โฮจิ๋นเรียกทัพทั่วหัวเมืองมา         หมายจะฆ่ามดชั่วตัวสำคัญ
-        \\        เหมือนขับไสไล่เสือจากเคหา      รับหมาป่าเข้ามาเลยอาสัญ
-        \\      ฝ่ายอ้องอุ้นยุแยกให้แตกกัน          ใช้สาวนั้นเป็นชนวนชื่นชวนใจ
-        \\        พลันลิฉุยกุยกีกลับก่อเหตุ          ช่างอาเพศจริงหนาฟ้าร้องไห้
-        \\      ต้องรบราฆ่าฟันจนบรรลัย           ฤๅหาใครค้ำชูกู้บรรลังก์ ฯ
-        \\
-        \\      (The above is a two-column text. If combining characters are handled
-        \\      correctly, the lines of the second column should be aligned with the
-        \\      | character above.)
-        \\
-        \\    Ethiopian:
-        \\
-        \\      Proverbs in the Amharic language:
-        \\
-        \\      ሰማይ አይታረስ ንጉሥ አይከሰስ።
-        \\      ብላ ካለኝ እንደአባቴ በቆመጠኝ።
-        \\      ጌጥ ያለቤቱ ቁምጥና ነው።
-        \\      ደሀ በሕልሙ ቅቤ ባይጠጣ ንጣት በገደለው።
-        \\      የአፍ ወለምታ በቅቤ አይታሽም።
-        \\      አይጥ በበላ ዳዋ ተመታ።
-        \\      ሲተረጉሙ ይደረግሙ።
-        \\      ቀስ በቀስ፥ ዕንቁላል በእግሩ ይሄዳል።
-        \\      ድር ቢያብር አንበሳ ያስር።
-        \\      ሰው እንደቤቱ እንጅ እንደ ጉረቤቱ አይተዳደርም።
-        \\      እግዜር የከፈተውን ጉሮሮ ሳይዘጋው አይድርም።
-        \\      የጎረቤት ሌባ፥ ቢያዩት ይስቅ ባያዩት ያጠልቅ።
-        \\      ሥራ ከመፍታት ልጄን ላፋታት።
-        \\      ዓባይ ማደሪያ የለው፥ ግንድ ይዞ ይዞራል።
-        \\      የእስላም አገሩ መካ የአሞራ አገሩ ዋርካ።
-        \\      ተንጋሎ ቢተፉ ተመልሶ ባፉ።
-        \\      ወዳጅህ ማር ቢሆን ጨርስህ አትላሰው።
-        \\      እግርህን በፍራሽህ ልክ ዘርጋ።
-        \\
-        \\    Runes:
-        \\
-        \\      ᚻᛖ ᚳᚹᚫᚦ ᚦᚫᛏ ᚻᛖ ᛒᚢᛞᛖ ᚩᚾ ᚦᚫᛗ ᛚᚪᚾᛞᛖ ᚾᚩᚱᚦᚹᛖᚪᚱᛞᚢᛗ ᚹᛁᚦ ᚦᚪ ᚹᛖᛥᚫ
-        \\
-        \\      (Old English, which transcribed into Latin reads 'He cwaeth that he
-        \\      bude thaem lande northweardum with tha Westsae.' and means 'He said
-        \\      that he lived in the northern land near the Western Sea.')
-        \\
-        \\    Braille:
-        \\
-        \\      ⡌⠁⠧⠑ ⠼⠁⠒  ⡍⠜⠇⠑⠹⠰⠎ ⡣⠕⠌
-        \\
-        \\      ⡍⠜⠇⠑⠹ ⠺⠁⠎ ⠙⠑⠁⠙⠒ ⠞⠕ ⠃⠑⠛⠔ ⠺⠊⠹⠲ ⡹⠻⠑ ⠊⠎ ⠝⠕ ⠙⠳⠃⠞
-        \\      ⠱⠁⠞⠑⠧⠻ ⠁⠃⠳⠞ ⠹⠁⠞⠲ ⡹⠑ ⠗⠑⠛⠊⠌⠻ ⠕⠋ ⠙⠊⠎ ⠃⠥⠗⠊⠁⠇ ⠺⠁⠎
-        \\      ⠎⠊⠛⠝⠫ ⠃⠹ ⠹⠑ ⠊⠇⠻⠛⠹⠍⠁⠝⠂ ⠹⠑ ⠊⠇⠻⠅⠂ ⠹⠑ ⠥⠝⠙⠻⠞⠁⠅⠻⠂
-        \\      ⠁⠝⠙ ⠹⠑ ⠡⠊⠑⠋ ⠍⠳⠗⠝⠻⠲ ⡎⠊⠗⠕⠕⠛⠑ ⠎⠊⠛⠝⠫ ⠊⠞⠲ ⡁⠝⠙
-        \\      ⡎⠊⠗⠕⠕⠛⠑⠰⠎ ⠝⠁⠍⠑ ⠺⠁⠎ ⠛⠕⠕⠙ ⠥⠏⠕⠝ ⠰⡡⠁⠝⠛⠑⠂ ⠋⠕⠗ ⠁⠝⠹⠹⠔⠛ ⠙⠑ 
-        \\      ⠡⠕⠎⠑ ⠞⠕ ⠏⠥⠞ ⠙⠊⠎ ⠙⠁⠝⠙ ⠞⠕⠲
-        \\
-        \\      ⡕⠇⠙ ⡍⠜⠇⠑⠹ ⠺⠁⠎ ⠁⠎ ⠙⠑⠁⠙ ⠁⠎ ⠁ ⠙⠕⠕⠗⠤⠝⠁⠊⠇⠲
-        \\
-        \\      ⡍⠔⠙⠖ ⡊ ⠙⠕⠝⠰⠞ ⠍⠑⠁⠝ ⠞⠕ ⠎⠁⠹ ⠹⠁⠞ ⡊ ⠅⠝⠪⠂ ⠕⠋ ⠍⠹
-        \\      ⠪⠝ ⠅⠝⠪⠇⠫⠛⠑⠂ ⠱⠁⠞ ⠹⠻⠑ ⠊⠎ ⠏⠜⠞⠊⠊⠥⠇⠜⠇⠹ ⠙⠑⠁⠙ ⠁⠃⠳⠞
-        \\      ⠁ ⠙⠕⠕⠗⠤⠝⠁⠊⠇⠲ ⡊ ⠍⠊⠣⠞ ⠙⠁⠧⠑ ⠃⠑⠲ ⠔⠊⠇⠔⠫⠂ ⠍⠹⠎⠑⠇⠋⠂ ⠞⠕
-        \\      ⠗⠑⠛⠜⠙ ⠁ ⠊⠕⠋⠋⠔⠤⠝⠁⠊⠇ ⠁⠎ ⠹⠑ ⠙⠑⠁⠙⠑⠌ ⠏⠊⠑⠊⠑ ⠕⠋ ⠊⠗⠕⠝⠍⠕⠝⠛⠻⠹ 
-        \\      ⠔ ⠹⠑ ⠞⠗⠁⠙⠑⠲ ⡃⠥⠞ ⠹⠑ ⠺⠊⠎⠙⠕⠍ ⠕⠋ ⠳⠗ ⠁⠝⠊⠑⠌⠕⠗⠎ 
-        \\      ⠊⠎ ⠔ ⠹⠑ ⠎⠊⠍⠊⠇⠑⠆ ⠁⠝⠙ ⠍⠹ ⠥⠝⠙⠁⠇⠇⠪⠫ ⠙⠁⠝⠙⠎
-        \\      ⠩⠁⠇⠇ ⠝⠕⠞ ⠙⠊⠌⠥⠗⠃ ⠊⠞⠂ ⠕⠗ ⠹⠑ ⡊⠳⠝⠞⠗⠹⠰⠎ ⠙⠕⠝⠑ ⠋⠕⠗⠲ ⡹⠳
-        \\      ⠺⠊⠇⠇ ⠹⠻⠑⠋⠕⠗⠑ ⠏⠻⠍⠊⠞ ⠍⠑ ⠞⠕ ⠗⠑⠏⠑⠁⠞⠂ ⠑⠍⠏⠙⠁⠞⠊⠊⠁⠇⠇⠹⠂ ⠹⠁⠞
-        \\      ⡍⠜⠇⠑⠹ ⠺⠁⠎ ⠁⠎ ⠙⠑⠁⠙ ⠁⠎ ⠁ ⠙⠕⠕⠗⠤⠝⠁⠊⠇⠲
-        \\
-        \\      (The first couple of paragraphs of "A Christmas Carol" by Dickens)
-        \\
-        \\    Compact font selection example text:
-        \\
-        \\      ABCDEFGHIJKLMNOPQRSTUVWXYZ /0123456789
-        \\      abcdefghijklmnopqrstuvwxyz £©µÀÆÖÞßéöÿ
-        \\      –—‘“”„†•…‰™œŠŸž€ ΑΒΓΔΩαβγδω АБВГДабвгд
-        \\      ∀∂∈ℝ∧∪≡∞ ↑↗↨↻⇣ ┐┼╔╘░►☺♀ ﬁ�⑀₂ἠḂӥẄɐː⍎אԱა
-        \\
-        \\    Greetings in various languages:
-        \\
-        \\      Hello world, Καλημέρα κόσμε, コンニチハ
-        \\
-        \\    Box drawing alignment tests:                                          █
-        \\                                                                          ▉
-        \\      ╔══╦══╗  ┌──┬──┐  ╭──┬──╮  ╭──┬──╮  ┏━━┳━━┓  ┎┒┏┑   ╷  ╻ ┏┯┓ ┌┰┐    ▊ ╱╲╱╲╳╳╳
-        \\      ║┌─╨─┐║  │╔═╧═╗│  │╒═╪═╕│  │╓─╁─╖│  ┃┌─╂─┐┃  ┗╃╄┙  ╶┼╴╺╋╸┠┼┨ ┝╋┥    ▋ ╲╱╲╱╳╳╳
-        \\      ║│╲ ╱│║  │║   ║│  ││ │ ││  │║ ┃ ║│  ┃│ ╿ │┃  ┍╅╆┓   ╵  ╹ ┗┷┛ └┸┘    ▌ ╱╲╱╲╳╳╳
-        \\      ╠╡ ╳ ╞╣  ├╢   ╟┤  ├┼─┼─┼┤  ├╫─╂─╫┤  ┣┿╾┼╼┿┫  ┕┛┖┚     ┌┄┄┐ ╎ ┏┅┅┓ ┋ ▍ ╲╱╲╱╳╳╳
-        \\      ║│╱ ╲│║  │║   ║│  ││ │ ││  │║ ┃ ║│  ┃│ ╽ │┃  ░░▒▒▓▓██ ┊  ┆ ╎ ╏  ┇ ┋ ▎
-        \\      ║└─╥─┘║  │╚═╤═╝│  │╘═╪═╛│  │╙─╀─╜│  ┃└─╂─┘┃  ░░▒▒▓▓██ ┊  ┆ ╎ ╏  ┇ ┋ ▏
-        \\      ╚══╩══╝  └──┴──┘  ╰──┴──╯  ╰──┴──╯  ┗━━┻━━┛           └╌╌┘ ╎ ┗╍╍┛ ┋  ▁▂▃▄▅▆▇█
-        \\
-    ;
-    
-    ts.reset("<root>" ++ utf8_content ++ "</root>");
-    try tests.expectElementOpen(&ts, null, "root");
-    try tests.expectText(&ts, utf8_content);
-    try tests.expectElementCloseTag(&ts, null, "root");
-}
-
-test "mixed content & tags" {
-    var ts = TokenStream.init(
-        \\<root>
-        \\    <child>
-        \\    header
-        \\    <node>inner<content/> </node>
-        \\    footer
-        \\    </child>
-        \\</root>
-    );
-    try tests.expectElementOpen(&ts, null, "root");
-    try tests.expectWhitespace(&ts, "\n    ");
-    try tests.expectElementOpen(&ts, null, "child");
-    try tests.expectText(&ts, "\n    header\n    ");
-    try tests.expectElementOpen(&ts, null, "node");
-    try tests.expectText(&ts, "inner");
-    try tests.expectElementOpen(&ts, null, "content");
-    try tests.expectElementCloseInline(&ts);
-    try tests.expectWhitespace(&ts, " ");
-    try tests.expectElementCloseTag(&ts, null, "node");
-    try tests.expectText(&ts, "\n    footer\n    ");
-    try tests.expectElementCloseTag(&ts, null, "child");
-    std.debug.assert(ts.getDepth() == 1);
-    try tests.expectWhitespace(&ts, "\n");
-    try tests.expectElementCloseTag(&ts, null, "root");
-    try tests.expectNull(&ts);
-}
-
-test "entity reference content" {
-    var ts = TokenStream.init(undefined);
-    
-    ts.reset("<root>&amp;</root>");
-    try tests.expectElementOpen(&ts, null, "root");
-    try tests.expectEntityReference(&ts, "amp");
-    try tests.expectElementCloseTag(&ts, null, "root");
-    try tests.expectNull(&ts);
-    
-    ts.reset("<root>\t&lt;foo&gt;bar</root>");
-    try tests.expectElementOpen(&ts, null, "root");
-    try tests.expectWhitespace(&ts, "\t");
-    try tests.expectEntityReference(&ts, "lt");
-    try tests.expectText(&ts, "foo");
-    try tests.expectEntityReference(&ts, "gt");
-    try tests.expectText(&ts, "bar");
-    try tests.expectElementCloseTag(&ts, null, "root");
-    try tests.expectNull(&ts);
-}
-
-test "prologue comment" {
+test "lone comment" {
     var ts = TokenStream.init(undefined);
     
     inline for (.{
         "",
         "- ",
-        "foobarbaz",
-        " foobarbaz ",
-        "&fifofum;",
-    }) |content| {
-        ts.reset("<!--" ++ content ++ "-->");
-        try tests.expectComment(&ts, content);
-        try tests.expectNull(&ts);
+        "foo bar baz",
+    }) |comment_content| {
+        ts.reset("<!--" ++ comment_content ++ "-->");
+        try tests.token_stream.expectComment(&ts, comment_content);
+        try tests.token_stream.expectNull(&ts);
+        
+        ts.reset("<!--" ++ comment_content ++ "-->\t");
+        try tests.token_stream.expectComment(&ts, comment_content);
+        try tests.token_stream.expectWhitespace(&ts, "\t");
+        try tests.token_stream.expectNull(&ts);
+        
+        ts.reset("\t<!--" ++ comment_content ++ "-->");
+        try tests.token_stream.expectWhitespace(&ts, "\t");
+        try tests.token_stream.expectComment(&ts, comment_content);
+        try tests.token_stream.expectNull(&ts);
     }
-}
-
-test "multiple consecutive comments" {
-    var ts = TokenStream.init(undefined);
-    
-    ts.reset("<!--1--><!--2-->");
-    try tests.expectComment(&ts, "1");
-    try tests.expectComment(&ts, "2");
-    try tests.expectNull(&ts);
-}
-
-test "comment in root" {
-    var ts = TokenStream.init(undefined);
-    
-    const comment_content = "comentari en el contenido";
-    
-    ts.reset("<root><!--" ++ comment_content ++ "--></root>");
-    try tests.expectElementOpen(&ts, null, "root");
-    try tests.expectComment(&ts, comment_content);
-    try tests.expectElementCloseTag(&ts, null, "root");
-    try tests.expectNull(&ts);
-    
-    ts.reset("<root>\n\r\t<!--" ++ comment_content ++ "-->\n\r</root>");
-    try tests.expectElementOpen(&ts, null, "root");
-    try tests.expectWhitespace(&ts, "\n\r\t");
-    try tests.expectComment(&ts, comment_content);
-    try tests.expectWhitespace(&ts, "\n\r");
-    try tests.expectElementCloseTag(&ts, null, "root");
-    try tests.expectNull(&ts);
-}
-
-test "comment in trailing section" {
-    var ts = TokenStream.init(undefined);
-    
-    const comment_content = "comentari en el contenido";
-    ts.reset("<root/><!--" ++ comment_content ++ "-->");
-    try tests.expectElementOpen(&ts, null, "root");
-    try tests.expectElementCloseInline(&ts);
-    try tests.expectComment(&ts, comment_content);
-    try tests.expectNull(&ts);
-    
-    ts.reset("<root></root>\t<!--" ++ comment_content ++ "-->\n");
-    try tests.expectElementOpen(&ts, null, "root");
-    try tests.expectElementCloseTag(&ts, null, "root");
-    try tests.expectWhitespace(&ts, "\t");
-    try tests.expectComment(&ts, comment_content);
-    try tests.expectWhitespace(&ts, "\n");
-    try tests.expectNull(&ts);
-    
 }

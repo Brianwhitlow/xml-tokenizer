@@ -722,7 +722,7 @@ const QuoteType = enum(u8) {
 };
 
 test {
-    std.debug.print("\n", .{});
+    //std.debug.print("\n", .{});
     
     const xml_text =
         \\ <!-- COMMENT TEXT --> <elem> <![CDATA[]]> </elem>
