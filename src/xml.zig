@@ -1,6 +1,12 @@
 const std = @import("std");
+const tokenization = @import("xml/tokenization.zig");
 
-pub fn isValidUtf8NameStartChar(codepoint: u21) bool {
+pub const invalid_name_start_char: u8 = blk: {
+    var result: u8 = 0;
+    while (isValidUtf8NameStartChar(result)) result += 1;
+    break :blk result;
+};
+pub inline fn isValidUtf8NameStartChar(codepoint: u21) bool {
     return switch (codepoint) {
         ':',
         'A'...'Z',
@@ -25,7 +31,12 @@ pub fn isValidUtf8NameStartChar(codepoint: u21) bool {
     };
 }
 
-pub fn isValidUtf8NameChar(codepoint: u21) bool {
+pub const invalid_name_char: u8 = blk: {
+    var result: u8 = 0;
+    while (isValidUtf8NameChar(result)) result += 1;
+    break :blk result;
+};
+pub inline fn isValidUtf8NameChar(codepoint: u21) bool {
     return @call(.{ .modifier = .always_inline }, isValidUtf8NameStartChar, .{codepoint}) or switch (codepoint) {
         '0'...'9',
         '-',
@@ -40,8 +51,11 @@ pub fn isValidUtf8NameChar(codepoint: u21) bool {
     };
 }
 
-
+test {
+    try std.testing.expect(!isValidUtf8NameStartChar(invalid_name_start_char));
+    try std.testing.expect(!isValidUtf8NameChar(invalid_name_char));
+}
 
 comptime {
-    
+    _ = tokenization;
 }
