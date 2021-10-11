@@ -26,23 +26,12 @@ pub const Token = struct {
         const Offset = struct { forwards: usize = 0, backwards: usize = 0, };
         const offset: Offset = switch (self.tag) {
             .pi_target => .{ .forwards = ("<?".len) },
+            .dtd_start => |info| .{ .forwards = info.name_beg },
             .elem_open_tag => .{ .forwards = ("<".len) },
             .elem_close_tag => .{ .forwards = ("</").len },
             .attr_val_segment_entity_ref => .{ .forwards = ("&".len), .backwards = (";".len) },
             .content_entity_ref => .{ .forwards = ("&".len), .backwards = (";".len) },
-            
-            .pi_tok_string,
-            .pi_tok_other,
-            .pi_end,
-            .whitespace,
-            .comment,
-            .elem_close_inline,
-            .attr_name,
-            .attr_val_empty,
-            .attr_val_segment_text,
-            .content_text,
-            .content_cdata,
-            => return null,
+            else => return null,
         };
         
         const sliced = self.slice(src);
@@ -57,21 +46,7 @@ pub const Token = struct {
             .pi_tok_string => .{ .forwards = 1, .backwards = 1 },
             .comment => .{ .forwards = ("<!--".len), .backwards = ("-->".len) },
             .content_cdata => .{ .forwards = ("<![CDATA[".len), .backwards = ("]]>".len) },
-            
-            .pi_target,
-            .pi_tok_other,
-            .pi_end,
-            .whitespace,
-            .elem_open_tag,
-            .elem_close_tag,
-            .elem_close_inline,
-            .attr_name,
-            .attr_val_empty,
-            .attr_val_segment_text,
-            .attr_val_segment_entity_ref,
-            .content_text,
-            .content_entity_ref,
-            => return null,
+            else => return null,
         };
         
         const sliced = self.slice(src);
@@ -85,6 +60,8 @@ pub const Token = struct {
         pi_tok_string,
         pi_tok_other,
         pi_end,
+        
+        dtd_start: struct { name_beg: usize },
         
         whitespace,
         comment,
@@ -138,7 +115,7 @@ fn tokenizeAfterLeftAngleBracket(
     comptime section: DocumentSection,
     start_index: usize,
     src: []const u8,
-) error{
+) error {
     ImmediateEof,
     InvalidSquareBracketInPrologue,
     InvalidSquareBracketInTrailingSection,
@@ -154,6 +131,10 @@ fn tokenizeAfterLeftAngleBracket(
     
     BangSquareBracketInvalid,
     UnclosedCharData,
+    
+    BangInvalidInRoot,
+    BangInvalidInTrailingSection,
+    DoctypeDeclarationInvalidNameStartChar,
     
     InvalidElementCloseNameStartChar,
     
@@ -251,7 +232,58 @@ fn tokenizeAfterLeftAngleBracket(
                     return error.UnclosedCommentInvalid;
                 },
                 
-                'D' => todo("Tokenize after <!D", null),
+                'D' => switch (section) {
+                    .root => return error.BangInvalidInRoot,
+                    .trailing => return error.BangInvalidInTrailingSection,
+                    .prologue => {
+                        const expected_chars = "OCTYPE";
+                        inline for (expected_chars) |expected_char| {
+                            std.debug.assert(1 == (unicode.utf8ByteSequenceLength(expected_char) catch unreachable));
+                            index += 1;
+                            if ((getByte(index, src) orelse (expected_char +% 1)) != expected_char) {
+                                return error.BangInvalid;
+                            }
+                        }
+                        std.debug.assert(getByte(index, src).? == expected_chars[expected_chars.len - 1]);
+                        index += 1;
+                        
+                        switch (getByte(index, src) orelse 0) {
+                            ' ',
+                            '\t',
+                            '\n',
+                            '\r',
+                            => {},
+                            else => return error.BangInvalid,
+                        }
+                        
+                        index += 1;
+                        while (getByte(index, src)) |char| : (index += 1) switch (char) {
+                            ' ',
+                            '\t',
+                            '\n',
+                            '\r',
+                            => continue,
+                            else => break,
+                        };
+                        
+                        const name_start_char = getUtf8(index, src) orelse xml.invalid_name_start_char;
+                        if (!xml.isValidUtf8NameStartChar(name_start_char)) {
+                            return error.DoctypeDeclarationInvalidNameStartChar;
+                        }
+                        
+                        const name_beg = index;
+                        index += unicode.utf8CodepointSequenceLength(name_start_char) catch unreachable;
+                        
+                        while (getUtf8(index, src)) |name_char|
+                        : (index += unicode.utf8CodepointSequenceLength(name_char) catch unreachable) {
+                            if (!xml.isValidUtf8NameChar(name_char)) break;
+                        }
+                        
+                        const tag = Token.Tag { .dtd_start = .{ .name_beg = name_beg } };
+                        const loc = Token.Loc { .beg = start_index, .end = index };
+                        return Token.init(tag, loc);
+                    },
+                },
                 
                 else => todo("Handle tokenization for after '<!{c}'.", .{getByte(index, src).?}),
             }
@@ -323,6 +355,18 @@ test "tokenizeAfterLeftAngleBracket" {
         try testing.expectEqualStrings(comment_data, tok.data(src).?);
     };
     
+    inline for (.{ (" "), ("\t"), ("\n\t") }) |whitespace|
+    inline for (.{ (""), ("["), (" [") }) |end|
+    {
+        const name = "root";
+        const slice = "<!DOCTYPE" ++ whitespace ++ name;
+        const src = slice ++ end;
+        const tok = try tokenizeAfterLeftAngleBracket(.prologue, 0, src);
+        try testing.expectEqual(Token.Tag.dtd_start, tok.tag);
+        try testing.expectEqualStrings(slice, tok.slice(src));
+        try testing.expectEqualStrings(name, tok.name(src).?);
+    };
+    
     // CDATA section
     inline for (.{"", " "}) |whitespace|
     inline for(.{ (""), ("]"), ("]]"), ("]>"), ("foo") }) |base_cdata_data|
@@ -367,28 +411,5 @@ test "tokenizeAfterLeftAngleBracket" {
         
         try testing.expectError(error.ElementOpenInTrailingSection, tokenizeAfterLeftAngleBracket(.trailing, 0, src));
     };
-    
-    inline for([_]struct { err: anyerror, section: DocumentSection, index: usize = 0, src: []const u8 } {
-        .{ .err = error.ImmediateEof,                          .section = .root,     .src = "<" },
-        .{ .err = error.InvalidSquareBracketInPrologue,        .section = .prologue, .src = "<![" },
-        .{ .err = error.InvalidSquareBracketInTrailingSection, .section = .trailing, .src = "<![" },
-        .{ .err = error.ElementOpenInTrailingSection,          .section = .trailing, .src = "<foo" },
-        .{ .err = error.ElementCloseInPrologue,                .section = .prologue, .src = "</foo" },
-        .{ .err = error.ElementCloseInTrailingSection,         .section = .trailing, .src = "</foo" },
-        .{ .err = error.QMarkInvalid,                          .section = .root,     .src = "<?" },
-        .{ .err = error.BangInvalid,                           .section = .root,     .src = "<!" },
-        .{ .err = error.UnclosedCommentDashDash,               .section = .root,     .src = "<!-- -- " },
-        .{ .err = error.UnclosedCommentInvalid,                .section = .root,     .src = "<!--    " },
-        .{ .err = error.BangSquareBracketInvalid,              .section = .root,     .src = "<![CDATA   " },
-        .{ .err = error.UnclosedCharData,                      .section = .root,     .src = "<![CDATA[  " },
-        .{ .err = error.InvalidElementOpenNameStartChar,       .section = .root,     .src = "<3CP0>" },
-        .{ .err = error.InvalidElementCloseNameStartChar,      .section = .root,     .src = "</3CP0>" },
-    }) |info|
-    {
-        try testing.expectError(
-            info.err,
-            tokenizeAfterLeftAngleBracket(info.section, info.index, info.src)
-        );
-    }
     
 }
