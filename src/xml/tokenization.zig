@@ -285,7 +285,7 @@ fn tokenizeAfterLeftAngleBracket(
                     },
                 },
                 
-                else => todo("Handle tokenization for after '<!{c}'.", .{getByte(index, src).?}),
+                else => return error.BangInvalid,
             }
         },
         
