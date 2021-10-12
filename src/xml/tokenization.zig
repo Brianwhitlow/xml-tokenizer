@@ -5,6 +5,30 @@ const unicode = std.unicode;
 
 const xml = @import("../xml.zig");
 
+inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
+    debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
+}
+
+
+
+fn getByte(index: usize, src: []const u8) ?u8 {
+    if (index >= src.len) return null;
+    return src[index];
+}
+
+fn getUtf8(index: usize, src: []const u8) ?u21 {
+    const cp_len = getUtf8Len(index, src) orelse return null;
+    const beg = index;
+    const end = beg + cp_len;
+    return if (end <= src.len) (unicode.utf8Decode(src[beg..end]) catch null) else null;
+}
+
+fn getUtf8Len(index: usize, src: []const u8) ?u3 {
+    const start_byte = getByte(index, src) orelse return null;
+    return unicode.utf8ByteSequenceLength(start_byte) catch null;
+}
+
+
 
 const DocumentSection = enum { prologue, root, trailing };
 
@@ -91,30 +115,9 @@ pub const Token = struct {
     };
 };
 
-inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
-    debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
-}
-
-fn getByte(index: usize, src: []const u8) ?u8 {
-    if (index >= src.len) return null;
-    return src[index];
-}
-
-fn getUtf8(index: usize, src: []const u8) ?u21 {
-    const cp_len = getUtf8Len(index, src) orelse return null;
-    const beg = index;
-    const end = beg + cp_len;
-    return if (end <= src.len) (unicode.utf8Decode(src[beg..end]) catch null) else null;
-}
-
-fn getUtf8Len(index: usize, src: []const u8) ?u3 {
-    const start_byte = getByte(index, src) orelse return null;
-    return unicode.utf8ByteSequenceLength(start_byte) catch null;
-}
 
 
-
-const TokenizeAfterLeftAngleBracketErrorUnion = union(enum) {
+const TokenizeAfterLeftAngleBracketResult = union(enum) {
     success: Token,
     err: struct {
         index: usize,
@@ -175,15 +178,15 @@ const TokenizeAfterLeftAngleBracketErrorUnion = union(enum) {
     }
 };
 
-fn tokenizeAfterLeftAngleBracket(
+pub fn tokenizeAfterLeftAngleBracket(
     comptime section: DocumentSection,
     start_index: usize,
     src: []const u8,
-) TokenizeAfterLeftAngleBracketErrorUnion {
+) TokenizeAfterLeftAngleBracketResult {
     debug.assert(src[start_index] == '<');
     var index: usize = start_index;
     
-    const ResultType = TokenizeAfterLeftAngleBracketErrorUnion;
+    const ResultType = TokenizeAfterLeftAngleBracketResult;
     const ErrorSet = ResultType.Error;
     
     index += 1;
@@ -399,6 +402,7 @@ test "tokenizeAfterLeftAngleBracket" {
         try testing.expectEqualStrings(comment_data, tok.data(src).?);
     };
     
+    // DTD start
     inline for (.{ (" "), ("\t"), ("\n\t") }) |whitespace|
     inline for (.{ (""), ("["), (" [") }) |end|
     {
@@ -456,4 +460,261 @@ test "tokenizeAfterLeftAngleBracket" {
         try testing.expectError(error.ElementOpenInTrailingSection, tokenizeAfterLeftAngleBracket(.trailing, 0, src).get());
     };
     
+}
+
+
+
+pub const TokenizeContentResult = union(enum) {
+    tok: Token,
+    err: struct {
+        index: usize,
+        code: Error,
+    },
+    
+    pub fn get(self: @This()) !Token {
+        return switch (self) {
+            .tok => |tok| tok,
+            .err => |err| err.code,
+        };
+    }
+    
+    pub fn getLastIndex(self: @This()) usize {
+        return switch (self) {
+            .tok => |tok| tok.loc.end,
+            .err => |err| err.index,
+        };
+    }
+    
+    pub const Error = error {
+        ImmediateEof,
+        EntityReferenceNameStartCharEof,
+        EntityReferenceNameStartCharInvalid,
+        UnterminatedEntityReferenceEof,
+        UnterminatedEntityReferenceInvalid,
+    };
+    
+    pub fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
+        return @unionInit(@This(), "tok", Token.init(tag, loc));
+    }
+    
+    pub fn initErr(index: usize, code: Error) @This() {
+        return @unionInit(@This(), "err", .{ .code = code, .index = index });
+    }
+};
+
+pub fn tokenizeContent(
+    start_index: usize,
+    src: []const u8,
+) TokenizeContentResult {
+    debug.assert(if (getByte(start_index, src)) |char| switch (char) {
+        '<',
+        '>',
+        => false,
+        else => true,
+    } else false);
+    var index: usize = start_index;
+    
+    const ResultType = TokenizeContentResult;
+    const ErrorSet = ResultType.Error;
+    
+    switch (getByte(index, src) orelse return ResultType.initErr(index, ErrorSet.ImmediateEof)) {
+        '&' => {
+            index += 1;
+            const name_start_char = getUtf8(index, src) orelse return ResultType.initErr(index, ErrorSet.EntityReferenceNameStartCharEof);
+            if (!xml.isValidUtf8NameStartChar(name_start_char)) {
+                return ResultType.initErr(index, ErrorSet.EntityReferenceNameStartCharInvalid);
+            }
+            
+            index += unicode.utf8CodepointSequenceLength(name_start_char) catch unreachable;
+            while (getUtf8(index, src)) |name_char|
+            : (index += unicode.utf8CodepointSequenceLength(name_char) catch unreachable) {
+                if (!xml.isValidUtf8NameChar(name_char)) break;
+            }
+            
+            if ((getByte(index, src) orelse return ResultType.initErr(index, ErrorSet.UnterminatedEntityReferenceEof)) != ';') {
+                return ResultType.initErr(index, ErrorSet.UnterminatedEntityReferenceInvalid);
+            }
+            
+            index += 1;
+            return ResultType.initTok(.content_entity_ref, .{ .beg = start_index, .end = index });
+        },
+        
+        else => {
+            const non_whitespace_chars: bool = blk: while (getUtf8(index, src)) |content_char|
+            : (index += unicode.utf8CodepointSequenceLength(content_char) catch unreachable) switch (content_char) {
+                ' ',
+                '\t',
+                '\n',
+                '\r',
+                => continue,
+                '<',
+                '&',
+                => break :blk false,
+                else => while (getUtf8(index, src)) |subsequent_content_char|
+                : (index += unicode.utf8CodepointSequenceLength(subsequent_content_char) catch unreachable) switch (subsequent_content_char) {
+                    '<',
+                    '&',
+                    => break :blk true,
+                    else => continue,
+                } else break :blk true,
+            } else false;
+            
+            const loc = Token.Loc { .beg = start_index, .end = index };
+            if (non_whitespace_chars) {
+                return ResultType.initTok(.content_text, loc);
+            } else {
+                return ResultType.initTok(.whitespace, loc);
+            }
+        },
+    }
+}
+
+test "tokenizeContent" {
+    
+}
+
+
+
+pub const TokenizeAfterElementOpenOrAttributeResult = union(enum) {
+    tok: Token,
+    after_left_angle_bracket: TokenizeAfterLeftAngleBracketResult,
+    tokenized_content: TokenizeContentResult,
+    err: struct {
+        index: usize,
+        code: Error,
+    },
+    
+    pub fn get(self: @This()) !Token {
+        return switch (self) {
+            .tok => |tok| tok,
+            .after_left_angle_bracket => |after_left_angle_bracket| after_left_angle_bracket.get(),
+            .tokenized_content => |tokenized_content| tokenized_content.get(),
+            .err => |err| err.code,
+        };
+    }
+    
+    pub fn getLastIndex(self: @This()) usize {
+        return switch (self) {
+            .tok => |tok| tok.loc.end,
+            .after_left_angle_bracket => |after_left_angle_bracket| after_left_angle_bracket.getLastIndex(),
+            .tokenized_content => |tokenized_content| tokenized_content.getLastIndex(),
+            .err => |err| err.index,
+        };
+    }
+    
+    pub const Error = error {
+        ImmediateEof,
+        ImmediateInvalidUtf8,
+        SlashEof,
+        SlashInvalid,
+        UnclosedElementOpenTagEof,
+    };
+    
+    pub fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
+        return @unionInit(@This(), "tok", Token.init(tag, loc));
+    }
+    
+    pub fn initAfterLeftAngleBracket(
+        comptime section: DocumentSection,
+        start_index: usize,
+        src: []const u8,
+    ) @This() {
+        return @unionInit(@This(), "after_left_angle_bracket", tokenizeAfterLeftAngleBracket(section, start_index, src));
+    }
+    
+    pub fn initContent(start_index: usize, src: []const u8) @This() {
+        return @unionInit(@This(), "tokenized_content", tokenizeContent(start_index, src));
+    }
+    
+    pub fn initErr(index: usize, code: Error) @This() {
+        return @unionInit(@This(), "err", .{ .code = code, .index = index });
+    }
+};
+
+pub fn tokenizeAfterElementOpenOrAttribute(
+    continuation_start_index: usize,
+    src: []const u8,
+) TokenizeAfterElementOpenOrAttributeResult {
+    debug.assert(if (getByte(continuation_start_index, src)) |char| switch (char) {
+        ' ',
+        '\t',
+        '\n',
+        '\r',
+        '/',
+        '>',
+        => true,
+        else => false,
+    } else false);
+    var index: usize = continuation_start_index;
+    
+    const ResultType = TokenizeAfterElementOpenOrAttributeResult;
+    const ErrorSet = ResultType.Error;
+    
+    while (getByte(index, src)) |char| : (index += 1) switch (char) {
+        ' ',
+        '\t',
+        '\n',
+        '\r',
+        => continue,
+        else => break,
+    } else return ResultType.initErr(index, ErrorSet.ImmediateEof);
+    
+    const start_index = index;
+    switch (getUtf8(index, src) orelse return ResultType.initErr(index, ErrorSet.ImmediateInvalidUtf8)) {
+        '/' => {
+            index += 1;
+            if ((getByte(index, src) orelse return ResultType.initErr(index, ErrorSet.SlashEof)) != '>') {
+                return ResultType.initErr(index, ErrorSet.SlashInvalid);
+            }
+            
+            index += 1;
+            return ResultType.initTok(.elem_close_inline, .{ .beg = start_index, .end = index });
+        },
+        
+        '>' => {
+            index += 1;
+            switch (getUtf8(index, src) orelse return ResultType.initErr(index, ErrorSet.UnclosedElementOpenTagEof)) {
+                '<' => return ResultType.initAfterLeftAngleBracket(.root, index, src),
+                else => return ResultType.initContent(index, src),
+            }
+        },
+        
+        else => todo("Tokenize attributes", null),
+    }
+}
+
+test "tokenizeAfterElementOpenOrAttribute" {
+    inline for (.{ (""), (" "), ("\n\t"), }) |whitespace|
+    {
+        const slice = "/>";
+        const src = whitespace ++ slice;
+        const tok = try tokenizeAfterElementOpenOrAttribute(0, src).get();
+        try testing.expectEqual(Token.Tag.elem_close_inline, tok.tag);
+        try testing.expectEqualStrings(slice, tok.slice(src));
+    }
+    
+    inline for (.{ (""), (" "), ("\n\t"), }) |whitespace0|
+    inline for (.{ (""), (" "), ("\n\t"), }) |whitespace1|
+    inline for (.{ (""), (">"), ("/>"), }) |end|
+    {
+        {
+            const name = "foo";
+            const slice = "<" ++ name;
+            const src = whitespace0 ++ ">" ++ slice ++ whitespace1 ++ end;
+            const tok = try tokenizeAfterElementOpenOrAttribute(0, src).get();
+            try testing.expectEqual(Token.Tag.elem_open_tag, tok.tag);
+            try testing.expectEqualStrings(slice, tok.slice(src));
+            try testing.expectEqualStrings(name, tok.name(src).?);
+        }
+        {
+            const name = "foo";
+            const slice = "</" ++ name;
+            const src = whitespace0 ++ ">" ++ slice ++ whitespace1 ++ end;
+            const tok = try tokenizeAfterElementOpenOrAttribute(0, src).get();
+            try testing.expectEqual(Token.Tag.elem_close_tag, tok.tag);
+            try testing.expectEqualStrings(slice, tok.slice(src));
+            try testing.expectEqualStrings(slice, tok.slice(src));
+            try testing.expectEqualStrings(name, tok.name(src).?);
+        }
+    };
 }
