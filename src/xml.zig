@@ -65,6 +65,8 @@ pub const invalid_name_char: u8 = blk: {
 
 
 test {
+    try std.testing.expect(isValidUtf8NameStartChar(valid_name_start_char));
+    try std.testing.expect(isValidUtf8NameChar(valid_name_char));
     try std.testing.expect(!isValidUtf8NameStartChar(invalid_name_start_char));
     try std.testing.expect(!isValidUtf8NameChar(invalid_name_char));
 }
