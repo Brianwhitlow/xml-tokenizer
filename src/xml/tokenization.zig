@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = std.debug;
 const testing = std.testing;
 const unicode = std.unicode;
 
@@ -91,7 +92,7 @@ pub const Token = struct {
 };
 
 inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
-    std.debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
+    debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
 }
 
 fn getByte(index: usize, src: []const u8) ?u8 {
@@ -111,36 +112,42 @@ fn getUtf8Len(index: usize, src: []const u8) ?u3 {
     return unicode.utf8ByteSequenceLength(start_byte) catch null;
 }
 
+
+
 fn tokenizeAfterLeftAngleBracket(
     comptime section: DocumentSection,
     start_index: usize,
     src: []const u8,
 ) error {
     ImmediateEof,
-    InvalidSquareBracketInPrologue,
-    InvalidSquareBracketInTrailingSection,
-    ElementOpenInTrailingSection,
-    ElementCloseInPrologue,
-    ElementCloseInTrailingSection,
-    
-    QMarkInvalid,
-    
-    BangInvalid,
-    UnclosedCommentDashDash,
-    UnclosedCommentInvalid,
-    
+    QuestionMarkInvalidNameStartChar,
+    BangEof,
+    BangSquareBracketInPrologue,
+    BangSquareBracketInTrailingSection,
+    BangSquareBracketEof,
     BangSquareBracketInvalid,
     UnclosedCharData,
-    
+    BangDashEof,
+    BangDashInvalid,
+    DashDashEofInComment,
+    DashDashInvalidInComment,
+    DashDashInComment,
+    UnclosedComment,
     BangInvalidInRoot,
     BangInvalidInTrailingSection,
-    DoctypeDeclarationInvalidNameStartChar,
-    
+    BangInvalidInPrologue,
+    DoctypeStartEof,
+    DoctypeStartInvalid,
+    DoctypeInvalidRootNameStartChar,
+    BangInvalid,
+    ElementCloseInPrologue,
+    ElementCloseInTrailingSection,
+    SlashEof,
     InvalidElementCloseNameStartChar,
-    
+    ElementOpenInTrailingSection,
     InvalidElementOpenNameStartChar,
 }!Token {
-    std.debug.assert(src[start_index] == '<');
+    debug.assert(src[start_index] == '<');
     var index: usize = start_index;
     
     index += 1;
@@ -148,7 +155,7 @@ fn tokenizeAfterLeftAngleBracket(
         '?' => {
             index += 1;
             if (!xml.isValidUtf8NameStartChar(getUtf8(index, src) orelse xml.invalid_name_start_char)) {
-                return error.QMarkInvalid;
+                return error.QuestionMarkInvalidNameStartChar;
             }
             
             index += getUtf8Len(index, src).?;
@@ -162,20 +169,20 @@ fn tokenizeAfterLeftAngleBracket(
         
         '!' => {
             index += 1;
-            switch (getByte(index, src) orelse return error.BangInvalid) {
+            switch (getByte(index, src) orelse return error.BangEof) {
                 '[' => switch (section) {
-                    .prologue => return error.InvalidSquareBracketInPrologue,
-                    .trailing => return error.InvalidSquareBracketInTrailingSection,
+                    .prologue => return error.BangSquareBracketInPrologue,
+                    .trailing => return error.BangSquareBracketInTrailingSection,
                     .root => {
                         const expected_chars = "CDATA[";
                         inline for (expected_chars) |expected_char| {
-                            std.debug.assert(1 == (unicode.utf8ByteSequenceLength(expected_char) catch unreachable));
+                            debug.assert(1 == (unicode.utf8ByteSequenceLength(expected_char) catch unreachable));
                             index += 1;
-                            if ((getByte(index, src) orelse (expected_char +% 1)) != expected_char) {
+                            if ((getByte(index, src) orelse return error.BangSquareBracketEof) != expected_char) {
                                 return error.BangSquareBracketInvalid;
                             }
                         }
-                        std.debug.assert(getByte(index, src).? == expected_chars[expected_chars.len - 1]);
+                        debug.assert(getByte(index, src).? == expected_chars[expected_chars.len - 1]);
                         index += 1;
                         
                         while (getUtf8(index, src)) |char|
@@ -206,7 +213,7 @@ fn tokenizeAfterLeftAngleBracket(
                 
                 '-' => {
                     index += 1;
-                    if ((getByte(index, src) orelse 0) != '-') return error.BangInvalid;
+                    if ((getByte(index, src) orelse return error.BangDashEof) != '-') return error.BangDashInvalid;
                     
                     index += 1;
                     while (getUtf8(index, src)) |char|
@@ -221,15 +228,15 @@ fn tokenizeAfterLeftAngleBracket(
                         }
                         index += 1;
                         
-                        if ((getByte(index, src) orelse 0) != '>') {
-                            return error.UnclosedCommentDashDash;
+                        if ((getByte(index, src) orelse return error.DashDashEofInComment) != '>') {
+                            return error.DashDashInvalidInComment;
                         }
                         index += 1;
                         
                         return Token.init(.comment, .{ .beg = start_index, .end = index });
                     }
                     
-                    return error.UnclosedCommentInvalid;
+                    return error.UnclosedComment;
                 },
                 
                 'D' => switch (section) {
@@ -238,22 +245,22 @@ fn tokenizeAfterLeftAngleBracket(
                     .prologue => {
                         const expected_chars = "OCTYPE";
                         inline for (expected_chars) |expected_char| {
-                            std.debug.assert(1 == (unicode.utf8ByteSequenceLength(expected_char) catch unreachable));
+                            debug.assert(1 == (unicode.utf8ByteSequenceLength(expected_char) catch unreachable));
                             index += 1;
                             if ((getByte(index, src) orelse (expected_char +% 1)) != expected_char) {
-                                return error.BangInvalid;
+                                return error.BangInvalidInPrologue;
                             }
                         }
-                        std.debug.assert(getByte(index, src).? == expected_chars[expected_chars.len - 1]);
+                        debug.assert(getByte(index, src).? == expected_chars[expected_chars.len - 1]);
                         index += 1;
                         
-                        switch (getByte(index, src) orelse 0) {
+                        switch (getByte(index, src) orelse return error.DoctypeStartEof) {
                             ' ',
                             '\t',
                             '\n',
                             '\r',
                             => {},
-                            else => return error.BangInvalid,
+                            else => return error.DoctypeStartInvalid,
                         }
                         
                         index += 1;
@@ -268,7 +275,7 @@ fn tokenizeAfterLeftAngleBracket(
                         
                         const name_start_char = getUtf8(index, src) orelse xml.invalid_name_start_char;
                         if (!xml.isValidUtf8NameStartChar(name_start_char)) {
-                            return error.DoctypeDeclarationInvalidNameStartChar;
+                            return error.DoctypeInvalidRootNameStartChar;
                         }
                         
                         const name_beg = index;
@@ -294,7 +301,7 @@ fn tokenizeAfterLeftAngleBracket(
             .trailing => return error.ElementCloseInTrailingSection,
             .root => {
                 index += 1;
-                if (!xml.isValidUtf8NameStartChar(getUtf8(index, src) orelse xml.invalid_name_start_char)) {
+                if (!xml.isValidUtf8NameStartChar(getUtf8(index, src) orelse return error.SlashEof)) {
                     return error.InvalidElementCloseNameStartChar;
                 }
                 index += getUtf8Len(index, src).?;
@@ -328,8 +335,6 @@ fn tokenizeAfterLeftAngleBracket(
         },
     }
 }
-
-
 
 test "tokenizeAfterLeftAngleBracket" {
     // Processing Instructions Target
@@ -379,8 +384,8 @@ test "tokenizeAfterLeftAngleBracket" {
         try testing.expectEqualStrings(src, tok.slice(src));
         try testing.expectEqualStrings(cdata_data, tok.data(src).?);
         
-        try testing.expectError(error.InvalidSquareBracketInPrologue, tokenizeAfterLeftAngleBracket(.prologue, 0, src));
-        try testing.expectError(error.InvalidSquareBracketInTrailingSection, tokenizeAfterLeftAngleBracket(.trailing, 0, src));
+        try testing.expectError(error.BangSquareBracketInPrologue, tokenizeAfterLeftAngleBracket(.prologue, 0, src));
+        try testing.expectError(error.BangSquareBracketInTrailingSection, tokenizeAfterLeftAngleBracket(.trailing, 0, src));
     };
     
     // Element close tag
