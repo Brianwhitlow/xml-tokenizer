@@ -131,17 +131,17 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
         var index: usize = start_index;
 
         index += 1;
-        const start_byte = getByte(index, src) orelse return Self.initErr(index, Error.ImmediateEof);
+        const start_byte = getByte(src, index) orelse return Self.initErr(index, Error.ImmediateEof);
         switch (start_byte) {
             '?' => {
                 index += 1;
-                const name_start_char = getUtf8(index, src) orelse return Self.initErr(index, Error.QuestionMarkEof);
+                const name_start_char = getByte(src, index) orelse return Self.initErr(index, Error.QuestionMarkEof);
                 if (!xml.isValidUtf8NameStartChar(name_start_char)) {
                     return Self.initErr(index, Error.QuestionMarkInvalidNameStartChar);
                 }
 
                 index += lenOfUtf8OrNull(name_start_char).?;
-                while (getUtf8(index, src)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
+                while (getByte(src, index)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
                     if (!xml.isValidUtf8NameChar(name_char)) break;
                 }
 
@@ -150,7 +150,7 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
 
             '!' => {
                 index += 1;
-                switch (getByte(index, src) orelse return Self.initErr(index, Error.BangEof)) {
+                switch (getByte(src, index) orelse return Self.initErr(index, Error.BangEof)) {
                     '[' => switch (section) {
                         .prologue => return Self.initErr(index, Error.BangSquareBracketInPrologue),
                         .trailing => return Self.initErr(index, Error.BangSquareBracketInTrailingSection),
@@ -159,26 +159,26 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
                             inline for (expected_chars) |expected_char| {
                                 debug.assert(1 == (unicode.utf8ByteSequenceLength(expected_char) catch unreachable));
                                 index += 1;
-                                if ((getByte(index, src) orelse return Self.initErr(index, Error.BangSquareBracketEof)) != expected_char) {
+                                if ((getByte(src, index) orelse return Self.initErr(index, Error.BangSquareBracketEof)) != expected_char) {
                                     return Self.initErr(index, Error.BangSquareBracketInvalid);
                                 }
                             }
-                            debug.assert(getByte(index, src).? == expected_chars[expected_chars.len - 1]);
+                            debug.assert(getByte(src, index).? == expected_chars[expected_chars.len - 1]);
                             index += 1;
 
-                            while (getUtf8(index, src)) |char| : (index += unicode.utf8CodepointSequenceLength(char) catch unreachable) {
+                            while (getByte(src, index)) |char| : (index += unicode.utf8CodepointSequenceLength(char) catch unreachable) {
                                 if (char != ']') {
                                     continue;
                                 }
                                 index += 1;
 
-                                if ((getByte(index, src) orelse 0) != ']') {
+                                if ((getByte(src, index) orelse 0) != ']') {
                                     index -= 1;
                                     continue;
                                 }
                                 index += 1;
 
-                                if ((getByte(index, src) orelse 0) != '>') {
+                                if ((getByte(src, index) orelse 0) != '>') {
                                     index -= 2;
                                     continue;
                                 }
@@ -193,23 +193,23 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
 
                     '-' => {
                         index += 1;
-                        if ((getByte(index, src) orelse return Self.initErr(index, Error.BangDashEof)) != '-') {
+                        if ((getByte(src, index) orelse return Self.initErr(index, Error.BangDashEof)) != '-') {
                             return Self.initErr(index, Error.BangDashInvalid);
                         }
 
                         index += 1;
-                        while (getUtf8(index, src)) |char| : (index += unicode.utf8CodepointSequenceLength(char) catch unreachable) {
+                        while (getByte(src, index)) |char| : (index += unicode.utf8CodepointSequenceLength(char) catch unreachable) {
                             if (char != '-') {
                                 continue;
                             }
                             index += 1;
 
-                            if ((getByte(index, src) orelse 0) != '-') {
+                            if ((getByte(src, index) orelse 0) != '-') {
                                 continue;
                             }
                             index += 1;
 
-                            if ((getByte(index, src) orelse return Self.initErr(index, Error.DashDashEofInComment)) != '>') {
+                            if ((getByte(src, index) orelse return Self.initErr(index, Error.DashDashEofInComment)) != '>') {
                                 return Self.initErr(index, Error.DashDashInvalidInComment);
                             }
                             index += 1;
@@ -228,14 +228,14 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
                             inline for (expected_chars) |expected_char| {
                                 debug.assert(1 == (unicode.utf8ByteSequenceLength(expected_char) catch unreachable));
                                 index += 1;
-                                if ((getByte(index, src) orelse (expected_char +% 1)) != expected_char) {
+                                if ((getByte(src, index) orelse (expected_char +% 1)) != expected_char) {
                                     return Self.initErr(index, Error.BangInvalidInPrologue);
                                 }
                             }
-                            debug.assert(getByte(index, src).? == expected_chars[expected_chars.len - 1]);
+                            debug.assert(getByte(src, index).? == expected_chars[expected_chars.len - 1]);
                             index += 1;
 
-                            switch (getByte(index, src) orelse return Self.initErr(index, Error.DoctypeStartEof)) {
+                            switch (getByte(src, index) orelse return Self.initErr(index, Error.DoctypeStartEof)) {
                                 ' ',
                                 '\t',
                                 '\n',
@@ -245,7 +245,7 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
                             }
 
                             index += 1;
-                            while (getByte(index, src)) |char| : (index += 1) switch (char) {
+                            while (getByte(src, index)) |char| : (index += 1) switch (char) {
                                 ' ',
                                 '\t',
                                 '\n',
@@ -254,7 +254,7 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
                                 else => break,
                             };
 
-                            const name_start_char = getUtf8(index, src) orelse xml.invalid_name_start_char;
+                            const name_start_char = getByte(src, index) orelse xml.invalid_name_start_char;
                             if (!xml.isValidUtf8NameStartChar(name_start_char)) {
                                 return Self.initErr(index, Error.DoctypeInvalidRootNameStartChar);
                             }
@@ -262,7 +262,7 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
                             const name_beg = index;
                             index += unicode.utf8CodepointSequenceLength(name_start_char) catch unreachable;
 
-                            while (getUtf8(index, src)) |name_char| : (index += unicode.utf8CodepointSequenceLength(name_char) catch unreachable) {
+                            while (getByte(src, index)) |name_char| : (index += unicode.utf8CodepointSequenceLength(name_char) catch unreachable) {
                                 if (!xml.isValidUtf8NameChar(name_char)) break;
                             }
 
@@ -281,13 +281,13 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
                 .trailing => return Self.initErr(index, Error.ElementCloseInTrailingSection),
                 .root => {
                     index += 1;
-                    const name_start_char = getUtf8(index, src) orelse return Self.initErr(index, Error.SlashEof);
+                    const name_start_char = getByte(src, index) orelse return Self.initErr(index, Error.SlashEof);
                     if (!xml.isValidUtf8NameStartChar(name_start_char)) {
                         return Self.initErr(index, Error.InvalidElementCloseNameStartChar);
                     }
                     index += lenOfUtf8OrNull(name_start_char).?;
 
-                    while (getUtf8(index, src)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
+                    while (getByte(src, index)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
                         if (!xml.isValidUtf8NameChar(name_char)) break;
                     }
 
@@ -300,13 +300,13 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
                 .prologue,
                 .root,
                 => {
-                    const name_start_char = getUtf8(index, src) orelse return Self.initErr(index, Error.InvalidUtf8);
+                    const name_start_char = getByte(src, index) orelse return Self.initErr(index, Error.InvalidUtf8);
                     if (!xml.isValidUtf8NameStartChar(name_start_char)) {
                         return Self.initErr(index, Error.InvalidElementOpenNameStartChar);
                     }
                     index += lenOfUtf8OrNull(name_start_char).?;
 
-                    while (getUtf8(index, src)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
+                    while (getByte(src, index)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
                         if (!xml.isValidUtf8NameChar(name_char)) break;
                     }
 
@@ -330,7 +330,7 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
         };
     }
 
-    pub const Error = error{
+    pub const Error = error {
         ImmediateEof,
         QuestionMarkInvalidNameStartChar,
         QuestionMarkEof,
@@ -467,26 +467,26 @@ pub const ContentOrWhitespace = union(TokenOrError) {
         start_index: usize,
         src: []const u8,
     ) Self {
-        debug.assert(if (getByte(start_index, src)) |char| switch (char) {
+        debug.assert(if (getByte(src, start_index)) |char| switch (char) {
             '<' => false,
             else => true,
         } else false);
         var index: usize = start_index;
 
-        switch (getByte(index, src) orelse return Self.initErr(index, Error.ImmediateEof)) {
+        switch (getByte(src, index) orelse return Self.initErr(index, Error.ImmediateEof)) {
             '&' => {
                 index += 1;
-                const name_start_char = getUtf8(index, src) orelse return Self.initErr(index, Error.EntityReferenceNameStartCharEof);
+                const name_start_char = getByte(src, index) orelse return Self.initErr(index, Error.EntityReferenceNameStartCharEof);
                 if (!xml.isValidUtf8NameStartChar(name_start_char)) {
                     return Self.initErr(index, Error.EntityReferenceNameStartCharInvalid);
                 }
 
                 index += unicode.utf8CodepointSequenceLength(name_start_char) catch unreachable;
-                while (getUtf8(index, src)) |name_char| : (index += unicode.utf8CodepointSequenceLength(name_char) catch unreachable) {
+                while (getByte(src, index)) |name_char| : (index += unicode.utf8CodepointSequenceLength(name_char) catch unreachable) {
                     if (!xml.isValidUtf8NameChar(name_char)) break;
                 }
 
-                if ((getByte(index, src) orelse return Self.initErr(index, Error.UnterminatedEntityReferenceEof)) != ';') {
+                if ((getByte(src, index) orelse return Self.initErr(index, Error.UnterminatedEntityReferenceEof)) != ';') {
                     return Self.initErr(index, Error.UnterminatedEntityReferenceInvalid);
                 }
 
@@ -496,7 +496,7 @@ pub const ContentOrWhitespace = union(TokenOrError) {
 
             else => {
                 const non_whitespace_chars: bool = blk: {
-                    while (getUtf8(index, src)) |content_char| : (index += lenOfUtf8OrNull(content_char).?) {
+                    while (getByte(src, index)) |content_char| : (index += lenOfUtf8OrNull(content_char).?) {
                         switch (content_char) {
                             ' ',
                             '\t',
@@ -507,7 +507,7 @@ pub const ContentOrWhitespace = union(TokenOrError) {
                             '&',
                             => break :blk false,
                             else => {
-                                while (getUtf8(index, src)) |subsequent_content_char| : (index += lenOfUtf8OrNull(subsequent_content_char).?) {
+                                while (getByte(src, index)) |subsequent_content_char| : (index += lenOfUtf8OrNull(subsequent_content_char).?) {
                                     switch (subsequent_content_char) {
                                         '<',
                                         '&',
@@ -544,7 +544,7 @@ pub const ContentOrWhitespace = union(TokenOrError) {
         };
     }
 
-    pub const Error = error{
+    pub const Error = error {
         ImmediateEof,
         EntityReferenceNameStartCharEof,
         EntityReferenceNameStartCharInvalid,
@@ -612,7 +612,7 @@ pub const AttributeNameOrElementCloseInline = union(TokenOrError) {
     ) Self {
         var index: usize = continuation_start_index;
 
-        while (getByte(index, src)) |char| : (index += 1) switch (char) {
+        while (getByte(src, index)) |char| : (index += 1) switch (char) {
             ' ',
             '\t',
             '\n',
@@ -622,10 +622,10 @@ pub const AttributeNameOrElementCloseInline = union(TokenOrError) {
         } else return Self.initErr(index, Error.ImmediateEof);
 
         const start_index = index;
-        switch (getUtf8(index, src) orelse return Self.initErr(index, Error.ImmediateInvalidUtf8)) {
+        switch (getByte(src, index) orelse return Self.initErr(index, Error.ImmediateInvalidUtf8)) {
             '/' => {
                 index += 1;
-                if ((getByte(index, src) orelse return Self.initErr(index, Error.SlashEof)) != '>') {
+                if ((getByte(src, index) orelse return Self.initErr(index, Error.SlashEof)) != '>') {
                     return Self.initErr(index, Error.SlashInvalid);
                 }
 
@@ -635,20 +635,20 @@ pub const AttributeNameOrElementCloseInline = union(TokenOrError) {
 
             '>' => {
                 index += 1;
-                switch (getUtf8(index, src) orelse return Self.initErr(index, Error.UnclosedElementOpenTagEof)) {
+                switch (getByte(src, index) orelse return Self.initErr(index, Error.UnclosedElementOpenTagEof)) {
                     '<' => return Self.initErr(index, error.MustTokenizeAfterLeftAngleBracket),
                     else => return Self.initErr(index, error.MustTokenizeContent),
                 }
             },
 
             else => {
-                const name_start_char = getUtf8(index, src).?;
+                const name_start_char = getByte(src, index).?;
                 if (!xml.isValidUtf8NameStartChar(name_start_char)) {
                     return Self.initErr(index, error.InvalidAttributeNameStartChar);
                 }
                 index += unicode.utf8CodepointSequenceLength(name_start_char) catch unreachable;
 
-                while (getUtf8(index, src)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
+                while (getByte(src, index)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
                     if (!xml.isValidUtf8NameChar(name_char)) break;
                 }
 
@@ -671,7 +671,7 @@ pub const AttributeNameOrElementCloseInline = union(TokenOrError) {
         };
     }
 
-    pub const Error = error{
+    pub const Error = error {
         ImmediateEof,
         ImmediateInvalidUtf8,
         SlashEof,
@@ -716,3 +716,53 @@ test "AttributeNameOrElementCloseInline" {
         }
     }
 }
+
+pub const AttributeValueSegment = union(TokenOrError) {
+    const Self = @This();
+    tok: Token,
+    err: struct {
+        index: usize,
+        code: Error,
+    },
+    
+    pub fn tokenize(
+        start_index: usize,
+        src: []const u8,
+    ) Self {
+        debug.assert(if (getByte(src, start_index)) switch (src[start_index]) {
+            ' ',
+            '\t',
+            '\n',
+            '\r',
+            '=',
+            => true,
+            else => false,
+        });
+    }
+    
+    pub fn get(self: @This()) Error!Token {
+        return switch (self) {
+            .tok => |tok| tok,
+            .err => |err| err.code,
+        };
+    }
+
+    pub fn getLastIndex(self: @This()) usize {
+        return switch (self) {
+            .tok => |tok| tok.loc.end,
+            .err => |err| err.index,
+        };
+    }
+    
+    pub const Error = error {
+        
+    };
+    
+    fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
+        return @unionInit(@This(), "tok", Token.init(tag, loc));
+    }
+
+    fn initErr(index: usize, code: Error) @This() {
+        return @unionInit(@This(), "err", .{ .code = code, .index = index });
+    }
+};
