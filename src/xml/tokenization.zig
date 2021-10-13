@@ -553,11 +553,11 @@ pub const ContentOrWhitespace = union(TokenOrError) {
         ContentFollowedByEof,
     };
 
-    pub fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
+    fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
         return @unionInit(@This(), "tok", Token.init(tag, loc));
     }
 
-    pub fn initErr(index: usize, code: Error) @This() {
+    fn initErr(index: usize, code: Error) @This() {
         return @unionInit(@This(), "err", .{ .code = code, .index = index });
     }
 };
@@ -686,11 +686,11 @@ pub const AttributeNameOrElementCloseInline = union(TokenOrError) {
         MustTokenizeContent,
     };
 
-    pub fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
+    fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
         return @unionInit(@This(), "tok", Token.init(tag, loc));
     }
 
-    pub fn initErr(index: usize, code: Error) @This() {
+    fn initErr(index: usize, code: Error) @This() {
         return @unionInit(@This(), "err", .{ .code = code, .index = index });
     }
 };
