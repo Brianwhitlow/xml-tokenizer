@@ -257,12 +257,12 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
         InvalidElementOpenNameStartChar,
     };
 
-    fn initErr(index: usize, code: Error) @This() {
-        return @unionInit(@This(), "err", .{ .code = code, .index = index });
-    }
-
     fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
         return @unionInit(@This(), "tok", Token.init(tag, loc));
+    }
+
+    fn initErr(index: usize, code: Error) @This() {
+        return @unionInit(@This(), "err", .{ .code = code, .index = index });
     }
 };
 
