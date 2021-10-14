@@ -1,12 +1,14 @@
 const std = @import("std");
 const utility = @import("xml/utility.zig");
-const tokenization = @import("xml/tokenization.zig");
+const tokenize_strategies = @import("xml/tokenize_strategies.zig");
 
 comptime {
     _ = utility;
-    _ = tokenization;
+    _ = tokenize_strategies;
+    _ = Token;
 }
 
+pub const Token = @import("xml/Token.zig");
 pub const DocumentSection = enum {
     prologue,
     root,

@@ -5,111 +5,40 @@ const unicode = std.unicode;
 
 const utility = @import("utility.zig");
 const xml = @import("../xml.zig");
+const DocumentSection = xml.DocumentSection;
+const Token = xml.Token;
+
+comptime {
+    // At the time of use, this is how DocumentSection is expected to be in this file.
+    debug.assert(std.meta.fields(DocumentSection).len == 3);
+    debug.assert(std.meta.trait.hasFields(DocumentSection, .{ "prologue", "root", "trailing" }));
+}
 
 inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
     debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
 }
 
-pub const Token = struct {
-    tag: Tag,
-    loc: Loc,
-
-    pub fn init(tag: Tag, loc: Loc) Token {
-        return Token{
-            .tag = tag,
-            .loc = loc,
+const TokenOrError = enum {
+    tok,
+    err,
+    
+    fn ErrorAndIndex(comptime ErrorSet: type) type {
+        return struct {
+            index: usize,
+            code: ErrorSet,
         };
     }
-
-    pub fn slice(self: Token, src: []const u8) []const u8 {
-        return self.loc.slice(src);
-    }
-
-    pub fn name(self: Token, src: []const u8) ?[]const u8 {
-        const Offset = struct {
-            forwards: usize = 0,
-            backwards: usize = 0,
-        };
-        const offset: Offset = switch (self.tag) {
-            .pi_target => .{ .forwards = ("<?".len) },
-            .dtd_start => |info| .{ .forwards = info.name_beg },
-            .elem_open_tag => .{ .forwards = ("<".len) },
-            .elem_close_tag => .{ .forwards = ("</").len },
-            .attr_val_segment_entity_ref => .{ .forwards = ("&".len), .backwards = (";".len) },
-            .content_entity_ref => .{ .forwards = ("&".len), .backwards = (";".len) },
-            else => return null,
-        };
-
-        const sliced = self.slice(src);
-        const beg = offset.forwards;
-        const end = sliced.len - offset.backwards;
-        return sliced[beg..end];
-    }
-
-    pub fn data(self: Token, src: []const u8) ?[]const u8 {
-        const Offset = struct { forwards: usize = 0, backwards: usize = 0 };
-        const offset: Offset = switch (self.tag) {
-            .pi_tok_string => .{ .forwards = 1, .backwards = 1 },
-            .comment => .{ .forwards = ("<!--".len), .backwards = ("-->".len) },
-            .content_cdata => .{ .forwards = ("<![CDATA[".len), .backwards = ("]]>".len) },
-            else => return null,
-        };
-
-        const sliced = self.slice(src);
-        const beg = offset.forwards;
-        const end = sliced.len - offset.backwards;
-        return sliced[beg..end];
-    }
-
-    pub const Tag = union(enum) {
-        pi_target,
-        pi_tok_string,
-        pi_tok_other,
-        pi_end,
-
-        dtd_start: struct { name_beg: usize },
-
-        whitespace,
-        comment,
-
-        elem_open_tag,
-        elem_close_tag,
-        elem_close_inline,
-
-        attr_name,
-        attr_val_empty,
-        attr_val_segment_text,
-        attr_val_segment_entity_ref,
-
-        content_text,
-        content_cdata,
-        content_entity_ref,
-    };
-
-    pub const Loc = struct {
-        beg: usize,
-        end: usize,
-
-        pub fn slice(self: @This(), src: []const u8) []const u8 {
-            return src[self.beg..self.end];
-        }
-    };
 };
-
-const TokenOrError = enum { tok, err };
 
 pub const AfterLeftAngleBracket = union(TokenOrError) {
     const Self = @This();
     tok: Token,
-    err: struct {
-        index: usize,
-        code: Error,
-    },
+    err: TokenOrError.ErrorAndIndex(Error),
 
     pub fn tokenize(
         start_index: usize,
         src: []const u8,
-        comptime section: xml.DocumentSection,
+        comptime section: DocumentSection,
     ) Self {
         debug.assert(src[start_index] == '<');
         var index: usize = start_index;
@@ -424,10 +353,7 @@ test "AfterLeftAngleBracket" {
 pub const ContentOrWhitespace = union(TokenOrError) {
     const Self = @This();
     tok: Token,
-    err: struct {
-        index: usize,
-        code: Error,
-    },
+    err: TokenOrError.ErrorAndIndex(Error),
 
     pub fn tokenize(
         start_index: usize,
@@ -560,10 +486,7 @@ test "ContentOrWhitespace" {
 pub const AttributeNameOrElementCloseInline = union(TokenOrError) {
     const Self = @This();
     tok: Token,
-    err: struct {
-        index: usize,
-        code: Error,
-    },
+    err: TokenOrError.ErrorAndIndex(Error),
 
     pub fn tokenize(
         continuation_start_index: usize,
@@ -682,10 +605,7 @@ pub const AttributeValueSegment = union(TokenOrError) {
         tok: Token,
         quote: u8,
     },
-    err: struct {
-        index: usize,
-        code: Error,
-    },
+    err: TokenOrError.ErrorAndIndex(Error),
     
     const QuoteType = enum(u8) {
         single = '\'',
