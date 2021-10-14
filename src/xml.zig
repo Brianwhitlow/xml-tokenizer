@@ -16,7 +16,7 @@ pub const DocumentSection = enum {
     trailing,
 };
 
-pub const spaces = [_]u8 { ' ', '\t', '\n', '\r' };
+pub const spaces = [_]u8{ ' ', '\t', '\n', '\r' };
 pub fn isSpace(char: anytype) bool {
     const T = @TypeOf(char);
     return switch (T) {
@@ -34,9 +34,6 @@ pub fn isSpace(char: anytype) bool {
     };
 }
 
-
-
-
 pub const StringQuote = enum(u8) {
     single = '\'',
     double = '"',
@@ -49,7 +46,7 @@ pub const StringQuote = enum(u8) {
         return @intToEnum(@This(), char);
     }
 };
-pub const string_quotes = [_]u8 { '"', '\'' };
+pub const string_quotes = [_]u8{ '"', '\'' };
 pub fn isStringQuote(char: anytype) bool {
     const T = @TypeOf(char);
     return switch (T) {
@@ -64,8 +61,6 @@ pub fn isStringQuote(char: anytype) bool {
         else => @compileError("Expected u8 or u21, got " ++ @typeName(T)),
     };
 }
-
-
 
 pub const valid_name_start_char: u8 = blk: {
     var result: u8 = 0;
@@ -83,30 +78,27 @@ pub fn isValidUtf8NameStartChar(codepoint: u21) bool {
         'A'...'Z',
         'a'...'z',
         '_',
-        '\u{c0}'    ... '\u{d6}',
-        '\u{d8}'    ... '\u{f6}',
-        '\u{f8}'    ... '\u{2ff}',
-        '\u{370}'   ... '\u{37d}',
-        '\u{37f}'   ... '\u{1fff}',
-        '\u{200c}'  ... '\u{200d}',
-        '\u{2070}'  ... '\u{218f}',
-        '\u{2c00}'  ... '\u{2fef}',
-        '\u{3001}'  ... '\u{d7ff}',
-        '\u{f900}'  ... '\u{fdcf}',
-        '\u{fdf0}'  ... '\u{fffd}',
-        '\u{10000}' ... '\u{effff}',
+        '\u{c0}'...'\u{d6}',
+        '\u{d8}'...'\u{f6}',
+        '\u{f8}'...'\u{2ff}',
+        '\u{370}'...'\u{37d}',
+        '\u{37f}'...'\u{1fff}',
+        '\u{200c}'...'\u{200d}',
+        '\u{2070}'...'\u{218f}',
+        '\u{2c00}'...'\u{2fef}',
+        '\u{3001}'...'\u{d7ff}',
+        '\u{f900}'...'\u{fdcf}',
+        '\u{fdf0}'...'\u{fffd}',
+        '\u{10000}'...'\u{effff}',
         => true,
-        
-        else
-        => false,
+
+        else => false,
     };
 }
 test "isValidUtf8NameStartChar" {
     try std.testing.expect(isValidUtf8NameStartChar(valid_name_start_char));
     try std.testing.expect(!isValidUtf8NameStartChar(invalid_name_start_char));
 }
-
-
 
 pub const valid_name_char: u8 = blk: {
     var result: u8 = 0;
@@ -127,17 +119,14 @@ pub fn isValidUtf8NameChar(codepoint: u21) bool {
         '\u{0300}'...'\u{036f}',
         '\u{203f}'...'\u{2040}',
         => true,
-        
-        else
-        => false,
+
+        else => false,
     };
 }
 test "isValidUtf8NameChar" {
     try std.testing.expect(isValidUtf8NameChar(valid_name_char));
     try std.testing.expect(!isValidUtf8NameChar(invalid_name_char));
 }
-
-
 
 pub fn validUtf8NameLength(src: []const u8, start_index: usize) usize {
     const name_start_char = utility.getUtf8(src, start_index) orelse return 0;
@@ -148,29 +137,31 @@ pub fn validUtf8NameLength(src: []const u8, start_index: usize) usize {
     return start_len + utility.matchUtf8SubsectionLength(src, start_index + start_len, isValidUtf8NameChar);
 }
 test "validUtf8NameLength" {
-    inline for ([_] struct { src: []const u8, start: usize, expected: usize } {
-        .{ .src = "n",          .start = 0, .expected = "n".len },
-        .{ .src = "\tfoo:bar",  .start = 1, .expected = "foo:bar".len },
-        .{ .src = "baz=",       .start = 0, .expected = "baz".len },
-        .{ .src = "0baz=",      .start = 0, .expected = 0 },
-        .{ .src = "b0b=",       .start = 0, .expected = "b0b".len },
+    inline for ([_]struct { src: []const u8, start: usize, expected: usize }{
+        .{ .start = 0, .src = "n",          .expected = "n".len       },
+        .{ .start = 1, .src = "\tfoo:bar",  .expected = "foo:bar".len },
+        .{ .start = 0, .src = "baz=",       .expected = "baz".len     },
+        .{ .start = 0, .src = "0baz=",      .expected = 0             },
+        .{ .start = 0, .src = "b0b=",       .expected = "b0b".len     },
     }) |info| {
         try std.testing.expectEqual(validUtf8NameLength(info.src, info.start), info.expected);
     }
 }
 
-
-
 pub fn whitespaceLength(src: []const u8, start_index: usize) usize {
-    return utility.matchAsciiSubsectionLength(src, start_index, struct{ fn func(char: u8) bool { return isSpace(char); } }.func);
+    return utility.matchAsciiSubsectionLength(src, start_index, struct {
+        fn func(char: u8) bool {
+            return isSpace(char);
+        }
+    }.func);
 }
 test "whitespaceLength" {
-    inline for ([_] struct { src: []const u8, start: usize, expected: usize } {
-        .{ .src = "",  .start = 0, .expected = 0 },
-        .{ .src = "<",  .start = 0, .expected = 0 },
-        .{ .src = "\t\n\r",  .start = 0, .expected = "\t\n\r".len },
-        .{ .src = " <",  .start = 0, .expected = " ".len },
-        .{ .src = ">\n\t<",  .start = 1, .expected = "\n\t".len },
+    inline for ([_]struct { src: []const u8, start: usize, expected: usize }{
+        .{ .start = 0, .src = "",       .expected = 0            },
+        .{ .start = 0, .src = "<",      .expected = 0            },
+        .{ .start = 0, .src = "\t\n\r", .expected = "\t\n\r".len },
+        .{ .start = 0, .src = " <",     .expected = " ".len      },
+        .{ .start = 1, .src = ">\n\t<", .expected = "\n\t".len   },
     }) |info| {
         try std.testing.expectEqual(whitespaceLength(info.src, info.start), info.expected);
     }
