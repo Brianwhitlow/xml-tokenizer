@@ -7,12 +7,12 @@ pub fn getByte(src: []const u8, index: usize) ?u8 {
 }
 
 pub fn getUtf8Len(src: []const u8, index: usize) ?u3 {
-    const start_byte = getByte(index, src) orelse return null;
+    const start_byte = getByte(src, index) orelse return null;
     return unicode.utf8ByteSequenceLength(start_byte) catch null;
 }
 
 pub fn getUtf8(src: []const u8, index: usize) ?u21 {
-    const cp_len = getUtf8Len(index, src) orelse return null;
+    const cp_len = getUtf8Len(src, index) orelse return null;
     const beg = index;
     const end = beg + cp_len;
     const slice = if (end <= src.len) src[beg..end] else return null;

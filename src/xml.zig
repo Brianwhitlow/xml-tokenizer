@@ -1,6 +1,46 @@
 const std = @import("std");
 const tokenization = @import("xml/tokenization.zig");
 
+
+
+pub const spaces = [_]u8 { ' ', '\t', '\n', '\r' };
+pub fn isSpace(char: anytype) bool {
+    const T = @TypeOf(char);
+    return switch (T) {
+        u8,
+        u21,
+        => switch (char) {
+            ' ',
+            '\t',
+            '\n',
+            '\r',
+            => true,
+            else => false,
+        },
+        else => @compileError("Expected u8 or u21, got " ++ @typeName(T)),
+    };
+}
+
+
+
+pub const string_quotes = [_]u8 { '"', '\'' };
+pub fn isStringQuote(char: anytype) bool {
+    const T = @TypeOf(char);
+    return switch (T) {
+        u8,
+        u21,
+        => switch (char) {
+            '"',
+            '\'',
+            => true,
+            else => false,
+        },
+        else => @compileError("Expected u8 or u21, got " ++ @typeName(T)),
+    };
+}
+
+
+
 pub inline fn isValidUtf8NameStartChar(codepoint: u21) bool {
     return switch (codepoint) {
         ':',
@@ -62,6 +102,7 @@ pub const invalid_name_char: u8 = blk: {
     while (isValidUtf8NameChar(result)) result += 1;
     break :blk result;
 };
+
 
 
 test {

@@ -123,9 +123,9 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
     },
 
     pub fn tokenize(
-        comptime section: DocumentSection,
         start_index: usize,
         src: []const u8,
+        comptime section: DocumentSection,
     ) Self {
         debug.assert(src[start_index] == '<');
         var index: usize = start_index;
@@ -378,7 +378,7 @@ test "AfterLeftAngleBracket" {
             inline for (.{ (""), ("?>"), ("\t?>") }) |end| {
                 const slice = "<?" ++ name;
                 const src = slice ++ end;
-                const tok = try AfterLeftAngleBracket.tokenize(section, 0, src).get();
+                const tok = try AfterLeftAngleBracket.tokenize(0, src, section).get();
                 try testing.expectEqual(@as(Token.Tag, .pi_target), tok.tag);
                 try testing.expectEqualStrings(slice, tok.slice(src));
                 try testing.expectEqualStrings(name, tok.name(src).?);
@@ -389,7 +389,7 @@ test "AfterLeftAngleBracket" {
     inline for (.{ .prologue, .root, .trailing }) |section| {
         inline for (.{ (""), ("- "), (" foo bar baz ") }) |comment_data| {
             const src = "<!--" ++ comment_data ++ "-->";
-            const tok = try AfterLeftAngleBracket.tokenize(section, 0, src).get();
+            const tok = try AfterLeftAngleBracket.tokenize(0, src, section).get();
             try testing.expectEqual(@as(Token.Tag, .comment), tok.tag);
             try testing.expectEqualStrings(src, tok.slice(src));
             try testing.expectEqualStrings(comment_data, tok.data(src).?);
@@ -402,7 +402,7 @@ test "AfterLeftAngleBracket" {
             const name = "root";
             const slice = "<!DOCTYPE" ++ whitespace ++ name;
             const src = slice ++ end;
-            const tok = try AfterLeftAngleBracket.tokenize(.prologue, 0, src).get();
+            const tok = try AfterLeftAngleBracket.tokenize(0, src, .prologue).get();
             try testing.expectEqual(Token.Tag.dtd_start, tok.tag);
             try testing.expectEqualStrings(slice, tok.slice(src));
             try testing.expectEqualStrings(name, tok.name(src).?);
@@ -414,13 +414,13 @@ test "AfterLeftAngleBracket" {
         inline for (.{ (""), ("]"), ("]]"), ("]>"), ("foo") }) |base_cdata_data| {
             const cdata_data = base_cdata_data ++ whitespace;
             const src = "<![CDATA[" ++ cdata_data ++ "]]>";
-            const tok = try AfterLeftAngleBracket.tokenize(.root, 0, src).get();
+            const tok = try AfterLeftAngleBracket.tokenize(0, src, .root).get();
             try testing.expectEqual(@as(Token.Tag, .content_cdata), tok.tag);
             try testing.expectEqualStrings(src, tok.slice(src));
             try testing.expectEqualStrings(cdata_data, tok.data(src).?);
 
-            try testing.expectError(error.BangSquareBracketInPrologue, AfterLeftAngleBracket.tokenize(.prologue, 0, src).get());
-            try testing.expectError(error.BangSquareBracketInTrailingSection, AfterLeftAngleBracket.tokenize(.trailing, 0, src).get());
+            try testing.expectError(error.BangSquareBracketInPrologue, AfterLeftAngleBracket.tokenize(0, src, .prologue).get());
+            try testing.expectError(error.BangSquareBracketInTrailingSection, AfterLeftAngleBracket.tokenize(0, src, .trailing).get());
         }
     }
 
@@ -429,13 +429,13 @@ test "AfterLeftAngleBracket" {
         inline for (.{ (""), (">"), ("\t>") }) |end| {
             const slice = "</" ++ name;
             const src = slice ++ end;
-            const tok = try AfterLeftAngleBracket.tokenize(.root, 0, src).get();
+            const tok = try AfterLeftAngleBracket.tokenize(0, src, .root).get();
             try testing.expectEqual(@as(Token.Tag, .elem_close_tag), tok.tag);
             try testing.expectEqualStrings(slice, tok.slice(src));
             try testing.expectEqualStrings(name, tok.name(src).?);
 
-            try testing.expectError(error.ElementCloseInTrailingSection, AfterLeftAngleBracket.tokenize(.trailing, 0, src).get());
-            try testing.expectError(error.ElementCloseInPrologue, AfterLeftAngleBracket.tokenize(.prologue, 0, src).get());
+            try testing.expectError(error.ElementCloseInTrailingSection, AfterLeftAngleBracket.tokenize(0, src, .trailing).get());
+            try testing.expectError(error.ElementCloseInPrologue, AfterLeftAngleBracket.tokenize(0, src, .prologue).get());
         }
     }
 
@@ -445,12 +445,12 @@ test "AfterLeftAngleBracket" {
             inline for (.{ (""), ("/>"), ("\t/>"), (">"), ("\t>") }) |end| {
                 const slice = "<" ++ name;
                 const src = slice ++ end;
-                const tok = try AfterLeftAngleBracket.tokenize(section, 0, src).get();
+                const tok = try AfterLeftAngleBracket.tokenize(0, src, section).get();
                 try testing.expectEqual(@as(Token.Tag, .elem_open_tag), tok.tag);
                 try testing.expectEqualStrings(slice, tok.slice(src));
                 try testing.expectEqualStrings(name, tok.name(src).?);
 
-                try testing.expectError(error.ElementOpenInTrailingSection, AfterLeftAngleBracket.tokenize(.trailing, 0, src).get());
+                try testing.expectError(error.ElementOpenInTrailingSection, AfterLeftAngleBracket.tokenize(0, src, .trailing).get());
             };
     }
 }
@@ -719,50 +719,172 @@ test "AttributeNameOrElementCloseInline" {
 
 pub const AttributeValueSegment = union(TokenOrError) {
     const Self = @This();
-    tok: Token,
+    tok: struct { tok: Token, quote: u8 },
     err: struct {
         index: usize,
         code: Error,
     },
     
+    const QuoteType = enum(u8) {
+        single = '\'',
+        double = '"',
+        
+        fn value(self: @This()) u8 {
+            return @enumToInt(self);
+        }
+        
+        fn from(char: anytype) @This() {
+            debug.assert(xml.isStringQuote(@truncate(u21, char)));
+            return @intToEnum(@This(), @truncate(u8, char));
+        }
+    };
+    
     pub fn tokenize(
-        start_index: usize,
+        continuation_start_index: usize,
         src: []const u8,
+        comptime maybe_prev_quote: ?QuoteType,
     ) Self {
-        debug.assert(if (getByte(src, start_index)) switch (src[start_index]) {
-            ' ',
-            '\t',
-            '\n',
-            '\r',
-            '=',
-            => true,
-            else => false,
-        });
+        if (maybe_prev_quote) |prev_quote| {
+            switch (prev_quote) {
+                .single => {
+                    todo("", null);
+                },
+                
+                .double => {
+                    todo("", null);
+                },
+            }
+        } else {
+            debug.assert(if (getByte(src, continuation_start_index)) |char| char == '=' or xml.isSpace(char) else true); // don't want to trip the assert, rather return error.
+            var index: usize = continuation_start_index;
+            
+            while (getByte(src, index)) |char| : (index += 1) {
+                if (!xml.isSpace(char)) break;
+            }
+            
+            if ((getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeEquals)) != '=') {
+                return Self.initErr(index, Error.InvalidBeforeEquals);
+            }
+            index += 1;
+            
+            while (getByte(src, index)) |char| : (index += 1) {
+                if (!xml.isSpace(char)) break;
+            }
+            
+            const quote = getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeAttributeValue);
+            if (!xml.isStringQuote(quote)) {
+                return Self.initErr(index, Error.InvalidBeforeAttributeValue);
+            }
+            index += 1;
+            
+            const start_index = index;
+            const start_byte = getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeStringTermination);
+            if (start_byte == quote) {
+                return Self.initTok(.attr_val_empty, .{ .beg = start_index, .end = index }, quote);
+            }
+            
+            if (start_byte == '&') {
+                index += 1;
+                
+                const name_start_char = getUtf8(src, index) orelse return Self.initErr(index, Error.InvalidUtf8EntityReferenceNameStartChar);
+                if (!xml.isValidUtf8NameStartChar(name_start_char)) {
+                    return Self.initErr(index, Error.InvalidEntityReferenceNameStartChar);
+                }
+                index += lenOfUtf8OrNull(name_start_char).?;
+                
+                while (getUtf8(src, index)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
+                    if (!xml.isValidUtf8NameChar(name_char)) break;
+                }
+                
+                const last_byte = getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeEntityReferenceTermination);
+                if (last_byte != ';') {
+                    return Self.initErr(index, Error.InvalidBeforeEntityReferenceTermination);
+                }
+                index += 1;
+                
+                return Self.initTok(.attr_val_segment_entity_ref, .{ .beg = start_index, .end = index }, quote);
+            }
+            
+            while (getUtf8(src, index)) |text_char| : (index += lenOfUtf8OrNull(text_char).?) {
+                if (text_char == '&' or text_char == quote) break;
+            }
+            
+            return Self.initTok(.attr_val_segment_text, .{ .beg = start_index, .end = index }, quote);
+        }
     }
     
     pub fn get(self: @This()) Error!Token {
         return switch (self) {
-            .tok => |tok| tok,
+            .tok => |tok| tok.tok,
             .err => |err| err.code,
         };
     }
 
     pub fn getLastIndex(self: @This()) usize {
         return switch (self) {
-            .tok => |tok| tok.loc.end,
+            .tok => |tok| tok.tok.loc.end,
             .err => |err| err.index,
         };
     }
     
     pub const Error = error {
-        
+        EofBeforeEquals,
+        InvalidBeforeEquals,
+        EofBeforeAttributeValue,
+        InvalidBeforeAttributeValue,
+        EofBeforeStringTermination,
+        InvalidUtf8EntityReferenceNameStartChar,
+        InvalidEntityReferenceNameStartChar,
+        EofBeforeEntityReferenceTermination,
+        InvalidBeforeEntityReferenceTermination,
     };
     
-    fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
-        return @unionInit(@This(), "tok", Token.init(tag, loc));
+    fn initTok(tag: Token.Tag, loc: Token.Loc, quote: u8) @This() {
+        debug.assert(xml.isStringQuote(quote));
+        return @unionInit(@This(), "tok", .{ .tok = Token.init(tag, loc), .quote = quote });
     }
 
     fn initErr(index: usize, code: Error) @This() {
         return @unionInit(@This(), "err", .{ .code = code, .index = index });
     }
 };
+
+test "AttributeValueSegment" {
+    inline for (.{ (""), (" "), ("\n\t") }) |whitespace0| {
+        inline for (.{ (""), (" "), ("\n\t") }) |whitespace1|
+            inline for (.{ ("\""), ("'") }) |quote| {
+                const other_quote: []const u8 = if (quote[0] == '"') "'" else "\"";
+                const eql = whitespace0 ++ "=" ++ whitespace1;
+                
+                inline for (.{ (""), (other_quote), (";;") }) |extra_text| {
+                    const slice = extra_text ++ "foo bar baz" ++ extra_text;
+                    const src = eql ++ quote ++ slice ++ quote;
+                    const tok = try AttributeValueSegment.tokenize(0, src, null).get();
+                    try testing.expectEqual(Token.Tag.attr_val_segment_text, tok.tag);
+                    try testing.expectEqualStrings(slice, tok.slice(src));
+                }
+                
+                {
+                    const slice = "";
+                    const src = eql ++ quote ++ slice ++ quote;
+                    const tok = try AttributeValueSegment.tokenize(0, src, null).get();
+                    try testing.expectEqual(Token.Tag.attr_val_empty, tok.tag);
+                    try testing.expectEqualStrings(slice, tok.slice(src));
+                }
+                
+                {
+                    const name = "amp";
+                    const slice = "&" ++ name ++ ";";
+                    const src = eql ++ quote ++ slice ++ quote;
+                    const tok = try AttributeValueSegment.tokenize(0, src, null).get();
+                    try testing.expectEqual(Token.Tag.attr_val_segment_entity_ref, tok.tag);
+                    try testing.expectEqualStrings(slice, tok.slice(src));
+                    try testing.expectEqualStrings(name, tok.name(src).?);
+                }
+                
+                {
+                    
+                }
+            };
+    }
+}
