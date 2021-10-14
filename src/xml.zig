@@ -1,5 +1,5 @@
 const std = @import("std");
-const utility = @import("utility.zig");
+const utility = @import("xml/utility.zig");
 const tokenization = @import("xml/tokenization.zig");
 
 comptime {
@@ -7,6 +7,11 @@ comptime {
     _ = tokenization;
 }
 
+pub const DocumentSection = enum {
+    prologue,
+    root,
+    trailing,
+};
 
 pub const spaces = [_]u8 { ' ', '\t', '\n', '\r' };
 pub fn isSpace(char: anytype) bool {
