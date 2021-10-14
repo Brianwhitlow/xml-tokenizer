@@ -7,16 +7,7 @@ const utility = @import("../utility.zig");
 const getByte = utility.getByte;
 const getUtf8Len = utility.getUtf8Len;
 const getUtf8 = utility.getUtf8;
-
-/// Expects `@TypeOf(char) == 'u8' or @TypeOf(char) == 'u21'`
-fn lenOfUtf8OrNull(char: anytype) ?u3 {
-    const T = @TypeOf(char);
-    return switch (T) {
-        u8 => unicode.utf8ByteSequenceLength(char) catch null,
-        u21 => unicode.utf8CodepointSequenceLength(char) catch null,
-        else => @compileError("Expected u8 or u21, got " ++ @typeName(T)),
-    };
-}
+const lenOfUtf8OrNull = utility.lenOfUtf8OrNull;
 
 const xml = @import("../xml.zig");
 
@@ -135,16 +126,11 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
         switch (start_byte) {
             '?' => {
                 index += 1;
-                const name_start_char = getByte(src, index) orelse return Self.initErr(index, Error.QuestionMarkEof);
-                if (!xml.isValidUtf8NameStartChar(name_start_char)) {
-                    return Self.initErr(index, Error.QuestionMarkInvalidNameStartChar);
+                const len = xml.validUtf8NameLength(src, index);
+                if (len == 0) {
+                    return Self.initErr(index, Error.QuestionMarkEofOrInvalidTargetNameStartChar);
                 }
-
-                index += lenOfUtf8OrNull(name_start_char).?;
-                while (getByte(src, index)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
-                    if (!xml.isValidUtf8NameChar(name_char)) break;
-                }
-
+                index += len;
                 return Self.initTok(.pi_target, .{ .beg = start_index, .end = index });
             },
 
@@ -281,16 +267,11 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
                 .trailing => return Self.initErr(index, Error.ElementCloseInTrailingSection),
                 .root => {
                     index += 1;
-                    const name_start_char = getByte(src, index) orelse return Self.initErr(index, Error.SlashEof);
-                    if (!xml.isValidUtf8NameStartChar(name_start_char)) {
-                        return Self.initErr(index, Error.InvalidElementCloseNameStartChar);
+                    const len = xml.validUtf8NameLength(src, index);
+                    if (len == 0) {
+                        return Self.initErr(index, Error.SlashEofOrInvalidElementCloseNameStartChar);
                     }
-                    index += lenOfUtf8OrNull(name_start_char).?;
-
-                    while (getByte(src, index)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
-                        if (!xml.isValidUtf8NameChar(name_char)) break;
-                    }
-
+                    index += len;
                     return Self.initTok(.elem_close_tag, .{ .beg = start_index, .end = index });
                 },
             },
@@ -300,16 +281,11 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
                 .prologue,
                 .root,
                 => {
-                    const name_start_char = getByte(src, index) orelse return Self.initErr(index, Error.InvalidUtf8);
-                    if (!xml.isValidUtf8NameStartChar(name_start_char)) {
+                    const len = xml.validUtf8NameLength(src, index);
+                    if (len == 0) {
                         return Self.initErr(index, Error.InvalidElementOpenNameStartChar);
                     }
-                    index += lenOfUtf8OrNull(name_start_char).?;
-
-                    while (getByte(src, index)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
-                        if (!xml.isValidUtf8NameChar(name_char)) break;
-                    }
-
+                    index += len;
                     return Self.initTok(.elem_open_tag, .{ .beg = start_index, .end = index });
                 },
             },
@@ -332,8 +308,7 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
 
     pub const Error = error {
         ImmediateEof,
-        QuestionMarkInvalidNameStartChar,
-        QuestionMarkEof,
+        QuestionMarkEofOrInvalidTargetNameStartChar,
         BangEof,
         BangSquareBracketInPrologue,
         BangSquareBracketInTrailingSection,
@@ -355,10 +330,8 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
         BangInvalid,
         ElementCloseInPrologue,
         ElementCloseInTrailingSection,
-        SlashEof,
-        InvalidElementCloseNameStartChar,
+        SlashEofOrInvalidElementCloseNameStartChar,
         ElementOpenInTrailingSection,
-        InvalidUtf8,
         InvalidElementOpenNameStartChar,
     };
 
@@ -496,30 +469,23 @@ pub const ContentOrWhitespace = union(TokenOrError) {
 
             else => {
                 const non_whitespace_chars: bool = blk: {
-                    while (getByte(src, index)) |content_char| : (index += lenOfUtf8OrNull(content_char).?) {
-                        switch (content_char) {
-                            ' ',
-                            '\t',
-                            '\n',
-                            '\r',
-                            => continue,
+                    index += xml.whitespaceLength(src, index);
+                    if (index != 0 and switch (getByte(src, index) orelse '<') { '<', '&' => true, else => false }) {
+                        break :blk false;
+                    }
+                    
+                    while (getUtf8(src, index)) |subsequent_content_char| : (index += lenOfUtf8OrNull(subsequent_content_char).?) {
+                        switch (subsequent_content_char) {
                             '<',
                             '&',
-                            => break :blk false,
-                            else => {
-                                while (getByte(src, index)) |subsequent_content_char| : (index += lenOfUtf8OrNull(subsequent_content_char).?) {
-                                    switch (subsequent_content_char) {
-                                        '<',
-                                        '&',
-                                        => break :blk true,
-                                        else => continue,
-                                    }
-                                } else return Self.initErr(index, Error.ContentFollowedByEof);
-                            },
+                            => break :blk true,
+                            else => continue,
                         }
-                    } else break :blk false;
+                    } else return Self.initErr(index, Error.ContentFollowedByInvalidOrEof);
+                    
+                    break :blk true;
                 };
-
+                
                 const loc = Token.Loc{ .beg = start_index, .end = index };
                 if (non_whitespace_chars) {
                     return Self.initTok(.content_text, loc);
@@ -550,7 +516,7 @@ pub const ContentOrWhitespace = union(TokenOrError) {
         EntityReferenceNameStartCharInvalid,
         UnterminatedEntityReferenceEof,
         UnterminatedEntityReferenceInvalid,
-        ContentFollowedByEof,
+        ContentFollowedByInvalidOrEof,
     };
 
     fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
@@ -581,7 +547,7 @@ test "ContentOrWhitespace" {
             try testing.expectEqualStrings(slice, tok.slice(src));
 
             const src_no_end = slice;
-            try testing.expectError(error.ContentFollowedByEof, ContentOrWhitespace.tokenize(0, src_no_end).get());
+            try testing.expectError(error.ContentFollowedByInvalidOrEof, ContentOrWhitespace.tokenize(0, src_no_end).get());
         }
     }
 
@@ -758,23 +724,19 @@ pub const AttributeValueSegment = union(TokenOrError) {
             debug.assert(if (getByte(src, continuation_start_index)) |char| char == '=' or xml.isSpace(char) else true); // don't want to trip the assert, rather return error.
             var index: usize = continuation_start_index;
             
-            while (getByte(src, index)) |char| : (index += 1) {
-                if (!xml.isSpace(char)) break;
+            index += xml.whitespaceLength(src, index);
+            if ((getByte(src, index) orelse 0) != '=') {
+                return Self.initErr(index, Error.ExpectedEquals);
             }
             
-            if ((getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeEquals)) != '=') {
-                return Self.initErr(index, Error.InvalidBeforeEquals);
-            }
             index += 1;
-            
-            while (getByte(src, index)) |char| : (index += 1) {
-                if (!xml.isSpace(char)) break;
-            }
+            index += xml.whitespaceLength(src, index);
             
             const quote = getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeAttributeValue);
             if (!xml.isStringQuote(quote)) {
                 return Self.initErr(index, Error.InvalidBeforeAttributeValue);
             }
+            
             index += 1;
             
             const start_index = index;
@@ -785,21 +747,13 @@ pub const AttributeValueSegment = union(TokenOrError) {
             
             if (start_byte == '&') {
                 index += 1;
-                
-                const name_start_char = getUtf8(src, index) orelse return Self.initErr(index, Error.InvalidUtf8EntityReferenceNameStartChar);
-                if (!xml.isValidUtf8NameStartChar(name_start_char)) {
-                    return Self.initErr(index, Error.InvalidEntityReferenceNameStartChar);
-                }
-                index += lenOfUtf8OrNull(name_start_char).?;
-                
-                while (getUtf8(src, index)) |name_char| : (index += lenOfUtf8OrNull(name_char).?) {
-                    if (!xml.isValidUtf8NameChar(name_char)) break;
-                }
+                index += xml.validUtf8NameLength(src, index);
                 
                 const last_byte = getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeEntityReferenceTermination);
                 if (last_byte != ';') {
                     return Self.initErr(index, Error.InvalidBeforeEntityReferenceTermination);
                 }
+                
                 index += 1;
                 
                 return Self.initTok(.attr_val_segment_entity_ref, .{ .beg = start_index, .end = index }, quote);
@@ -828,8 +782,7 @@ pub const AttributeValueSegment = union(TokenOrError) {
     }
     
     pub const Error = error {
-        EofBeforeEquals,
-        InvalidBeforeEquals,
+        ExpectedEquals,
         EofBeforeAttributeValue,
         InvalidBeforeAttributeValue,
         EofBeforeStringTermination,

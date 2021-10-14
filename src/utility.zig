@@ -18,3 +18,13 @@ pub fn getUtf8(src: []const u8, index: usize) ?u21 {
     const slice = if (end <= src.len) src[beg..end] else return null;
     return unicode.utf8Decode(slice) catch null;
 }
+
+/// Expects `@TypeOf(char) == 'u8' or @TypeOf(char) == 'u21'`
+pub fn lenOfUtf8OrNull(char: anytype) ?u3 {
+    const T = @TypeOf(char);
+    return switch (T) {
+        u8 => unicode.utf8ByteSequenceLength(char) catch null,
+        u21 => unicode.utf8CodepointSequenceLength(char) catch null,
+        else => @compileError("Expected u8 or u21, got " ++ @typeName(T)),
+    };
+}
