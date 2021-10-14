@@ -685,7 +685,10 @@ test "AttributeNameOrElementCloseInline" {
 
 pub const AttributeValueSegment = union(TokenOrError) {
     const Self = @This();
-    tok: struct { tok: Token, quote: u8 },
+    tok: struct {
+        tok: Token,
+        quote: u8,
+    },
     err: struct {
         index: usize,
         code: Error,
