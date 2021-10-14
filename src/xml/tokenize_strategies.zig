@@ -21,7 +21,7 @@ inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
 const TokenOrError = enum {
     tok,
     err,
-    
+
     fn ErrorAndIndex(comptime ErrorSet: type) type {
         return struct {
             index: usize,
@@ -228,7 +228,7 @@ pub const AfterLeftAngleBracket = union(TokenOrError) {
         };
     }
 
-    pub const Error = error {
+    pub const Error = error{
         ImmediateEof,
         QuestionMarkEofOrInvalidTargetNameStartChar,
         BangEof,
@@ -389,10 +389,13 @@ pub const ContentOrWhitespace = union(TokenOrError) {
             else => {
                 const non_whitespace_chars: bool = blk: {
                     index += xml.whitespaceLength(src, index);
-                    if (index != 0 and switch (utility.getByte(src, index) orelse '<') { '<', '&' => true, else => false }) {
+                    if (index != start_index and switch (utility.getByte(src, index) orelse '<') {
+                        '<', '&' => true,
+                        else => false,
+                    }) {
                         break :blk false;
                     }
-                    
+
                     while (utility.getUtf8(src, index)) |subsequent_content_char| : (index += utility.lenOfUtf8OrNull(subsequent_content_char).?) {
                         switch (subsequent_content_char) {
                             '<',
@@ -401,10 +404,10 @@ pub const ContentOrWhitespace = union(TokenOrError) {
                             else => continue,
                         }
                     } else return Self.initErr(index, Error.ContentFollowedByInvalidOrEof);
-                    
+
                     break :blk true;
                 };
-                
+
                 const loc = Token.Loc{ .beg = start_index, .end = index };
                 if (non_whitespace_chars) {
                     return Self.initTok(.content_text, loc);
@@ -429,7 +432,7 @@ pub const ContentOrWhitespace = union(TokenOrError) {
         };
     }
 
-    pub const Error = error {
+    pub const Error = error{
         ImmediateEof,
         EntityReferenceNameStartCharEof,
         EntityReferenceNameStartCharInvalid,
@@ -553,7 +556,7 @@ pub const AttributeNameOrElementCloseInline = union(TokenOrError) {
         };
     }
 
-    pub const Error = error {
+    pub const Error = error{
         ImmediateEof,
         ImmediateInvalidUtf8,
         SlashEof,
@@ -603,35 +606,21 @@ pub const AttributeValueSegment = union(TokenOrError) {
     const Self = @This();
     tok: struct {
         tok: Token,
-        quote: u8,
+        quote: ?xml.StringQuote,
     },
     err: TokenOrError.ErrorAndIndex(Error),
-    
-    const QuoteType = enum(u8) {
-        single = '\'',
-        double = '"',
-        
-        fn value(self: @This()) u8 {
-            return @enumToInt(self);
-        }
-        
-        fn from(char: anytype) @This() {
-            debug.assert(xml.isStringQuote(@truncate(u21, char)));
-            return @intToEnum(@This(), @truncate(u8, char));
-        }
-    };
-    
+
     pub fn tokenize(
         continuation_start_index: usize,
         src: []const u8,
-        comptime maybe_prev_quote: ?QuoteType,
+        comptime maybe_prev_quote: ?xml.StringQuote,
     ) Self {
         if (maybe_prev_quote) |prev_quote| {
             switch (prev_quote) {
                 .single => {
                     todo("", null);
                 },
-                
+
                 .double => {
                     todo("", null);
                 },
@@ -639,50 +628,49 @@ pub const AttributeValueSegment = union(TokenOrError) {
         } else {
             debug.assert(if (utility.getByte(src, continuation_start_index)) |char| char == '=' or xml.isSpace(char) else true); // don't want to trip the assert, rather return error.
             var index: usize = continuation_start_index;
-            
+
             index += xml.whitespaceLength(src, index);
             if ((utility.getByte(src, index) orelse 0) != '=') {
                 return Self.initErr(index, Error.ExpectedEquals);
             }
-            
+
             index += 1;
             index += xml.whitespaceLength(src, index);
-            
-            const quote = utility.getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeAttributeValue);
-            if (!xml.isStringQuote(quote)) {
+
+            if (!xml.isStringQuote(utility.getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeAttributeValue))) {
                 return Self.initErr(index, Error.InvalidBeforeAttributeValue);
             }
-            
+            const quote = xml.StringQuote.from(utility.getByte(src, index).?);
             index += 1;
             
             const start_index = index;
             const start_byte = utility.getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeStringTermination);
-            if (start_byte == quote) {
+            if (start_byte == quote.value()) {
                 return Self.initTok(.attr_val_empty, .{ .beg = start_index, .end = index }, quote);
             }
-            
+
             if (start_byte == '&') {
                 index += 1;
                 index += xml.validUtf8NameLength(src, index);
-                
+
                 const last_byte = utility.getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeEntityReferenceTermination);
                 if (last_byte != ';') {
                     return Self.initErr(index, Error.InvalidBeforeEntityReferenceTermination);
                 }
-                
+
                 index += 1;
-                
+
                 return Self.initTok(.attr_val_segment_entity_ref, .{ .beg = start_index, .end = index }, quote);
             }
-            
+
             while (utility.getUtf8(src, index)) |text_char| : (index += utility.lenOfUtf8OrNull(text_char).?) {
-                if (text_char == '&' or text_char == quote) break;
+                if (text_char == '&' or text_char == quote.value()) break;
             }
-            
+
             return Self.initTok(.attr_val_segment_text, .{ .beg = start_index, .end = index }, quote);
         }
     }
-    
+
     pub fn get(self: @This()) Error!Token {
         return switch (self) {
             .tok => |tok| tok.tok,
@@ -696,8 +684,8 @@ pub const AttributeValueSegment = union(TokenOrError) {
             .err => |err| err.index,
         };
     }
-    
-    pub const Error = error {
+
+    pub const Error = error{
         ExpectedEquals,
         EofBeforeAttributeValue,
         InvalidBeforeAttributeValue,
@@ -707,9 +695,8 @@ pub const AttributeValueSegment = union(TokenOrError) {
         EofBeforeEntityReferenceTermination,
         InvalidBeforeEntityReferenceTermination,
     };
-    
-    fn initTok(tag: Token.Tag, loc: Token.Loc, quote: u8) @This() {
-        debug.assert(xml.isStringQuote(quote));
+
+    fn initTok(tag: Token.Tag, loc: Token.Loc, quote: ?xml.StringQuote) @This() {
         return @unionInit(@This(), "tok", .{ .tok = Token.init(tag, loc), .quote = quote });
     }
 
@@ -719,12 +706,13 @@ pub const AttributeValueSegment = union(TokenOrError) {
 };
 
 test "AttributeValueSegment" {
+    // Stress testing
     inline for (.{ (""), (" "), ("\n\t") }) |whitespace0| {
         inline for (.{ (""), (" "), ("\n\t") }) |whitespace1|
             inline for (.{ ("\""), ("'") }) |quote| {
                 const other_quote: []const u8 = if (quote[0] == '"') "'" else "\"";
                 const eql = whitespace0 ++ "=" ++ whitespace1;
-                
+
                 inline for (.{ (""), (other_quote), (";;") }) |extra_text| {
                     const slice = extra_text ++ "foo bar baz" ++ extra_text;
                     const src = eql ++ quote ++ slice ++ quote;
@@ -732,7 +720,7 @@ test "AttributeValueSegment" {
                     try testing.expectEqual(Token.Tag.attr_val_segment_text, tok.tag);
                     try testing.expectEqualStrings(slice, tok.slice(src));
                 }
-                
+
                 {
                     const slice = "";
                     const src = eql ++ quote ++ slice ++ quote;
@@ -740,7 +728,7 @@ test "AttributeValueSegment" {
                     try testing.expectEqual(Token.Tag.attr_val_empty, tok.tag);
                     try testing.expectEqualStrings(slice, tok.slice(src));
                 }
-                
+
                 {
                     const name = "amp";
                     const slice = "&" ++ name ++ ";";
@@ -750,10 +738,40 @@ test "AttributeValueSegment" {
                     try testing.expectEqualStrings(slice, tok.slice(src));
                     try testing.expectEqualStrings(name, tok.name(src).?);
                 }
-                
-                {
-                    
-                }
             };
     }
+    
+    // Consecutivity
+    //{
+    //    const src = " = 'foo&bar;\"baz' ";
+    //    var result: AttributeValueSegment = undefined;
+    //    var tok: Token = undefined;
+        
+    //    result = AttributeValueSegment.tokenize(0, src, null);
+    //    tok = try result.get();
+    //    try testing.expectEqual(Token.Tag.attr_val_segment_text, tok.tag);
+    //    try testing.expectEqualStrings("foo", tok.slice(src));
+    //    const quote: xml.StringQuote = result.tok.quote orelse return testing.expect(false);
+        
+        
+    //    result = switch (quote) {
+    //        .double => AttributeValueSegment.tokenize(result.getLastIndex(), src, .double),
+    //        .single => AttributeValueSegment.tokenize(result.getLastIndex(), src, .single),
+    //    };
+    //    tok = try result.get();
+    //    try testing.expectEqual(@as(?xml.StringQuote, null), result.tok.quote);
+    //    try testing.expectEqual(Token.Tag.attr_val_segment_entity_ref, tok.tag);
+    //    try testing.expectEqualStrings("&bar;", tok.slice(src));
+    //    try testing.expectEqualStrings("bar", tok.name(src).?);
+        
+    //    result = switch (quote) {
+    //        .double => AttributeValueSegment.tokenize(result.getLastIndex(), src, .double),
+    //        .single => AttributeValueSegment.tokenize(result.getLastIndex(), src, .single),
+    //    };
+    //    tok = try result.get();
+    //    try testing.expectEqual(@as(?xml.StringQuote, null), result.tok.quote);
+    //    try testing.expectEqual(Token.Tag.attr_val_segment_entity_ref, tok.tag);
+    //    try testing.expectEqualStrings("&bar;", tok.slice(src));
+    //    try testing.expectEqualStrings("bar", tok.name(src).?);
+    //}
 }

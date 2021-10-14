@@ -1,4 +1,5 @@
 const std = @import("std");
+const debug = std.debug;
 const utility = @import("xml/utility.zig");
 const tokenize_strategies = @import("xml/tokenize_strategies.zig");
 
@@ -35,6 +36,19 @@ pub fn isSpace(char: anytype) bool {
 
 
 
+
+pub const StringQuote = enum(u8) {
+    single = '\'',
+    double = '"',
+
+    pub fn value(self: @This()) u8 {
+        return @enumToInt(self);
+    }
+
+    pub fn from(char: u8) @This() {
+        return @intToEnum(@This(), char);
+    }
+};
 pub const string_quotes = [_]u8 { '"', '\'' };
 pub fn isStringQuote(char: anytype) bool {
     const T = @TypeOf(char);
@@ -124,25 +138,6 @@ test "isValidUtf8NameChar" {
 }
 
 
-/// Internal template for other functions
-fn matchUtf8SubsectionLength(src: []const u8, start_index: usize, comptime func: fn(u21)bool) usize {
-    var index: usize = start_index;
-    while (utility.getUtf8(src, index)) |char| : (index += utility.lenOfUtf8OrNull(char).?) {
-        if (!func(char)) break;
-    }
-    return index - start_index;
-}
-
-/// Internal template for other functions
-fn matchAsciiSubsectionLength(src: []const u8, start_index: usize, comptime func: fn(u8)bool) usize {
-    var index: usize = start_index;
-    while (utility.getByte(src, index)) |char| : (index += 1) {
-        if (!func(char)) break;
-    }
-    return index - start_index;
-}
-
-
 
 pub fn validUtf8NameLength(src: []const u8, start_index: usize) usize {
     const name_start_char = utility.getUtf8(src, start_index) orelse return 0;
@@ -150,7 +145,7 @@ pub fn validUtf8NameLength(src: []const u8, start_index: usize) usize {
         return 0;
     }
     const start_len = utility.lenOfUtf8OrNull(name_start_char).?;
-    return start_len + matchUtf8SubsectionLength(src, start_index + start_len, isValidUtf8NameChar);
+    return start_len + utility.matchUtf8SubsectionLength(src, start_index + start_len, isValidUtf8NameChar);
 }
 test "validUtf8NameLength" {
     inline for ([_] struct { src: []const u8, start: usize, expected: usize } {
@@ -167,7 +162,7 @@ test "validUtf8NameLength" {
 
 
 pub fn whitespaceLength(src: []const u8, start_index: usize) usize {
-    return matchAsciiSubsectionLength(src, start_index, struct{ fn func(char: u8) bool { return isSpace(char); } }.func);
+    return utility.matchAsciiSubsectionLength(src, start_index, struct{ fn func(char: u8) bool { return isSpace(char); } }.func);
 }
 test "whitespaceLength" {
     inline for ([_] struct { src: []const u8, start: usize, expected: usize } {

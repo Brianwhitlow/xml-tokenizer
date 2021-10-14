@@ -28,3 +28,19 @@ pub fn lenOfUtf8OrNull(char: anytype) ?u3 {
         else => @compileError("Expected u8 or u21, got " ++ @typeName(T)),
     };
 }
+
+pub fn matchUtf8SubsectionLength(src: []const u8, start_index: usize, comptime func: fn(u21)bool) usize {
+    var index: usize = start_index;
+    while (getUtf8(src, index)) |char| : (index += lenOfUtf8OrNull(char).?) {
+        if (!func(char)) break;
+    }
+    return index - start_index;
+}
+
+pub fn matchAsciiSubsectionLength(src: []const u8, start_index: usize, comptime func: fn(u8)bool) usize {
+    var index: usize = start_index;
+    while (getByte(src, index)) |char| : (index += 1) {
+        if (!func(char)) break;
+    }
+    return index - start_index;
+}
