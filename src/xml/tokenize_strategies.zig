@@ -10,12 +10,6 @@ const xml = @import("../xml.zig");
 const utility = @import("utility.zig");
 const tokenize_strategies = @This();
 
-pub const DocumentSection = enum {
-    prologue,
-    root,
-    trailing,
-};
-
 const Token = xml.Token;
 comptime {
     const expected_fields = .{
@@ -48,6 +42,12 @@ comptime {
 inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
     debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
 }
+
+pub const DocumentSection = enum {
+    prologue,
+    root,
+    trailing,
+};
 
 pub const TagGuess = enum {
     const Self = @This();
@@ -222,7 +222,21 @@ pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_s
     };
 
     index += expected_tag.checkedSlice().len;
-
+    
+    const expected_subsequent_slice_match = if (expected_tag.expectedSubsequentSlice()) |expected_subsequent_slice| blk: {
+        const actual_subsequent_slice = utility.clampedSubSlice(src, index, index + expected_subsequent_slice.len);
+        
+        if (actual_subsequent_slice.len != expected_subsequent_slice.len) break :blk false;
+        for (expected_subsequent_slice) |char| {
+            if (char != (utility.getUtf8(src, index) orelse char + 1)) {
+                break :blk false;
+            }
+            index += utility.lenOfUtf8OrNull(char).?;
+        }
+        
+        break :blk true;
+    } else true;
+    
     switch (expected_tag) {
         .elem_close_tag,
         .elem_open_tag,
@@ -264,20 +278,8 @@ pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_s
         },
 
         .comment => {
-            const expected_subsequent_slice = expected_tag.expectedSubsequentSlice().?;
-            const actual_subsequent_slice = utility.clampedSubSlice(src, index, index + expected_subsequent_slice.len);
-
-            if (expected_subsequent_slice.len != actual_subsequent_slice.len) {
-                return ResultType.initErr(index, error.ExpectedCommentDash);
-            }
-
-            for (expected_subsequent_slice) |char| {
-                if (char != (utility.getByte(src, index) orelse char + 1)) {
-                    return ResultType.initErr(index, error.ExpectedCommentDash);
-                }
-                index += utility.lenOfUtf8OrNull(char).?;
-            }
-
+            if (!expected_subsequent_slice_match) return ResultType.initErr(index, error.ExpectedCommentDash);
+            
             while (utility.getUtf8(src, index)) |comment_char| : (index += utility.lenOfUtf8OrNull(comment_char).?) {
                 if (comment_char != '-') continue;
                 if ((utility.getByte(src, index + "-".len) orelse 0) != '-') continue;
@@ -294,21 +296,9 @@ pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_s
                 .trailing => return ResultType.initErr(index, error.CDataSectionInTrailing),
                 .root => {},
             }
-
-            const expected_subsequent_slice = expected_tag.expectedSubsequentSlice().?;
-            const actual_subsequent_slice = utility.clampedSubSlice(src, index, index + expected_subsequent_slice.len);
-
-            if (expected_subsequent_slice.len != actual_subsequent_slice.len) {
-                return ResultType.initErr(index, error.ExpectedCDataKeyword);
-            }
-
-            for (expected_subsequent_slice) |char| {
-                if (char != (utility.getByte(src, index) orelse char + 1)) {
-                    return ResultType.initErr(index, error.ExpectedCDataKeyword);
-                }
-                index += utility.lenOfUtf8OrNull(char).?;
-            }
-
+            
+            if (!expected_subsequent_slice_match) return ResultType.initErr(index, error.ExpectedCDataKeyword);
+            
             while (utility.getUtf8(src, index)) |cdata_char| : (index += utility.lenOfUtf8OrNull(cdata_char).?) {
                 if (cdata_char != ']') continue;
                 if (!mem.eql(u8, utility.clampedSubSlice(src, index + "]".len, index + "]]>".len), "]>")) continue;
