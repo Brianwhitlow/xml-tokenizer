@@ -52,6 +52,46 @@ pub const DocumentSection = enum {
     trailing,
 };
 
+fn ErrorAndIndex(comptime ErrorSet: type) type {
+    return struct {
+        index: usize,
+        code: ErrorSet,
+    };
+}
+
+fn TokenOrErrorAndIndex(comptime ErrorSet: type) type {
+    return union(enum) {
+        const Self = @This();
+        tok: Token,
+        err: @This().ErrorAndIndex,
+
+        pub const Error = ErrorSet;
+        pub const ErrorAndIndex = tokenize_strategies.ErrorAndIndex(Error);
+
+        pub fn get(self: Self) ErrorSet!Token {
+            return switch (self) {
+                .tok => |tok| tok,
+                .err => |err| err.code,
+            };
+        }
+
+        pub fn lastIndex(self: Self) usize {
+            return switch (self) {
+                .tok => |tok| tok.loc.end,
+                .err => |err| err.index,
+            };
+        }
+
+        fn initTok(tok: Token) Self {
+            return @unionInit(Self, "tok", tok);
+        }
+
+        fn initErr(index: usize, err: ErrorSet) Self {
+            return @unionInit(Self, "err", .{ .index = index, .code = err });
+        }
+    };
+}
+
 
 
 pub const ExpectedTokenAfterLeftAngleBracket = enum {
@@ -149,50 +189,6 @@ test "ExpectedTokenAfterLeftAngleBracket" {
         try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.pi_target, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<?" ++ anything_else, 0));
     }
 }
-
-
-
-fn ErrorAndIndex(comptime ErrorSet: type) type {
-    return struct {
-        index: usize,
-        code: ErrorSet,
-    };
-}
-
-fn TokenOrErrorAndIndex(comptime ErrorSet: type) type {
-    return union(enum) {
-        const Self = @This();
-        tok: Token,
-        err: @This().ErrorAndIndex,
-
-        pub const Error = ErrorSet;
-        pub const ErrorAndIndex = tokenize_strategies.ErrorAndIndex(Error);
-
-        pub fn get(self: Self) ErrorSet!Token {
-            return switch (self) {
-                .tok => |tok| tok,
-                .err => |err| err.code,
-            };
-        }
-
-        pub fn lastIndex(self: Self) usize {
-            return switch (self) {
-                .tok => |tok| tok.loc.end,
-                .err => |err| err.index,
-            };
-        }
-
-        fn initTok(tok: Token) Self {
-            return @unionInit(Self, "tok", tok);
-        }
-
-        fn initErr(index: usize, err: ErrorSet) Self {
-            return @unionInit(Self, "err", .{ .index = index, .code = err });
-        }
-    };
-}
-
-
 
 pub const TokenizeAfterLeftAngleBracket = TokenOrErrorAndIndex(ExpectedTokenAfterLeftAngleBracket.Error || error{
     ElementCloseInPrologue,
