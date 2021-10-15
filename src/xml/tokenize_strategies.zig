@@ -258,6 +258,7 @@ pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_s
                 };
                 return ResultType.initErr(index, err_code);
             }
+
             index += name_len;
         },
 
