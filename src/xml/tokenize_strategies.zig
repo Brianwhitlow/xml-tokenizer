@@ -43,11 +43,15 @@ inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
     debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
 }
 
+
+
 pub const DocumentSection = enum {
     prologue,
     root,
     trailing,
 };
+
+
 
 pub const TagGuess = enum {
     const Self = @This();
@@ -145,6 +149,8 @@ test "TagGuess" {
     }
 }
 
+
+
 fn ErrorAndIndex(comptime ErrorSet: type) type {
     return struct {
         index: usize,
@@ -187,7 +193,7 @@ fn TokenOrErrorAndIndex(comptime ErrorSet: type) type {
 
 
 
-pub const LeftAngleBracket = TokenOrErrorAndIndex(TagGuess.Error || error{
+pub const TokenizeAfterLeftAngleBracket = TokenOrErrorAndIndex(TagGuess.Error || error{
     ElementCloseInPrologue,
 
     ElementOpenInTrailing,
@@ -208,8 +214,8 @@ pub const LeftAngleBracket = TokenOrErrorAndIndex(TagGuess.Error || error{
     UnclosedCDataSection,
 });
 
-pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_section: DocumentSection) LeftAngleBracket {
-    const ResultType = LeftAngleBracket;
+pub fn tokenizeAfterLeftAngleBracket(src: []const u8, start_index: usize, comptime document_section: DocumentSection) TokenizeAfterLeftAngleBracket {
+    const ResultType = TokenizeAfterLeftAngleBracket;
 
     debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
     var index: usize = start_index;
@@ -314,7 +320,7 @@ pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_s
     return ResultType.initTok(Token.init(expected_tag.toTokenTag(), .{ .beg = start_index, .end = index }));
 }
 
-test "leftAngleBracket" {
+test "tokenizeAfterLeftAngleBracket" {
     // stress testing
     @setEvalBranchQuota(1500);
     inline for (.{ .prologue, .root, .trailing }) |document_section| {
@@ -324,7 +330,7 @@ test "leftAngleBracket" {
                     if (document_section != .trailing) {
                         const slice = "<" ++ name;
                         const src = start ++ slice ++ end;
-                        const result = leftAngleBracket(src, start.len, document_section);
+                        const result = tokenizeAfterLeftAngleBracket(src, start.len, document_section);
                         const tok = try result.get();
                         try testing.expectEqual(Token.Tag.elem_open_tag, tok.tag);
                         try testing.expectEqualStrings(slice, tok.slice(src));
@@ -334,7 +340,7 @@ test "leftAngleBracket" {
                     if (document_section == .root) {
                         const slice = "</" ++ name;
                         const src = start ++ slice ++ end;
-                        const result = leftAngleBracket(src, start.len, document_section);
+                        const result = tokenizeAfterLeftAngleBracket(src, start.len, document_section);
                         const tok = try result.get();
                         try testing.expectEqual(Token.Tag.elem_close_tag, tok.tag);
                         try testing.expectEqualStrings(slice, tok.slice(src));
@@ -344,7 +350,7 @@ test "leftAngleBracket" {
                     {
                         const slice = "<?" ++ name;
                         const src = start ++ slice ++ end;
-                        const result = leftAngleBracket(src, start.len, document_section);
+                        const result = tokenizeAfterLeftAngleBracket(src, start.len, document_section);
                         const tok = try result.get();
                         try testing.expectEqualStrings(slice, tok.slice(src));
                         try testing.expectEqualStrings(name, tok.name(src) orelse return testing.expect(false));
@@ -355,7 +361,7 @@ test "leftAngleBracket" {
             inline for (.{("<")}) |comment_data| {
                 const slice = "<!--" ++ comment_data ++ "-->";
                 const src = start ++ slice;
-                const result = leftAngleBracket(src, start.len, document_section);
+                const result = tokenizeAfterLeftAngleBracket(src, start.len, document_section);
                 const tok = try result.get();
                 try testing.expectEqual(Token.Tag.comment, tok.tag);
                 try testing.expectEqualStrings(slice, tok.slice(src));
@@ -365,7 +371,7 @@ test "leftAngleBracket" {
             if (document_section == .root) inline for (.{ "", "<", "]", "]]", "]>", "foo bar baz" }) |char_data| {
                 const slice = "<![CDATA[" ++ char_data ++ "]]>";
                 const src = start ++ slice;
-                const result = leftAngleBracket(src, start.len, document_section);
+                const result = tokenizeAfterLeftAngleBracket(src, start.len, document_section);
                 const tok = try result.get();
                 try testing.expectEqual(Token.Tag.content_cdata, tok.tag);
                 try testing.expectEqualStrings(slice, tok.slice(src));
@@ -376,28 +382,25 @@ test "leftAngleBracket" {
 
     const valid_elem_name = [_]u8{xml.valid_name_start_char};
     const invalid_elem_name = [_]u8{xml.invalid_name_start_char};
-    inline for (comptime meta.fieldNames(LeftAngleBracket.Error)) |err_name| {
-        const err: LeftAngleBracket.Error = @field(LeftAngleBracket.Error, err_name);
+    inline for (comptime meta.fieldNames(TokenizeAfterLeftAngleBracket.Error)) |err_name| {
+        const err: TokenizeAfterLeftAngleBracket.Error = @field(TokenizeAfterLeftAngleBracket.Error, err_name);
         switch (err) {
-            error.ImmediateEof => try testing.expectError(err, leftAngleBracket("<", 0, .root).get()),
-            error.BangEof => try testing.expectError(err, leftAngleBracket("<!", 0, .root).get()),
-            error.BangUnrecognized => try testing.expectError(err, leftAngleBracket("<!D", 0, .root).get()),
-            error.ElementCloseInPrologue => try testing.expectError(err, leftAngleBracket("</", 0, .prologue).get()),
-            error.ElementOpenInTrailing => try testing.expectError(err, leftAngleBracket("<" ++ valid_elem_name, 0, .trailing).get()),
-            error.ElementCloseInTrailing => try testing.expectError(err, leftAngleBracket("</", 0, .trailing).get()),
-            error.ExpectedElementOpenName => try testing.expectError(err, leftAngleBracket("<" ++ invalid_elem_name, 0, .root).get()),
-            error.ExpectedElementCloseName => try testing.expectError(err, leftAngleBracket("</" ++ invalid_elem_name, 0, .root).get()),
-            error.ExpectedProcessingInstructionsTarget => try testing.expectError(err, leftAngleBracket("<?", 0, .root).get()),
-            error.ExpectedCommentDash => try testing.expectError(err, leftAngleBracket("<!- ", 0, .root).get()),
-            error.DashDashInComment => try testing.expectError(err, leftAngleBracket("<!-- -- ", 0, .root).get()),
-            error.UnclosedComment => try testing.expectError(err, leftAngleBracket("<!-- ", 0, .root).get()),
-            error.CDataSectionInPrologue => try testing.expectError(err, leftAngleBracket("<![CDATA[ ]]>", 0, .prologue).get()),
-            error.CDataSectionInTrailing => try testing.expectError(err, leftAngleBracket("<![CDATA[ ]]>", 0, .trailing).get()),
-            error.ExpectedCDataKeyword => try testing.expectError(err, leftAngleBracket("<![CDAT ]]>", 0, .root).get()),
-            error.UnclosedCDataSection => try testing.expectError(err, leftAngleBracket("<![CDATA[ ]]", 0, .root).get()),
+            error.ImmediateEof => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<", 0, .root).get()),
+            error.BangEof => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<!", 0, .root).get()),
+            error.BangUnrecognized => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<!D", 0, .root).get()),
+            error.ElementCloseInPrologue => try testing.expectError(err, tokenizeAfterLeftAngleBracket("</", 0, .prologue).get()),
+            error.ElementOpenInTrailing => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<" ++ valid_elem_name, 0, .trailing).get()),
+            error.ElementCloseInTrailing => try testing.expectError(err, tokenizeAfterLeftAngleBracket("</", 0, .trailing).get()),
+            error.ExpectedElementOpenName => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<" ++ invalid_elem_name, 0, .root).get()),
+            error.ExpectedElementCloseName => try testing.expectError(err, tokenizeAfterLeftAngleBracket("</" ++ invalid_elem_name, 0, .root).get()),
+            error.ExpectedProcessingInstructionsTarget => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<?", 0, .root).get()),
+            error.ExpectedCommentDash => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<!- ", 0, .root).get()),
+            error.DashDashInComment => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<!-- -- ", 0, .root).get()),
+            error.UnclosedComment => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<!-- ", 0, .root).get()),
+            error.CDataSectionInPrologue => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<![CDATA[ ]]>", 0, .prologue).get()),
+            error.CDataSectionInTrailing => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<![CDATA[ ]]>", 0, .trailing).get()),
+            error.ExpectedCDataKeyword => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<![CDAT ]]>", 0, .root).get()),
+            error.UnclosedCDataSection => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<![CDATA[ ]]", 0, .root).get()),
         }
     }
 }
-
-
-
