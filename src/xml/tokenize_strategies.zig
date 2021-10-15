@@ -10,17 +10,11 @@ const xml = @import("../xml.zig");
 const utility = @import("utility.zig");
 const tokenize_strategies = @This();
 
-const DocumentSection = xml.DocumentSection;
-comptime {
-    const expected_fields = .{
-        "prologue",
-        "root",
-        "trailing",
-    };
-    
-    debug.assert(meta.trait.hasFields(DocumentSection, expected_fields));
-    debug.assert(meta.fields(DocumentSection).len == 3);
-}
+pub const DocumentSection = enum {
+    prologue,
+    root,
+    trailing,
+};
 
 const Token = xml.Token;
 comptime {
@@ -212,7 +206,7 @@ pub const LeftAngleBracket = TokenOrErrorAndIndex(TagGuess.Error || error{
     UnclosedCDataSection,
 });
 
-pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_section: xml.DocumentSection) LeftAngleBracket {
+pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_section: DocumentSection) LeftAngleBracket {
     const ResultType = LeftAngleBracket;
 
     debug.assert((utility.getByte(src, start_index) orelse 0) == '<');

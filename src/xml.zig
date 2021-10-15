@@ -10,12 +10,7 @@ comptime {
 }
 
 pub const Token = @import("xml/Token.zig");
-pub const DocumentSection = enum {
-    prologue,
-    root,
-    trailing,
-};
-
+pub const DocumentSection = tokenize_strategies.DocumentSection;
 pub const spaces = [_]u8{ ' ', '\t', '\n', '\r' };
 pub fn isSpace(char: anytype) bool {
     const T = @TypeOf(char);
