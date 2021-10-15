@@ -190,7 +190,7 @@ test "ExpectedTokenAfterLeftAngleBracket" {
     }
 }
 
-pub const TokenizeAfterLeftAngleBracket = TokenOrErrorAndIndex(ExpectedTokenAfterLeftAngleBracket.Error || error{
+pub const TokenizeAfterLeftAngleBracketResult = TokenOrErrorAndIndex(ExpectedTokenAfterLeftAngleBracket.Error || error{
     ElementCloseInPrologue,
 
     ElementOpenInTrailing,
@@ -211,8 +211,8 @@ pub const TokenizeAfterLeftAngleBracket = TokenOrErrorAndIndex(ExpectedTokenAfte
     UnclosedCDataSection,
 });
 
-pub fn tokenizeAfterLeftAngleBracket(src: []const u8, start_index: usize, comptime document_section: DocumentSection) TokenizeAfterLeftAngleBracket {
-    const ResultType = TokenizeAfterLeftAngleBracket;
+pub fn tokenizeAfterLeftAngleBracket(src: []const u8, start_index: usize, comptime document_section: DocumentSection) TokenizeAfterLeftAngleBracketResult {
+    const ResultType = TokenizeAfterLeftAngleBracketResult;
 
     debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
     var index: usize = start_index;
@@ -379,8 +379,8 @@ test "tokenizeAfterLeftAngleBracket" {
 
     const valid_elem_name = [_]u8{xml.valid_name_start_char};
     const invalid_elem_name = [_]u8{xml.invalid_name_start_char};
-    inline for (comptime meta.fieldNames(TokenizeAfterLeftAngleBracket.Error)) |err_name| {
-        const err: TokenizeAfterLeftAngleBracket.Error = @field(TokenizeAfterLeftAngleBracket.Error, err_name);
+    inline for (comptime meta.fieldNames(TokenizeAfterLeftAngleBracketResult.Error)) |err_name| {
+        const err: TokenizeAfterLeftAngleBracketResult.Error = @field(TokenizeAfterLeftAngleBracketResult.Error, err_name);
         switch (err) {
             error.ImmediateEof => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<", 0, .root).get()),
             error.BangEof => try testing.expectError(err, tokenizeAfterLeftAngleBracket("<!", 0, .root).get()),
@@ -401,3 +401,4 @@ test "tokenizeAfterLeftAngleBracket" {
         }
     }
 }
+
