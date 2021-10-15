@@ -54,7 +54,7 @@ pub const DocumentSection = enum {
 
 
 
-pub const TagGuess = enum {
+pub const ExpectedTokenAfterLeftAngleBracket = enum {
     const Self = @This();
     elem_open_tag,
     elem_close_tag,
@@ -125,7 +125,7 @@ pub const TagGuess = enum {
     }
 };
 
-test "TagGuess" {
+test "ExpectedTokenAfterLeftAngleBracket" {
     inline for (.{
         // note that the following characters aren't validated; it is left to the caller to then verify
         // that the subsequent bytes are valid.
@@ -133,20 +133,20 @@ test "TagGuess" {
         "  ",
         "0",
     }) |anything_else| {
-        try testing.expectError(error.ImmediateEof, TagGuess.guessFrom("<", 0));
-        try testing.expectEqual(TagGuess.elem_open_tag, try TagGuess.guessFrom("<" ++ anything_else, 0));
+        try testing.expectError(error.ImmediateEof, ExpectedTokenAfterLeftAngleBracket.guessFrom("<", 0));
+        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.elem_open_tag, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<" ++ anything_else, 0));
 
-        try testing.expectEqual(TagGuess.content_cdata, try TagGuess.guessFrom("<![", 0));
-        try testing.expectEqual(TagGuess.content_cdata, try TagGuess.guessFrom("<![" ++ anything_else, 0));
+        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.content_cdata, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<![", 0));
+        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.content_cdata, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<![" ++ anything_else, 0));
 
-        try testing.expectEqual(TagGuess.comment, try TagGuess.guessFrom("<!-", 0));
-        try testing.expectEqual(TagGuess.comment, try TagGuess.guessFrom("<!-" ++ anything_else, 0));
+        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.comment, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<!-", 0));
+        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.comment, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<!-" ++ anything_else, 0));
 
-        try testing.expectEqual(TagGuess.elem_close_tag, try TagGuess.guessFrom("</", 0));
-        try testing.expectEqual(TagGuess.elem_close_tag, try TagGuess.guessFrom("</" ++ anything_else, 0));
+        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.elem_close_tag, try ExpectedTokenAfterLeftAngleBracket.guessFrom("</", 0));
+        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.elem_close_tag, try ExpectedTokenAfterLeftAngleBracket.guessFrom("</" ++ anything_else, 0));
 
-        try testing.expectEqual(TagGuess.pi_target, try TagGuess.guessFrom("<?", 0));
-        try testing.expectEqual(TagGuess.pi_target, try TagGuess.guessFrom("<?" ++ anything_else, 0));
+        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.pi_target, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<?", 0));
+        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.pi_target, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<?" ++ anything_else, 0));
     }
 }
 
@@ -194,7 +194,7 @@ fn TokenOrErrorAndIndex(comptime ErrorSet: type) type {
 
 
 
-pub const TokenizeAfterLeftAngleBracket = TokenOrErrorAndIndex(TagGuess.Error || error{
+pub const TokenizeAfterLeftAngleBracket = TokenOrErrorAndIndex(ExpectedTokenAfterLeftAngleBracket.Error || error{
     ElementCloseInPrologue,
 
     ElementOpenInTrailing,
@@ -221,7 +221,7 @@ pub fn tokenizeAfterLeftAngleBracket(src: []const u8, start_index: usize, compti
     debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
     var index: usize = start_index;
 
-    const expected_tag = TagGuess.guessFrom(src, start_index) catch |err| {
+    const expected_tag = ExpectedTokenAfterLeftAngleBracket.guessFrom(src, start_index) catch |err| {
         index += @as(usize, switch (err) {
             error.ImmediateEof => 0,
             error.BangEof => 1,
@@ -405,6 +405,3 @@ test "tokenizeAfterLeftAngleBracket" {
         }
     }
 }
-
-
-
