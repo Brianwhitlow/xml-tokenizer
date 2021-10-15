@@ -44,3 +44,9 @@ pub fn matchAsciiSubsectionLength(src: []const u8, start_index: usize, comptime 
     }
     return index - start_index;
 }
+
+pub fn clampedSubSlice(src: []const u8, start: usize, end: usize) []const u8 {
+    const clamped_start = std.math.clamp(start, 0, src.len - 1);
+    const clamped_end = std.math.clamp(end, start, src.len);
+    return src[clamped_start..clamped_end];
+}

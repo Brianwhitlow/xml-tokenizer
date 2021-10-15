@@ -1,777 +1,381 @@
 const std = @import("std");
+const mem = std.mem;
+const math = std.math;
+const meta = std.meta;
 const debug = std.debug;
 const testing = std.testing;
 const unicode = std.unicode;
 
-const utility = @import("utility.zig");
 const xml = @import("../xml.zig");
+const utility = @import("utility.zig");
+const tokenize_strategies = @This();
 const DocumentSection = xml.DocumentSection;
 const Token = xml.Token;
-
-comptime {
-    // At the time of use, this is how DocumentSection is expected to be in this file.
-    debug.assert(std.meta.fields(DocumentSection).len == 3);
-    debug.assert(std.meta.trait.hasFields(DocumentSection, .{ "prologue", "root", "trailing" }));
-}
 
 inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
     debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
 }
 
-const TokenOrError = enum {
-    tok,
-    err,
-
-    fn ErrorAndIndex(comptime ErrorSet: type) type {
-        return struct {
-            index: usize,
-            code: ErrorSet,
-        };
-    }
-};
-
-pub const AfterLeftAngleBracket = union(TokenOrError) {
+pub const TagGuess = enum {
     const Self = @This();
-    tok: Token,
-    err: TokenOrError.ErrorAndIndex(Error),
-
-    pub fn tokenize(
-        start_index: usize,
-        src: []const u8,
-        comptime section: DocumentSection,
-    ) Self {
-        debug.assert(src[start_index] == '<');
-        var index: usize = start_index;
-
-        index += 1;
-        const start_byte = utility.getByte(src, index) orelse return Self.initErr(index, Error.ImmediateEof);
-        switch (start_byte) {
-            '?' => {
-                index += 1;
-                const len = xml.validUtf8NameLength(src, index);
-                if (len == 0) {
-                    return Self.initErr(index, Error.QuestionMarkEofOrInvalidTargetNameStartChar);
-                }
-                index += len;
-                return Self.initTok(.pi_target, .{ .beg = start_index, .end = index });
-            },
-
-            '!' => {
-                index += 1;
-                switch (utility.getByte(src, index) orelse return Self.initErr(index, Error.BangEof)) {
-                    '[' => switch (section) {
-                        .prologue => return Self.initErr(index, Error.BangSquareBracketInPrologue),
-                        .trailing => return Self.initErr(index, Error.BangSquareBracketInTrailingSection),
-                        .root => {
-                            const expected_chars = "CDATA[";
-                            inline for (expected_chars) |expected_char| {
-                                debug.assert(1 == (unicode.utf8ByteSequenceLength(expected_char) catch unreachable));
-                                index += 1;
-                                if ((utility.getByte(src, index) orelse return Self.initErr(index, Error.BangSquareBracketEof)) != expected_char) {
-                                    return Self.initErr(index, Error.BangSquareBracketInvalid);
-                                }
-                            }
-                            debug.assert(utility.getByte(src, index).? == expected_chars[expected_chars.len - 1]);
-                            index += 1;
-
-                            while (utility.getByte(src, index)) |char| : (index += unicode.utf8CodepointSequenceLength(char) catch unreachable) {
-                                if (char != ']') {
-                                    continue;
-                                }
-                                index += 1;
-
-                                if ((utility.getByte(src, index) orelse 0) != ']') {
-                                    index -= 1;
-                                    continue;
-                                }
-                                index += 1;
-
-                                if ((utility.getByte(src, index) orelse 0) != '>') {
-                                    index -= 2;
-                                    continue;
-                                }
-                                index += 1;
-
-                                return Self.initTok(.content_cdata, .{ .beg = start_index, .end = index });
-                            }
-
-                            return Self.initErr(index, Error.UnclosedCharData);
-                        },
-                    },
-
-                    '-' => {
-                        index += 1;
-                        if ((utility.getByte(src, index) orelse return Self.initErr(index, Error.BangDashEof)) != '-') {
-                            return Self.initErr(index, Error.BangDashInvalid);
-                        }
-
-                        index += 1;
-                        while (utility.getByte(src, index)) |char| : (index += unicode.utf8CodepointSequenceLength(char) catch unreachable) {
-                            if (char != '-') {
-                                continue;
-                            }
-                            index += 1;
-
-                            if ((utility.getByte(src, index) orelse 0) != '-') {
-                                continue;
-                            }
-                            index += 1;
-
-                            if ((utility.getByte(src, index) orelse return Self.initErr(index, Error.DashDashEofInComment)) != '>') {
-                                return Self.initErr(index, Error.DashDashInvalidInComment);
-                            }
-                            index += 1;
-
-                            return Self.initTok(.comment, .{ .beg = start_index, .end = index });
-                        }
-
-                        return Self.initErr(index, Error.UnclosedComment);
-                    },
-
-                    'D' => switch (section) {
-                        .root => return Self.initErr(index, Error.BangInvalidInRoot),
-                        .trailing => return Self.initErr(index, Error.BangInvalidInTrailingSection),
-                        .prologue => {
-                            const expected_chars = "OCTYPE";
-                            inline for (expected_chars) |expected_char| {
-                                debug.assert(1 == (unicode.utf8ByteSequenceLength(expected_char) catch unreachable));
-                                index += 1;
-                                if ((utility.getByte(src, index) orelse (expected_char +% 1)) != expected_char) {
-                                    return Self.initErr(index, Error.BangInvalidInPrologue);
-                                }
-                            }
-                            debug.assert(utility.getByte(src, index).? == expected_chars[expected_chars.len - 1]);
-                            index += 1;
-
-                            switch (utility.getByte(src, index) orelse return Self.initErr(index, Error.DoctypeStartEof)) {
-                                ' ',
-                                '\t',
-                                '\n',
-                                '\r',
-                                => {},
-                                else => return Self.initErr(index, Error.DoctypeStartInvalid),
-                            }
-
-                            index += 1;
-                            while (utility.getByte(src, index)) |char| : (index += 1) switch (char) {
-                                ' ',
-                                '\t',
-                                '\n',
-                                '\r',
-                                => continue,
-                                else => break,
-                            };
-
-                            const name_start_char = utility.getByte(src, index) orelse xml.invalid_name_start_char;
-                            if (!xml.isValidUtf8NameStartChar(name_start_char)) {
-                                return Self.initErr(index, Error.DoctypeInvalidRootNameStartChar);
-                            }
-
-                            const name_beg = index;
-                            index += unicode.utf8CodepointSequenceLength(name_start_char) catch unreachable;
-
-                            while (utility.getByte(src, index)) |name_char| : (index += unicode.utf8CodepointSequenceLength(name_char) catch unreachable) {
-                                if (!xml.isValidUtf8NameChar(name_char)) break;
-                            }
-
-                            const tag = Token.Tag{ .dtd_start = .{ .name_beg = name_beg } };
-                            const loc = Token.Loc{ .beg = start_index, .end = index };
-                            return Self.initTok(tag, loc);
-                        },
-                    },
-
-                    else => return Self.initErr(index, Error.BangInvalid),
-                }
-            },
-
-            '/' => switch (section) {
-                .prologue => return Self.initErr(index, Error.ElementCloseInPrologue),
-                .trailing => return Self.initErr(index, Error.ElementCloseInTrailingSection),
-                .root => {
-                    index += 1;
-                    const len = xml.validUtf8NameLength(src, index);
-                    if (len == 0) {
-                        return Self.initErr(index, Error.SlashEofOrInvalidElementCloseNameStartChar);
-                    }
-                    index += len;
-                    return Self.initTok(.elem_close_tag, .{ .beg = start_index, .end = index });
-                },
-            },
-
-            else => switch (section) {
-                .trailing => return Self.initErr(index, Error.ElementOpenInTrailingSection),
-                .prologue,
-                .root,
-                => {
-                    const len = xml.validUtf8NameLength(src, index);
-                    if (len == 0) {
-                        return Self.initErr(index, Error.InvalidElementOpenNameStartChar);
-                    }
-                    index += len;
-                    return Self.initTok(.elem_open_tag, .{ .beg = start_index, .end = index });
-                },
-            },
-        }
-    }
-
-    pub fn get(self: @This()) Error!Token {
-        return switch (self) {
-            .tok => |tok| tok,
-            .err => |err| err.code,
-        };
-    }
-
-    pub fn getLastIndex(self: @This()) usize {
-        return switch (self) {
-            .tok => |tok| tok.loc.end,
-            .err => |err| err.index,
-        };
-    }
-
-    pub const Error = error{
-        ImmediateEof,
-        QuestionMarkEofOrInvalidTargetNameStartChar,
-        BangEof,
-        BangSquareBracketInPrologue,
-        BangSquareBracketInTrailingSection,
-        BangSquareBracketEof,
-        BangSquareBracketInvalid,
-        UnclosedCharData,
-        BangDashEof,
-        BangDashInvalid,
-        DashDashEofInComment,
-        DashDashInvalidInComment,
-        DashDashInComment,
-        UnclosedComment,
-        BangInvalidInRoot,
-        BangInvalidInTrailingSection,
-        BangInvalidInPrologue,
-        DoctypeStartEof,
-        DoctypeStartInvalid,
-        DoctypeInvalidRootNameStartChar,
-        BangInvalid,
-        ElementCloseInPrologue,
-        ElementCloseInTrailingSection,
-        SlashEofOrInvalidElementCloseNameStartChar,
-        ElementOpenInTrailingSection,
-        InvalidElementOpenNameStartChar,
-    };
-
-    fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
-        return @unionInit(@This(), "tok", Token.init(tag, loc));
-    }
-
-    fn initErr(index: usize, code: Error) @This() {
-        return @unionInit(@This(), "err", .{ .code = code, .index = index });
-    }
-};
-
-test "AfterLeftAngleBracket" {
-    // Processing Instructions Target
-    inline for (.{ .prologue, .root, .trailing }) |section| {
-        inline for (.{ "A", "foo" }) |name|
-            inline for (.{ (""), ("?>"), ("\t?>") }) |end| {
-                const slice = "<?" ++ name;
-                const src = slice ++ end;
-                const tok = try AfterLeftAngleBracket.tokenize(0, src, section).get();
-                try testing.expectEqual(@as(Token.Tag, .pi_target), tok.tag);
-                try testing.expectEqualStrings(slice, tok.slice(src));
-                try testing.expectEqualStrings(name, tok.name(src).?);
-            };
-    }
-
-    // Comment
-    inline for (.{ .prologue, .root, .trailing }) |section| {
-        inline for (.{ (""), ("- "), (" foo bar baz ") }) |comment_data| {
-            const src = "<!--" ++ comment_data ++ "-->";
-            const tok = try AfterLeftAngleBracket.tokenize(0, src, section).get();
-            try testing.expectEqual(@as(Token.Tag, .comment), tok.tag);
-            try testing.expectEqualStrings(src, tok.slice(src));
-            try testing.expectEqualStrings(comment_data, tok.data(src).?);
-        }
-    }
-
-    // DTD start
-    inline for (.{ (" "), ("\t"), ("\n\t") }) |whitespace| {
-        inline for (.{ (""), ("["), (" [") }) |end| {
-            const name = "root";
-            const slice = "<!DOCTYPE" ++ whitespace ++ name;
-            const src = slice ++ end;
-            const tok = try AfterLeftAngleBracket.tokenize(0, src, .prologue).get();
-            try testing.expectEqual(Token.Tag.dtd_start, tok.tag);
-            try testing.expectEqualStrings(slice, tok.slice(src));
-            try testing.expectEqualStrings(name, tok.name(src).?);
-        }
-    }
-
-    // CDATA section
-    inline for (.{ "", " " }) |whitespace| {
-        inline for (.{ (""), ("]"), ("]]"), ("]>"), ("foo") }) |base_cdata_data| {
-            const cdata_data = base_cdata_data ++ whitespace;
-            const src = "<![CDATA[" ++ cdata_data ++ "]]>";
-            const tok = try AfterLeftAngleBracket.tokenize(0, src, .root).get();
-            try testing.expectEqual(@as(Token.Tag, .content_cdata), tok.tag);
-            try testing.expectEqualStrings(src, tok.slice(src));
-            try testing.expectEqualStrings(cdata_data, tok.data(src).?);
-
-            try testing.expectError(error.BangSquareBracketInPrologue, AfterLeftAngleBracket.tokenize(0, src, .prologue).get());
-            try testing.expectError(error.BangSquareBracketInTrailingSection, AfterLeftAngleBracket.tokenize(0, src, .trailing).get());
-        }
-    }
-
-    // Element close tag
-    inline for (.{ "A", "foo" }) |name| {
-        inline for (.{ (""), (">"), ("\t>") }) |end| {
-            const slice = "</" ++ name;
-            const src = slice ++ end;
-            const tok = try AfterLeftAngleBracket.tokenize(0, src, .root).get();
-            try testing.expectEqual(@as(Token.Tag, .elem_close_tag), tok.tag);
-            try testing.expectEqualStrings(slice, tok.slice(src));
-            try testing.expectEqualStrings(name, tok.name(src).?);
-
-            try testing.expectError(error.ElementCloseInTrailingSection, AfterLeftAngleBracket.tokenize(0, src, .trailing).get());
-            try testing.expectError(error.ElementCloseInPrologue, AfterLeftAngleBracket.tokenize(0, src, .prologue).get());
-        }
-    }
-
-    // Element open tag
-    inline for (.{ .prologue, .root }) |section| {
-        inline for (.{ "A", "foo" }) |name|
-            inline for (.{ (""), ("/>"), ("\t/>"), (">"), ("\t>") }) |end| {
-                const slice = "<" ++ name;
-                const src = slice ++ end;
-                const tok = try AfterLeftAngleBracket.tokenize(0, src, section).get();
-                try testing.expectEqual(@as(Token.Tag, .elem_open_tag), tok.tag);
-                try testing.expectEqualStrings(slice, tok.slice(src));
-                try testing.expectEqualStrings(name, tok.name(src).?);
-
-                try testing.expectError(error.ElementOpenInTrailingSection, AfterLeftAngleBracket.tokenize(0, src, .trailing).get());
-            };
-    }
-}
-
-pub const ContentOrWhitespace = union(TokenOrError) {
-    const Self = @This();
-    tok: Token,
-    err: TokenOrError.ErrorAndIndex(Error),
-
-    pub fn tokenize(
-        start_index: usize,
-        src: []const u8,
-    ) Self {
-        debug.assert(if (utility.getByte(src, start_index)) |char| switch (char) {
-            '<' => false,
-            else => true,
-        } else false);
-        var index: usize = start_index;
-
-        switch (utility.getByte(src, index) orelse return Self.initErr(index, Error.ImmediateEof)) {
-            '&' => {
-                index += 1;
-                const name_start_char = utility.getByte(src, index) orelse return Self.initErr(index, Error.EntityReferenceNameStartCharEof);
-                if (!xml.isValidUtf8NameStartChar(name_start_char)) {
-                    return Self.initErr(index, Error.EntityReferenceNameStartCharInvalid);
-                }
-
-                index += unicode.utf8CodepointSequenceLength(name_start_char) catch unreachable;
-                while (utility.getByte(src, index)) |name_char| : (index += unicode.utf8CodepointSequenceLength(name_char) catch unreachable) {
-                    if (!xml.isValidUtf8NameChar(name_char)) break;
-                }
-
-                if ((utility.getByte(src, index) orelse return Self.initErr(index, Error.UnterminatedEntityReferenceEof)) != ';') {
-                    return Self.initErr(index, Error.UnterminatedEntityReferenceInvalid);
-                }
-
-                index += 1;
-                return Self.initTok(.content_entity_ref, .{ .beg = start_index, .end = index });
-            },
-
-            else => {
-                const non_whitespace_chars: bool = blk: {
-                    index += xml.whitespaceLength(src, index);
-                    if (index != start_index and switch (utility.getByte(src, index) orelse '<') {
-                        '<', '&' => true,
-                        else => false,
-                    }) {
-                        break :blk false;
-                    }
-
-                    while (utility.getUtf8(src, index)) |subsequent_content_char| : (index += utility.lenOfUtf8OrNull(subsequent_content_char).?) {
-                        switch (subsequent_content_char) {
-                            '<',
-                            '&',
-                            => break :blk true,
-                            else => continue,
-                        }
-                    } else return Self.initErr(index, Error.ContentFollowedByInvalidOrEof);
-
-                    break :blk true;
-                };
-
-                const loc = Token.Loc{ .beg = start_index, .end = index };
-                if (non_whitespace_chars) {
-                    return Self.initTok(.content_text, loc);
-                } else {
-                    return Self.initTok(.whitespace, loc);
-                }
-            },
-        }
-    }
-
-    pub fn get(self: *const @This()) Error!Token {
-        return switch (self.*) {
-            .tok => |tok| tok,
-            .err => |err| err.code,
-        };
-    }
-
-    pub fn getLastIndex(self: @This()) usize {
-        return switch (self) {
-            .tok => |tok| tok.loc.end,
-            .err => |err| err.index,
-        };
-    }
-
-    pub const Error = error{
-        ImmediateEof,
-        EntityReferenceNameStartCharEof,
-        EntityReferenceNameStartCharInvalid,
-        UnterminatedEntityReferenceEof,
-        UnterminatedEntityReferenceInvalid,
-        ContentFollowedByInvalidOrEof,
-    };
-
-    fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
-        return @unionInit(@This(), "tok", Token.init(tag, loc));
-    }
-
-    fn initErr(index: usize, code: Error) @This() {
-        return @unionInit(@This(), "err", .{ .code = code, .index = index });
-    }
-};
-
-test "ContentOrWhitespace" {
-    // Whitespace
-    inline for (.{ (" "), ("\t"), ("    ") }) |slice| {
-        inline for (.{ (""), ("<"), ("&") }) |end| {
-            const src = slice ++ end;
-            const tok = try ContentOrWhitespace.tokenize(0, src).get();
-            try testing.expectEqual(Token.Tag.whitespace, tok.tag);
-            try testing.expectEqualStrings(slice, tok.slice(src));
-        }
-    }
-    // Text content
-    inline for (.{ ("f"), (" foo bar baz "), (" z") }) |slice| {
-        inline for (.{ ("<"), ("&") }) |end| {
-            const src = slice ++ end;
-            const tok = try ContentOrWhitespace.tokenize(0, src).get();
-            try testing.expectEqual(Token.Tag.content_text, tok.tag);
-            try testing.expectEqualStrings(slice, tok.slice(src));
-
-            const src_no_end = slice;
-            try testing.expectError(error.ContentFollowedByInvalidOrEof, ContentOrWhitespace.tokenize(0, src_no_end).get());
-        }
-    }
-
-    // Entity reference content
-    inline for (.{ ("amp"), ("A"), ("foo0") }) |name| {
-        const slice = "&" ++ name ++ ";";
-        const src = slice;
-        const tok = try ContentOrWhitespace.tokenize(0, src).get();
-        try testing.expectEqual(Token.Tag.content_entity_ref, tok.tag);
-        try testing.expectEqualStrings(slice, tok.slice(src));
-        try testing.expectEqualStrings(name, tok.name(src).?);
-    }
-}
-
-/// Appears after tokenizing an element open tag.
-/// Not guaranteed to succeed; may suggest to defer to another tokenizing strategy.
-pub const AttributeNameOrElementCloseInline = union(TokenOrError) {
-    const Self = @This();
-    tok: Token,
-    err: TokenOrError.ErrorAndIndex(Error),
-
-    pub fn tokenize(
-        continuation_start_index: usize,
-        src: []const u8,
-    ) Self {
-        var index: usize = continuation_start_index;
-
-        while (utility.getByte(src, index)) |char| : (index += 1) switch (char) {
-            ' ',
-            '\t',
-            '\n',
-            '\r',
-            => continue,
-            else => break,
-        } else return Self.initErr(index, Error.ImmediateEof);
-
-        const start_index = index;
-        switch (utility.getByte(src, index) orelse return Self.initErr(index, Error.ImmediateInvalidUtf8)) {
-            '/' => {
-                index += 1;
-                if ((utility.getByte(src, index) orelse return Self.initErr(index, Error.SlashEof)) != '>') {
-                    return Self.initErr(index, Error.SlashInvalid);
-                }
-
-                index += 1;
-                return Self.initTok(.elem_close_inline, .{ .beg = start_index, .end = index });
-            },
-
-            '>' => {
-                index += 1;
-                switch (utility.getByte(src, index) orelse return Self.initErr(index, Error.UnclosedElementOpenTagEof)) {
-                    '<' => return Self.initErr(index, error.MustTokenizeAfterLeftAngleBracket),
-                    else => return Self.initErr(index, error.MustTokenizeContent),
-                }
-            },
-
-            else => {
-                const name_start_char = utility.getByte(src, index).?;
-                if (!xml.isValidUtf8NameStartChar(name_start_char)) {
-                    return Self.initErr(index, error.InvalidAttributeNameStartChar);
-                }
-                index += unicode.utf8CodepointSequenceLength(name_start_char) catch unreachable;
-
-                while (utility.getByte(src, index)) |name_char| : (index += utility.lenOfUtf8OrNull(name_char).?) {
-                    if (!xml.isValidUtf8NameChar(name_char)) break;
-                }
-
-                return Self.initTok(.attr_name, .{ .beg = start_index, .end = index });
-            },
-        }
-    }
-
-    pub fn get(self: @This()) Error!Token {
-        return switch (self) {
-            .tok => |tok| tok,
-            .err => |err| err.code,
-        };
-    }
-
-    pub fn getLastIndex(self: @This()) usize {
-        return switch (self) {
-            .tok => |tok| tok.loc.end,
-            .err => |err| err.index,
-        };
-    }
-
-    pub const Error = error{
-        ImmediateEof,
-        ImmediateInvalidUtf8,
-        SlashEof,
-        SlashInvalid,
-        UnclosedElementOpenTagEof,
-        InvalidAttributeNameStartChar,
-
-        /// Following are not explicitly error messages; they are 100% guaranteed to be recoverable.
-        /// They're more like signals to continue tokenizing with other appropriate functions.
-
-        MustTokenizeAfterLeftAngleBracket,
-        MustTokenizeContent,
-    };
-
-    fn initTok(tag: Token.Tag, loc: Token.Loc) @This() {
-        return @unionInit(@This(), "tok", Token.init(tag, loc));
-    }
-
-    fn initErr(index: usize, code: Error) @This() {
-        return @unionInit(@This(), "err", .{ .code = code, .index = index });
-    }
-};
-
-test "AttributeNameOrElementCloseInline" {
-    // Inline Close
-    inline for (.{ (""), (" "), ("\n\t") }) |whitespace| {
-        const slice = "/>";
-        const src = whitespace ++ slice;
-        const tok = try AttributeNameOrElementCloseInline.tokenize(0, src).get();
-        try testing.expectEqual(Token.Tag.elem_close_inline, tok.tag);
-        try testing.expectEqualStrings(slice, tok.slice(src));
-    }
-
-    // Attribute Name
-    inline for (.{ (""), (" "), ("\n\t") }) |whitespace| {
-        inline for (.{ (""), ("="), ("\t") }) |end| {
-            const slice = "foo";
-            const src = whitespace ++ slice ++ end;
-            const tok = try AttributeNameOrElementCloseInline.tokenize(0, src).get();
-            try testing.expectEqual(Token.Tag.attr_name, tok.tag);
-            try testing.expectEqualStrings(slice, tok.slice(src));
-        }
-    }
-}
-
-pub const AttributeValueSegment = union(TokenOrError) {
-    const Self = @This();
-    tok: struct {
-        tok: Token,
-        quote: ?xml.StringQuote,
-    },
-    err: TokenOrError.ErrorAndIndex(Error),
-
-    pub fn tokenize(
-        continuation_start_index: usize,
-        src: []const u8,
-        comptime maybe_prev_quote: ?xml.StringQuote,
-    ) Self {
-        if (maybe_prev_quote) |prev_quote| {
-            switch (prev_quote) {
-                .single => {
-                    todo("", null);
-                },
-
-                .double => {
-                    todo("", null);
-                },
-            }
-        } else {
-            debug.assert(if (utility.getByte(src, continuation_start_index)) |char| char == '=' or xml.isSpace(char) else true); // don't want to trip the assert, rather return error.
-            var index: usize = continuation_start_index;
-
-            index += xml.whitespaceLength(src, index);
-            if ((utility.getByte(src, index) orelse 0) != '=') {
-                return Self.initErr(index, Error.ExpectedEquals);
-            }
-
-            index += 1;
-            index += xml.whitespaceLength(src, index);
-
-            if (!xml.isStringQuote(utility.getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeAttributeValue))) {
-                return Self.initErr(index, Error.InvalidBeforeAttributeValue);
-            }
-            const quote = xml.StringQuote.from(utility.getByte(src, index).?);
-            index += 1;
-            
-            const start_index = index;
-            const start_byte = utility.getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeStringTermination);
-            if (start_byte == quote.value()) {
-                return Self.initTok(.attr_val_empty, .{ .beg = start_index, .end = index }, quote);
-            }
-
-            if (start_byte == '&') {
-                index += 1;
-                index += xml.validUtf8NameLength(src, index);
-
-                const last_byte = utility.getByte(src, index) orelse return Self.initErr(index, Error.EofBeforeEntityReferenceTermination);
-                if (last_byte != ';') {
-                    return Self.initErr(index, Error.InvalidBeforeEntityReferenceTermination);
-                }
-
-                index += 1;
-
-                return Self.initTok(.attr_val_segment_entity_ref, .{ .beg = start_index, .end = index }, quote);
-            }
-
-            while (utility.getUtf8(src, index)) |text_char| : (index += utility.lenOfUtf8OrNull(text_char).?) {
-                if (text_char == '&' or text_char == quote.value()) break;
-            }
-
-            return Self.initTok(.attr_val_segment_text, .{ .beg = start_index, .end = index }, quote);
-        }
-    }
-
-    pub fn get(self: @This()) Error!Token {
-        return switch (self) {
-            .tok => |tok| tok.tok,
-            .err => |err| err.code,
-        };
-    }
-
-    pub fn getLastIndex(self: @This()) usize {
-        return switch (self) {
-            .tok => |tok| tok.tok.loc.end,
-            .err => |err| err.index,
-        };
-    }
-
-    pub const Error = error{
-        ExpectedEquals,
-        EofBeforeAttributeValue,
-        InvalidBeforeAttributeValue,
-        EofBeforeStringTermination,
-        InvalidUtf8EntityReferenceNameStartChar,
-        InvalidEntityReferenceNameStartChar,
-        EofBeforeEntityReferenceTermination,
-        InvalidBeforeEntityReferenceTermination,
-    };
-
-    fn initTok(tag: Token.Tag, loc: Token.Loc, quote: ?xml.StringQuote) @This() {
-        return @unionInit(@This(), "tok", .{ .tok = Token.init(tag, loc), .quote = quote });
-    }
-
-    fn initErr(index: usize, code: Error) @This() {
-        return @unionInit(@This(), "err", .{ .code = code, .index = index });
-    }
-};
-
-test "AttributeValueSegment" {
-    // Stress testing
-    inline for (.{ (""), (" "), ("\n\t") }) |whitespace0| {
-        inline for (.{ (""), (" "), ("\n\t") }) |whitespace1|
-            inline for (.{ ("\""), ("'") }) |quote| {
-                const other_quote: []const u8 = if (quote[0] == '"') "'" else "\"";
-                const eql = whitespace0 ++ "=" ++ whitespace1;
-
-                inline for (.{ (""), (other_quote), (";;") }) |extra_text| {
-                    const slice = extra_text ++ "foo bar baz" ++ extra_text;
-                    const src = eql ++ quote ++ slice ++ quote;
-                    const tok = try AttributeValueSegment.tokenize(0, src, null).get();
-                    try testing.expectEqual(Token.Tag.attr_val_segment_text, tok.tag);
-                    try testing.expectEqualStrings(slice, tok.slice(src));
-                }
-
-                {
-                    const slice = "";
-                    const src = eql ++ quote ++ slice ++ quote;
-                    const tok = try AttributeValueSegment.tokenize(0, src, null).get();
-                    try testing.expectEqual(Token.Tag.attr_val_empty, tok.tag);
-                    try testing.expectEqualStrings(slice, tok.slice(src));
-                }
-
-                {
-                    const name = "amp";
-                    const slice = "&" ++ name ++ ";";
-                    const src = eql ++ quote ++ slice ++ quote;
-                    const tok = try AttributeValueSegment.tokenize(0, src, null).get();
-                    try testing.expectEqual(Token.Tag.attr_val_segment_entity_ref, tok.tag);
-                    try testing.expectEqualStrings(slice, tok.slice(src));
-                    try testing.expectEqualStrings(name, tok.name(src).?);
-                }
-            };
+    elem_open_tag,
+    elem_close_tag,
+    pi_target,
+    comment,
+    content_cdata,
+    
+    comptime {
+        _ = toTokenTag;
+        const field_names = meta.fieldNames(Self);
+        debug.assert(meta.trait.hasFields(Token.Tag, field_names));
     }
     
-    // Consecutivity
-    //{
-    //    const src = " = 'foo&bar;\"baz' ";
-    //    var result: AttributeValueSegment = undefined;
-    //    var tok: Token = undefined;
+    
+    
+    /// Returns the built-in slice that has been used to guess the tag.
+    pub fn checkedSlice(self: Self) []const u8 {
+        return switch (self) {
+            .elem_open_tag => "<",
+            .elem_close_tag => "</",
+            .pi_target => "<?",
+            .comment => "<!-",
+            .content_cdata => "<![",
+        };
+    }
+    
+    pub fn expectedSubsequentSlice(self: Self) ?[]const u8 {
+        return switch (self) {
+            .elem_open_tag => null,
+            .elem_close_tag => null,
+            .pi_target => null,
+            .comment => "-",
+            .content_cdata => "CDATA[",
+        };
+    }
+    
+    pub fn toTokenTag(self: Self) meta.Tag(Token.Tag) {
+        return std.meta.stringToEnum(meta.Tag(Token.Tag), @tagName(self)).?;
+    }
+    
+    pub const Error = @typeInfo(@typeInfo(@TypeOf(Self.guessFrom)).Fn.return_type.?).ErrorUnion.error_set;
+    
+    pub fn guessFrom(src: []const u8, start_index: usize) error{
+        ImmediateEof,
+        BangEof,
+        BangUnrecognized,
+    }!Self {
+        debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
+        const result: Error!Self =
+        if (utility.getByte(src, start_index + "<".len)) |byte0| switch (byte0) {
+            '?' => Self.pi_target,
+            '/' => Self.elem_close_tag,
+            
+            '!' => if (utility.getByte(src, start_index + "<!".len)) |byte1| switch (byte1) {
+                '[' => Self.content_cdata,
+                '-' => Self.comment,
+                else => Error.BangUnrecognized,
+            } else Error.BangEof,
+            
+            else => Self.elem_open_tag,
+        } else Error.ImmediateEof;
         
-    //    result = AttributeValueSegment.tokenize(0, src, null);
-    //    tok = try result.get();
-    //    try testing.expectEqual(Token.Tag.attr_val_segment_text, tok.tag);
-    //    try testing.expectEqualStrings("foo", tok.slice(src));
-    //    const quote: xml.StringQuote = result.tok.quote orelse return testing.expect(false);
+        debug.assert(if (result) |guess| blk: {
+            const expected = guess.checkedSlice();
+            const actual = src[start_index..start_index + expected.len];
+            break :blk mem.eql(u8, expected, actual);
+        } else |_| true);
         
+        return result;
+    }
+};
+
+test "TagGuess" {
+    inline for (.{
+        // note that the following characters aren't validated; it is left to the caller to then verify
+        // that the subsequent bytes are valid.
+        "foo",
+        "  ",
+        "0",
+    }) |anything_else| {
+        try testing.expectError(error.ImmediateEof, TagGuess.guessFrom("<", 0));
+        try testing.expectEqual(TagGuess.elem_open_tag, try TagGuess.guessFrom("<" ++ anything_else, 0));
         
-    //    result = switch (quote) {
-    //        .double => AttributeValueSegment.tokenize(result.getLastIndex(), src, .double),
-    //        .single => AttributeValueSegment.tokenize(result.getLastIndex(), src, .single),
-    //    };
-    //    tok = try result.get();
-    //    try testing.expectEqual(@as(?xml.StringQuote, null), result.tok.quote);
-    //    try testing.expectEqual(Token.Tag.attr_val_segment_entity_ref, tok.tag);
-    //    try testing.expectEqualStrings("&bar;", tok.slice(src));
-    //    try testing.expectEqualStrings("bar", tok.name(src).?);
+        try testing.expectEqual(TagGuess.content_cdata, try TagGuess.guessFrom("<![", 0));
+        try testing.expectEqual(TagGuess.content_cdata, try TagGuess.guessFrom("<![" ++ anything_else, 0));
         
-    //    result = switch (quote) {
-    //        .double => AttributeValueSegment.tokenize(result.getLastIndex(), src, .double),
-    //        .single => AttributeValueSegment.tokenize(result.getLastIndex(), src, .single),
-    //    };
-    //    tok = try result.get();
-    //    try testing.expectEqual(@as(?xml.StringQuote, null), result.tok.quote);
-    //    try testing.expectEqual(Token.Tag.attr_val_segment_entity_ref, tok.tag);
-    //    try testing.expectEqualStrings("&bar;", tok.slice(src));
-    //    try testing.expectEqualStrings("bar", tok.name(src).?);
-    //}
+        try testing.expectEqual(TagGuess.comment, try TagGuess.guessFrom("<!-", 0));
+        try testing.expectEqual(TagGuess.comment, try TagGuess.guessFrom("<!-" ++ anything_else, 0));
+        
+        try testing.expectEqual(TagGuess.elem_close_tag, try TagGuess.guessFrom("</", 0));
+        try testing.expectEqual(TagGuess.elem_close_tag, try TagGuess.guessFrom("</" ++ anything_else, 0));
+        
+        try testing.expectEqual(TagGuess.pi_target, try TagGuess.guessFrom("<?", 0));
+        try testing.expectEqual(TagGuess.pi_target, try TagGuess.guessFrom("<?" ++ anything_else, 0));
+    }
+}
+
+
+
+fn ErrorAndIndex(comptime ErrorSet: type) type {
+    return struct {
+        index: usize,
+        code: ErrorSet,
+    };
+}
+
+fn TokenOrErrorAndIndex(comptime ErrorSet: type) type {
+    return union(enum) {
+        const Self = @This();
+        tok: Token,
+        err: @This().ErrorAndIndex,
+        
+        pub const Error = ErrorSet;
+        pub const ErrorAndIndex = tokenize_strategies.ErrorAndIndex(Error);
+        
+        pub fn get(self: Self) ErrorSet!Token {
+            return switch (self) {
+                .tok => |tok| tok,
+                .err => |err| err.code,
+            };
+        }
+        
+        pub fn lastIndex(self: Self) usize {
+            return switch (self) {
+                .tok => |tok| tok.loc.end,
+                .err => |err| err.index,
+            };
+        }
+        
+        fn initTok(tok: Token) Self {
+            return @unionInit(Self, "tok", tok);
+        }
+        
+        fn initErr(index: usize, err: ErrorSet) Self {
+            return @unionInit(Self, "err", .{ .index = index, .code = err });
+        }
+    };
+}
+
+
+
+pub const LeftAngleBracket = TokenOrErrorAndIndex(TagGuess.Error || error {
+    ElementCloseInPrologue,
+    
+    ElementOpenInTrailing,
+    ElementCloseInTrailing,
+    
+    ExpectedElementOpenName,
+    ExpectedElementCloseName,
+    
+    ExpectedProcessingInstructionsTarget,
+    
+    ExpectedCommentDash,
+    DashDashInComment,
+    UnclosedComment,
+    
+    CDataSectionInPrologue,
+    CDataSectionInTrailing,
+    ExpectedCDataKeyword,
+    UnclosedCDataSection,
+});
+
+pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_section: xml.DocumentSection) LeftAngleBracket {
+    const ResultType = LeftAngleBracket;
+    
+    debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
+    var index: usize = start_index;
+    
+    const expected_tag = TagGuess.guessFrom(src, start_index) catch |err| {
+        index += @as(usize, switch (err) {
+            error.ImmediateEof => 0,
+            error.BangEof => 1,
+            error.BangUnrecognized => 1,
+        });
+        return ResultType.initErr(index, err);
+    };
+    
+    index += expected_tag.checkedSlice().len;
+    
+    switch (expected_tag) {
+        .elem_close_tag,
+        .elem_open_tag,
+        => {
+            switch (document_section) {
+                .prologue => switch (expected_tag) {
+                    .elem_open_tag => {},
+                    .elem_close_tag => return ResultType.initErr(index, error.ElementCloseInPrologue),
+                    else => unreachable,
+                },
+                
+                .trailing => switch (expected_tag) {
+                    .elem_open_tag => return ResultType.initErr(index, error.ElementOpenInTrailing),
+                    .elem_close_tag => return ResultType.initErr(index, error.ElementCloseInTrailing),
+                    else => unreachable,
+                },
+                
+                .root => {},
+            }
+            
+            const name_len = xml.validUtf8NameLength(src, index);
+            if (name_len == 0) {
+                const err_code = switch (expected_tag) {
+                    .elem_open_tag => error.ExpectedElementOpenName,
+                    .elem_close_tag => error.ExpectedElementCloseName,
+                    else => unreachable,
+                };
+                return ResultType.initErr(index, err_code);
+            }
+            index += name_len;
+        },
+        
+        .pi_target => {
+            const target_name_len = xml.validUtf8NameLength(src, index);
+            if (target_name_len == 0) return ResultType.initErr(index, error.ExpectedProcessingInstructionsTarget);
+            index += target_name_len;
+            return ResultType.initTok(Token.init(.pi_target, .{ .beg = start_index, .end = index }));
+        },
+        
+        .comment => {
+            const expected_subsequent_slice = expected_tag.expectedSubsequentSlice().?;
+            const actual_subsequent_slice = utility.clampedSubSlice(src, index, index + expected_subsequent_slice.len);
+            
+            if (expected_subsequent_slice.len != actual_subsequent_slice.len) {
+                return ResultType.initErr(index, error.ExpectedCommentDash);
+            }
+            
+            for (expected_subsequent_slice) |char| {
+                if (char != (utility.getByte(src, index) orelse char + 1)) {
+                    return ResultType.initErr(index, error.ExpectedCommentDash);
+                }
+                index += utility.lenOfUtf8OrNull(char).?;
+            }
+            
+            index += actual_subsequent_slice.len;
+            
+            if (!mem.eql(u8, expected_subsequent_slice, actual_subsequent_slice)) {
+                return ResultType.initErr(index, error.ExpectedCommentDash);
+            }
+            
+            while (utility.getUtf8(src, index)) |comment_char| : (index += utility.lenOfUtf8OrNull(comment_char).?) {
+                
+                if (comment_char != '-') continue;
+                if ((utility.getByte(src, index + "-".len) orelse 0) != '-') continue;
+                if ((utility.getByte(src, index + "--".len) orelse 0) != '>') return ResultType.initErr(index, error.DashDashInComment);
+                
+                index += ("-->".len);
+                break;
+                
+            } else return ResultType.initErr(index, error.UnclosedComment);
+        },
+        
+        .content_cdata => {
+            switch (document_section) {
+                .prologue => return ResultType.initErr(index, error.CDataSectionInPrologue),
+                .trailing => return ResultType.initErr(index, error.CDataSectionInTrailing),
+                .root => {},
+            }
+            
+            const expected_subsequent_slice = expected_tag.expectedSubsequentSlice().?;
+            const actual_subsequent_slice = utility.clampedSubSlice(src, index, index + expected_subsequent_slice.len);
+            
+            index += actual_subsequent_slice.len;
+            
+            if (!mem.eql(u8, expected_subsequent_slice, actual_subsequent_slice)) {
+                return ResultType.initErr(index, error.ExpectedCDataKeyword);
+            }
+            
+            while (utility.getUtf8(src, index)) |cdata_char| : (index += utility.lenOfUtf8OrNull(cdata_char).?) {
+                
+                if (cdata_char != ']') continue;
+                if (!mem.eql(u8, utility.clampedSubSlice(src, index + "]".len, index + "]]>".len), "]>")) continue;
+                
+                index += ("]]>".len);
+                break;
+                
+            } else return ResultType.initErr(index, error.UnclosedCDataSection);
+        },
+    }
+    
+    return ResultType.initTok(Token.init(expected_tag.toTokenTag(), .{ .beg = start_index, .end = index }));
+}
+
+test "leftAngleBracket" {
+    // stress testing
+    @setEvalBranchQuota(1500);
+    inline for (.{ .prologue, .root, .trailing }) |document_section| {
+        inline for (.{ (""), ("\t\n"), ("wrfwfn34908jdjo239u") }) |start| {
+            
+            inline for (.{ (""), ("   "), ("/"), (">"), ("/>"), ("\t/>") }) |end| {
+                inline for (.{ ("foobar"), ("foo:bar"), ("A"), (":foo:bar:baz:") }) |name| {
+                    if (document_section != .trailing) {
+                        const slice = "<" ++ name;
+                        const src = start ++ slice ++ end;
+                        const result = leftAngleBracket(src, start.len, document_section);
+                        const tok = try result.get();
+                        try testing.expectEqual(Token.Tag.elem_open_tag, tok.tag);
+                        try testing.expectEqualStrings(slice, tok.slice(src));
+                        try testing.expectEqualStrings(name, tok.name(src) orelse return testing.expect(false));
+                    }
+                    
+                    if (document_section == .root) {
+                        const slice = "</" ++ name;
+                        const src = start ++ slice ++ end;
+                        const result = leftAngleBracket(src, start.len, document_section);
+                        const tok = try result.get();
+                        try testing.expectEqual(Token.Tag.elem_close_tag, tok.tag);
+                        try testing.expectEqualStrings(slice, tok.slice(src));
+                        try testing.expectEqualStrings(name, tok.name(src) orelse return testing.expect(false));
+                    }
+                    
+                    {
+                        const slice = "<?" ++ name;
+                        const src = start ++ slice ++ end;
+                        const result = leftAngleBracket(src, start.len, document_section);
+                        const tok = try result.get();
+                        try testing.expectEqualStrings(slice, tok.slice(src));
+                        try testing.expectEqualStrings(name, tok.name(src) orelse return testing.expect(false));
+                    }
+                }
+            }
+            
+            inline for (.{ ("<") }) |comment_data| {
+                const slice = "<!--" ++ comment_data ++ "-->";
+                const src = start ++ slice;
+                const result = leftAngleBracket(src, start.len, document_section);
+                const tok = try result.get();
+                try testing.expectEqual(Token.Tag.comment, tok.tag);
+                try testing.expectEqualStrings(slice, tok.slice(src));
+                try testing.expectEqualStrings(comment_data, tok.data(src) orelse return testing.expect(false));
+            }
+            
+            if (document_section == .root) inline for (.{ "", "<", "]", "]]", "]>", "foo bar baz" }) |char_data| {
+                const slice = "<![CDATA[" ++ char_data ++ "]]>";
+                const src = start ++ slice;
+                const result = leftAngleBracket(src, start.len, document_section);
+                const tok = try result.get();
+                try testing.expectEqual(Token.Tag.content_cdata, tok.tag);
+                try testing.expectEqualStrings(slice, tok.slice(src));
+                try testing.expectEqualStrings(char_data, tok.data(src) orelse return testing.expect(false));
+            };
+            
+        }
+    }
+    
+    try testing.expectError(error.BangEof,                              leftAngleBracket("<!",            0, .root    ).get());
+    try testing.expectError(error.BangUnrecognized,                     leftAngleBracket("<!D",           0, .root    ).get());
+    try testing.expectError(error.ImmediateEof,                         leftAngleBracket("<",             0, .root    ).get());
+    try testing.expectError(error.ElementCloseInPrologue,               leftAngleBracket("</",            0, .prologue).get());
+    try testing.expectError(error.ElementOpenInTrailing,                leftAngleBracket("<a",            0, .trailing).get());
+    try testing.expectError(error.ElementCloseInTrailing,               leftAngleBracket("</",            0, .trailing).get());
+    try testing.expectError(error.ExpectedElementOpenName,              leftAngleBracket("<0",            0, .root    ).get());
+    try testing.expectError(error.ExpectedElementCloseName,             leftAngleBracket("</0",           0, .root    ).get());
+    try testing.expectError(error.ExpectedProcessingInstructionsTarget, leftAngleBracket("<?",            0, .root    ).get());
+    try testing.expectError(error.ExpectedCommentDash,                  leftAngleBracket("<!- ",          0, .root    ).get());
+    try testing.expectError(error.ExpectedCommentDash,                  leftAngleBracket("<!-",           0, .root    ).get());
+    try testing.expectError(error.DashDashInComment,                    leftAngleBracket("<!-- -- ",      0, .root    ).get());
+    try testing.expectError(error.UnclosedComment,                      leftAngleBracket("<!-- ",         0, .root    ).get());
+    try testing.expectError(error.CDataSectionInPrologue,               leftAngleBracket("<![CDATA[ ]]>", 0, .prologue).get());
+    try testing.expectError(error.CDataSectionInTrailing,               leftAngleBracket("<![CDATA[ ]]>", 0, .trailing).get());
+    try testing.expectError(error.ExpectedCDataKeyword,                 leftAngleBracket("<![CDAT ]]>",   0, .root    ).get());
+    try testing.expectError(error.UnclosedCDataSection,                 leftAngleBracket("<![CDATA[ ]]",  0, .root    ).get());
 }

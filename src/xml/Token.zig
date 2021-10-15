@@ -22,7 +22,6 @@ pub fn name(self: Token, src: []const u8) ?[]const u8 {
     };
     const offset: Offset = switch (self.tag) {
         .pi_target => .{ .forwards = ("<?".len) },
-        .dtd_start => |info| .{ .forwards = info.name_beg },
         .elem_open_tag => .{ .forwards = ("<".len) },
         .elem_close_tag => .{ .forwards = ("</").len },
         .attr_val_segment_entity_ref => .{ .forwards = ("&".len), .backwards = (";".len) },
@@ -56,8 +55,6 @@ pub const Tag = union(enum) {
     pi_tok_string,
     pi_tok_other,
     pi_end,
-
-    dtd_start: struct { name_beg: usize },
 
     whitespace,
     comment,
