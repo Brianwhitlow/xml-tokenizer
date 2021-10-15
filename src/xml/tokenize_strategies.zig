@@ -9,8 +9,47 @@ const unicode = std.unicode;
 const xml = @import("../xml.zig");
 const utility = @import("utility.zig");
 const tokenize_strategies = @This();
+
 const DocumentSection = xml.DocumentSection;
+comptime {
+    const expected_fields = .{
+        "prologue",
+        "root",
+        "trailing",
+    };
+    
+    debug.assert(meta.trait.hasFields(DocumentSection, expected_fields));
+    debug.assert(meta.fields(DocumentSection).len == 3);
+}
+
 const Token = xml.Token;
+comptime {
+    const expected_fields = .{
+        "pi_target",
+        "pi_tok_string",
+        "pi_tok_other",
+        "pi_end",
+
+        "whitespace",
+        "comment",
+
+        "elem_open_tag",
+        "elem_close_tag",
+        "elem_close_inline",
+
+        "attr_name",
+        "attr_val_empty",
+        "attr_val_segment_text",
+        "attr_val_segment_entity_ref",
+
+        "content_text",
+        "content_cdata",
+        "content_entity_ref",
+    };
+    
+    debug.assert(meta.trait.hasFields(xml.Token.Tag, expected_fields));
+    debug.assert(meta.fields(xml.Token.Tag).len == expected_fields.len);
+}
 
 inline fn todo(comptime fmt: []const u8, args: anytype) noreturn {
     debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
