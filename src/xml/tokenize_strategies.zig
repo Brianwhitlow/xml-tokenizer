@@ -12,6 +12,7 @@ const tokenize_strategies = @This();
 
 const Token = xml.Token;
 comptime {
+    // At the time of writing, this is the expected structure of xml.Token
     const expected_fields = .{
         "pi_target",
         "pi_tok_string",
@@ -404,3 +405,6 @@ test "tokenizeAfterLeftAngleBracket" {
         }
     }
 }
+
+
+
