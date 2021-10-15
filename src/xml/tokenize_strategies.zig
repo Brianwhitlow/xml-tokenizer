@@ -88,13 +88,13 @@ pub const TagGuess = enum {
         return std.meta.stringToEnum(meta.Tag(Token.Tag), @tagName(self)).?;
     }
 
-    pub const Error = @typeInfo(@typeInfo(@TypeOf(Self.guessFrom)).Fn.return_type.?).ErrorUnion.error_set;
-
-    pub fn guessFrom(src: []const u8, start_index: usize) error{
+    pub const Error = error {
         ImmediateEof,
         BangEof,
         BangUnrecognized,
-    }!Self {
+    };
+
+    pub fn guessFrom(src: []const u8, start_index: usize) Error!Self {
         debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
         const result: Error!Self =
             if (utility.getByte(src, start_index + "<".len)) |byte0| switch (byte0) {
@@ -184,6 +184,8 @@ fn TokenOrErrorAndIndex(comptime ErrorSet: type) type {
         }
     };
 }
+
+
 
 pub const LeftAngleBracket = TokenOrErrorAndIndex(TagGuess.Error || error{
     ElementCloseInPrologue,
@@ -396,3 +398,6 @@ test "leftAngleBracket" {
         }
     }
 }
+
+
+
