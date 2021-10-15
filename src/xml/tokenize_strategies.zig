@@ -250,12 +250,6 @@ pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_s
                 index += utility.lenOfUtf8OrNull(char).?;
             }
             
-            index += actual_subsequent_slice.len;
-            
-            if (!mem.eql(u8, expected_subsequent_slice, actual_subsequent_slice)) {
-                return ResultType.initErr(index, error.ExpectedCommentDash);
-            }
-            
             while (utility.getUtf8(src, index)) |comment_char| : (index += utility.lenOfUtf8OrNull(comment_char).?) {
                 
                 if (comment_char != '-') continue;
@@ -278,10 +272,15 @@ pub fn leftAngleBracket(src: []const u8, start_index: usize, comptime document_s
             const expected_subsequent_slice = expected_tag.expectedSubsequentSlice().?;
             const actual_subsequent_slice = utility.clampedSubSlice(src, index, index + expected_subsequent_slice.len);
             
-            index += actual_subsequent_slice.len;
-            
-            if (!mem.eql(u8, expected_subsequent_slice, actual_subsequent_slice)) {
+            if (expected_subsequent_slice.len != actual_subsequent_slice.len) {
                 return ResultType.initErr(index, error.ExpectedCDataKeyword);
+            }
+            
+            for (expected_subsequent_slice) |char| {
+                if (char != (utility.getByte(src, index) orelse char + 1)) {
+                    return ResultType.initErr(index, error.ExpectedCDataKeyword);
+                }
+                index += utility.lenOfUtf8OrNull(char).?;
             }
             
             while (utility.getUtf8(src, index)) |cdata_char| : (index += utility.lenOfUtf8OrNull(cdata_char).?) {
@@ -361,21 +360,28 @@ test "leftAngleBracket" {
         }
     }
     
-    try testing.expectError(error.BangEof,                              leftAngleBracket("<!",            0, .root    ).get());
-    try testing.expectError(error.BangUnrecognized,                     leftAngleBracket("<!D",           0, .root    ).get());
-    try testing.expectError(error.ImmediateEof,                         leftAngleBracket("<",             0, .root    ).get());
-    try testing.expectError(error.ElementCloseInPrologue,               leftAngleBracket("</",            0, .prologue).get());
-    try testing.expectError(error.ElementOpenInTrailing,                leftAngleBracket("<a",            0, .trailing).get());
-    try testing.expectError(error.ElementCloseInTrailing,               leftAngleBracket("</",            0, .trailing).get());
-    try testing.expectError(error.ExpectedElementOpenName,              leftAngleBracket("<0",            0, .root    ).get());
-    try testing.expectError(error.ExpectedElementCloseName,             leftAngleBracket("</0",           0, .root    ).get());
-    try testing.expectError(error.ExpectedProcessingInstructionsTarget, leftAngleBracket("<?",            0, .root    ).get());
-    try testing.expectError(error.ExpectedCommentDash,                  leftAngleBracket("<!- ",          0, .root    ).get());
-    try testing.expectError(error.ExpectedCommentDash,                  leftAngleBracket("<!-",           0, .root    ).get());
-    try testing.expectError(error.DashDashInComment,                    leftAngleBracket("<!-- -- ",      0, .root    ).get());
-    try testing.expectError(error.UnclosedComment,                      leftAngleBracket("<!-- ",         0, .root    ).get());
-    try testing.expectError(error.CDataSectionInPrologue,               leftAngleBracket("<![CDATA[ ]]>", 0, .prologue).get());
-    try testing.expectError(error.CDataSectionInTrailing,               leftAngleBracket("<![CDATA[ ]]>", 0, .trailing).get());
-    try testing.expectError(error.ExpectedCDataKeyword,                 leftAngleBracket("<![CDAT ]]>",   0, .root    ).get());
-    try testing.expectError(error.UnclosedCDataSection,                 leftAngleBracket("<![CDATA[ ]]",  0, .root    ).get());
+    
+    const valid_elem_name = [_]u8 { xml.valid_name_start_char };
+    const invalid_elem_name = [_]u8 { xml.invalid_name_start_char };
+    inline for ([_]struct { err: anyerror, src: []const u8, section: xml.DocumentSection } {
+        .{ .err = error.ImmediateEof                         , .section = .root     , .src = "<"                        },
+        .{ .err = error.BangEof                              , .section = .root     , .src = "<!"                       },
+        .{ .err = error.BangUnrecognized                     , .section = .root     , .src = "<!D"                      },
+        .{ .err = error.ElementCloseInPrologue               , .section = .prologue , .src = "</"                       },
+        .{ .err = error.ElementOpenInTrailing                , .section = .trailing , .src = "<" ++ valid_elem_name     },
+        .{ .err = error.ElementCloseInTrailing               , .section = .trailing , .src = "</"                       },
+        .{ .err = error.ExpectedElementOpenName              , .section = .root     , .src = "<" ++ invalid_elem_name   },
+        .{ .err = error.ExpectedElementCloseName             , .section = .root     , .src = "</" ++ invalid_elem_name  },
+        .{ .err = error.ExpectedProcessingInstructionsTarget , .section = .root     , .src = "<?"                       },
+        .{ .err = error.ExpectedCommentDash                  , .section = .root     , .src = "<!- "                     },
+        .{ .err = error.ExpectedCommentDash                  , .section = .root     , .src = "<!-"                      },
+        .{ .err = error.DashDashInComment                    , .section = .root     , .src = "<!-- -- "                 },
+        .{ .err = error.UnclosedComment                      , .section = .root     , .src = "<!-- "                    },
+        .{ .err = error.CDataSectionInPrologue               , .section = .prologue , .src = "<![CDATA[ ]]>"            },
+        .{ .err = error.CDataSectionInTrailing               , .section = .trailing , .src = "<![CDATA[ ]]>"            },
+        .{ .err = error.ExpectedCDataKeyword                 , .section = .root     , .src = "<![CDAT ]]>"              },
+        .{ .err = error.UnclosedCDataSection                 , .section = .root     , .src = "<![CDATA[ ]]"             },
+    }) |info| {
+        try testing.expectError(info.err, leftAngleBracket(info.src, 0, info.section).get());
+    }
 }
