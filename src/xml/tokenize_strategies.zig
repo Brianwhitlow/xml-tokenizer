@@ -92,110 +92,13 @@ fn TokenOrErrorAndIndex(comptime ErrorSet: type) type {
     };
 }
 
-fn ExpectedTokenInterface(comptime Self: type) type {
-    comptime {
-        const field_names = meta.fieldNames(Self);
-        debug.assert(meta.trait.hasFields(Token.Tag, field_names));
-        
-        return struct {
-            pub fn toTokenTag(self: Self) meta.Tag(Token.Tag) {
-                return std.meta.stringToEnum(meta.Tag(Token.Tag), @tagName(self)).?;
-            }
-        };
-    }
-}
 
 
-
-pub const ExpectedTokenAfterLeftAngleBracket = enum {
-    const Self = @This();
-    elem_open_tag,
-    elem_close_tag,
-    pi_target,
-    comment,
-    content_cdata,
-
-    pub usingnamespace ExpectedTokenInterface(Self);
-
-    /// Returns the built-in slice that has been used to guess the tag.
-    pub fn checkedSlice(self: Self) []const u8 {
-        return switch (self) {
-            .elem_open_tag => "<",
-            .elem_close_tag => "</",
-            .pi_target => "<?",
-            .comment => "<!-",
-            .content_cdata => "<![",
-        };
-    }
-
-    pub fn expectedSubsequentSlice(self: Self) ?[]const u8 {
-        return switch (self) {
-            .elem_open_tag => null,
-            .elem_close_tag => null,
-            .pi_target => null,
-            .comment => "-",
-            .content_cdata => "CDATA[",
-        };
-    }
-
-    pub const Error = error {
-        ImmediateEof,
-        BangEof,
-        BangUnrecognized,
-    };
-
-    pub fn guessFrom(src: []const u8, start_index: usize) Error!Self {
-        debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
-        const result: Error!Self =
-            if (utility.getByte(src, start_index + "<".len)) |byte0| switch (byte0) {
-            '?' => Self.pi_target,
-            '/' => Self.elem_close_tag,
-
-            '!' => if (utility.getByte(src, start_index + "<!".len)) |byte1| switch (byte1) {
-                '[' => Self.content_cdata,
-                '-' => Self.comment,
-                else => Error.BangUnrecognized,
-            } else Error.BangEof,
-
-            else => Self.elem_open_tag,
-        } else Error.ImmediateEof;
-
-        debug.assert(if (result) |guess| blk: {
-            const expected = guess.checkedSlice();
-            const actual = src[start_index .. start_index + expected.len];
-            break :blk mem.eql(u8, expected, actual);
-        } else |_| true);
-
-        return result;
-    }
-};
-
-test "ExpectedTokenAfterLeftAngleBracket" {
-    inline for (.{
-        // note that the following characters aren't validated; it is left to the caller to then verify
-        // that the subsequent bytes are valid.
-        "foo",
-        "  ",
-        "0",
-    }) |anything_else| {
-        try testing.expectError(error.ImmediateEof, ExpectedTokenAfterLeftAngleBracket.guessFrom("<", 0));
-        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.elem_open_tag, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<" ++ anything_else, 0));
-
-        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.content_cdata, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<![", 0));
-        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.content_cdata, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<![" ++ anything_else, 0));
-
-        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.comment, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<!-", 0));
-        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.comment, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<!-" ++ anything_else, 0));
-
-        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.elem_close_tag, try ExpectedTokenAfterLeftAngleBracket.guessFrom("</", 0));
-        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.elem_close_tag, try ExpectedTokenAfterLeftAngleBracket.guessFrom("</" ++ anything_else, 0));
-
-        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.pi_target, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<?", 0));
-        try testing.expectEqual(ExpectedTokenAfterLeftAngleBracket.pi_target, try ExpectedTokenAfterLeftAngleBracket.guessFrom("<?" ++ anything_else, 0));
-    }
-}
-
-pub const TokenizeAfterLeftAngleBracketResult = TokenOrErrorAndIndex(ExpectedTokenAfterLeftAngleBracket.Error || error{
+pub const TokenizeAfterLeftAngleBracketResult = TokenOrErrorAndIndex(error{
+    ImmediateEof,
+    BangEof,
+    BangUnrecognized,
+    
     ElementCloseInPrologue,
 
     ElementOpenInTrailing,
@@ -218,7 +121,77 @@ pub const TokenizeAfterLeftAngleBracketResult = TokenOrErrorAndIndex(ExpectedTok
 
 pub fn tokenizeAfterLeftAngleBracket(src: []const u8, start_index: usize, comptime document_section: DocumentSection) TokenizeAfterLeftAngleBracketResult {
     const ResultType = TokenizeAfterLeftAngleBracketResult;
+    
+    const ExpectedTokenAfterLeftAngleBracket = enum {
+        const Self = @This();
+        elem_open_tag,
+        elem_close_tag,
+        pi_target,
+        comment,
+        content_cdata,
+        
+        comptime {
+            const field_names = meta.fieldNames(Self);
+            debug.assert(meta.trait.hasFields(Token.Tag, field_names));
+        }
+        
+        pub fn toTokenTag(self: Self) meta.Tag(Token.Tag) {
+            return std.meta.stringToEnum(meta.Tag(Token.Tag), @tagName(self)).?;
+        }
 
+        /// Returns the built-in slice that has been used to guess the tag.
+        pub fn checkedSlice(self: Self) []const u8 {
+            return switch (self) {
+                .elem_open_tag => "<",
+                .elem_close_tag => "</",
+                .pi_target => "<?",
+                .comment => "<!-",
+                .content_cdata => "<![",
+            };
+        }
+
+        pub fn expectedSubsequentSlice(self: Self) ?[]const u8 {
+            return switch (self) {
+                .elem_open_tag => null,
+                .elem_close_tag => null,
+                .pi_target => null,
+                .comment => "-",
+                .content_cdata => "CDATA[",
+            };
+        }
+
+        pub const Error = error {
+            ImmediateEof,
+            BangEof,
+            BangUnrecognized,
+        };
+
+        pub fn guessFrom(src: []const u8, start_index: usize) Error!Self {
+            debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
+            const result: Error!Self =
+                if (utility.getByte(src, start_index + "<".len)) |byte0| switch (byte0) {
+                '?' => Self.pi_target,
+                '/' => Self.elem_close_tag,
+
+                '!' => if (utility.getByte(src, start_index + "<!".len)) |byte1| switch (byte1) {
+                    '[' => Self.content_cdata,
+                    '-' => Self.comment,
+                    else => Error.BangUnrecognized,
+                } else Error.BangEof,
+
+                else => Self.elem_open_tag,
+            } else Error.ImmediateEof;
+
+            debug.assert(if (result) |guess| blk: {
+                const expected = guess.checkedSlice();
+                const actual = src[start_index .. start_index + expected.len];
+                break :blk mem.eql(u8, expected, actual);
+            } else |_| true);
+
+            return result;
+        }
+    };
+    
     debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
     var index: usize = start_index;
 
