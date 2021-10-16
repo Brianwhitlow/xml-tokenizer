@@ -11,6 +11,9 @@ comptime {
 
 pub const Token = @import("xml/Token.zig");
 pub const DocumentSection = tokenize_strategies.DocumentSection;
+
+
+
 pub const spaces = [_]u8{ ' ', '\t', '\n', '\r' };
 pub fn isSpace(char: anytype) bool {
     const T = @TypeOf(char);
@@ -90,10 +93,8 @@ pub fn isValidUtf8NameStartChar(codepoint: u21) bool {
         else => false,
     };
 }
-test "isValidUtf8NameStartChar" {
-    try std.testing.expect(isValidUtf8NameStartChar(valid_name_start_char));
-    try std.testing.expect(!isValidUtf8NameStartChar(invalid_name_start_char));
-}
+
+
 
 pub const valid_name_char: u8 = blk: {
     var result: u8 = 0;
@@ -118,10 +119,8 @@ pub fn isValidUtf8NameChar(codepoint: u21) bool {
         else => false,
     };
 }
-test "isValidUtf8NameChar" {
-    try std.testing.expect(isValidUtf8NameChar(valid_name_char));
-    try std.testing.expect(!isValidUtf8NameChar(invalid_name_char));
-}
+
+
 
 pub fn validUtf8NameLength(src: []const u8, start_index: usize) usize {
     const name_start_char = utility.getUtf8(src, start_index) orelse return 0;

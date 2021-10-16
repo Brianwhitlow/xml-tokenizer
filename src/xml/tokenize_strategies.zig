@@ -92,6 +92,19 @@ fn TokenOrErrorAndIndex(comptime ErrorSet: type) type {
     };
 }
 
+fn ExpectedTokenInterface(comptime Self: type) type {
+    comptime {
+        const field_names = meta.fieldNames(Self);
+        debug.assert(meta.trait.hasFields(Token.Tag, field_names));
+        
+        return struct {
+            pub fn toTokenTag(self: Self) meta.Tag(Token.Tag) {
+                return std.meta.stringToEnum(meta.Tag(Token.Tag), @tagName(self)).?;
+            }
+        };
+    }
+}
+
 
 
 pub const ExpectedTokenAfterLeftAngleBracket = enum {
@@ -102,11 +115,7 @@ pub const ExpectedTokenAfterLeftAngleBracket = enum {
     comment,
     content_cdata,
 
-    comptime {
-        _ = toTokenTag;
-        const field_names = meta.fieldNames(Self);
-        debug.assert(meta.trait.hasFields(Token.Tag, field_names));
-    }
+    pub usingnamespace ExpectedTokenInterface(Self);
 
     /// Returns the built-in slice that has been used to guess the tag.
     pub fn checkedSlice(self: Self) []const u8 {
@@ -127,10 +136,6 @@ pub const ExpectedTokenAfterLeftAngleBracket = enum {
             .comment => "-",
             .content_cdata => "CDATA[",
         };
-    }
-
-    pub fn toTokenTag(self: Self) meta.Tag(Token.Tag) {
-        return std.meta.stringToEnum(meta.Tag(Token.Tag), @tagName(self)).?;
     }
 
     pub const Error = error {
@@ -402,3 +407,22 @@ test "tokenizeAfterLeftAngleBracket" {
     }
 }
 
+
+
+pub const TokenizeAfterElementOpenResult = TokenOrErrorAndIndex(error{
+    ImmediateEof,
+});
+
+pub fn tokenizeAfterElementOpen(src: []const u8, continuation_start_index: usize) TokenizeAfterElementOpenResult {
+    const ResultType = @TypeOf(tokenizeAfterElementOpen("", 0));
+    
+    debug.assert(!xml.isValidUtf8NameChar(utility.getUtf8(src, continuation_start_index) orelse xml.invalid_name_char));
+    const start_index: usize = continuation_start_index + xml.whitespaceLength(src, continuation_start_index);
+    var index: usize = start_index;
+    
+    switch (utility.getByte(src, start_index) orelse return ResultType.initErr(start_index, error.ImmediateEof)) {
+        '/' => todo("", null),
+        '>' => todo("", null),
+        else => todo("", null),
+    }
+}
