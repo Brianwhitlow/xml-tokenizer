@@ -122,7 +122,7 @@ pub const TokenizeAfterLeftAngleBracketResult = TokenOrErrorAndIndex(error{
 pub fn tokenizeAfterLeftAngleBracket(src: []const u8, start_index: usize, comptime document_section: DocumentSection) TokenizeAfterLeftAngleBracketResult {
     const ResultType = TokenizeAfterLeftAngleBracketResult;
     
-    const ExpectedTokenAfterLeftAngleBracket = enum {
+    const ExpectedTag = enum {
         const Self = @This();
         elem_open_tag,
         elem_close_tag,
@@ -159,47 +159,30 @@ pub fn tokenizeAfterLeftAngleBracket(src: []const u8, start_index: usize, compti
                 .content_cdata => "CDATA[",
             };
         }
-
-        pub const Error = error {
-            ImmediateEof,
-            BangEof,
-            BangUnrecognized,
-        };
-
-        pub fn guessFrom(src: []const u8, start_index: usize) Error!Self {
-            debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
-            const result: Error!Self =
-                if (utility.getByte(src, start_index + "<".len)) |byte0| switch (byte0) {
-                '?' => Self.pi_target,
-                '/' => Self.elem_close_tag,
-
-                '!' => if (utility.getByte(src, start_index + "<!".len)) |byte1| switch (byte1) {
-                    '[' => Self.content_cdata,
-                    '-' => Self.comment,
-                    else => Error.BangUnrecognized,
-                } else Error.BangEof,
-
-                else => Self.elem_open_tag,
-            } else Error.ImmediateEof;
-
-            debug.assert(if (result) |guess| blk: {
-                const expected = guess.checkedSlice();
-                const actual = src[start_index .. start_index + expected.len];
-                break :blk mem.eql(u8, expected, actual);
-            } else |_| true);
-
-            return result;
-        }
     };
     
     debug.assert((utility.getByte(src, start_index) orelse 0) == '<');
     var index: usize = start_index;
+    
+    const expected_tag = @as(ResultType.Error!ExpectedTag, 
+        if (utility.getByte(src, start_index + "<".len)) |byte0| switch (byte0) {
+            '?' => ExpectedTag.pi_target,
+            '/' => ExpectedTag.elem_close_tag,
 
-    const expected_tag = ExpectedTokenAfterLeftAngleBracket.guessFrom(src, start_index) catch |err| {
+            '!' => if (utility.getByte(src, start_index + "<!".len)) |byte1| switch (byte1) {
+                '[' => ExpectedTag.content_cdata,
+                '-' => ExpectedTag.comment,
+                else => error.BangUnrecognized,
+            } else error.BangEof,
+
+            else => ExpectedTag.elem_open_tag,
+        } else error.ImmediateEof,
+    ) catch |err| {
         index += @as(usize, switch (err) {
             error.ImmediateEof => 0,
             error.BangEof => 1,
             error.BangUnrecognized => 1,
+            else => unreachable,
         });
         return ResultType.initErr(index, err);
     };
@@ -392,6 +375,7 @@ pub fn tokenizeAfterElementOpen(src: []const u8, continuation_start_index: usize
     debug.assert(!xml.isValidUtf8NameChar(utility.getUtf8(src, continuation_start_index) orelse xml.invalid_name_char));
     const start_index: usize = continuation_start_index + xml.whitespaceLength(src, continuation_start_index);
     var index: usize = start_index;
+    _ = index;
     
     switch (utility.getByte(src, start_index) orelse return ResultType.initErr(start_index, error.ImmediateEof)) {
         '/' => todo("", null),
