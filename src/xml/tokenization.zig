@@ -375,7 +375,8 @@ pub fn tokenizeAfterElementOpen(src: []const u8, continuation_start_index: usize
     debug.assert(!xml.isValidUtf8NameChar(utility.getUtf8(src, continuation_start_index) orelse xml.invalid_name_char));
     const start_index: usize = continuation_start_index + xml.whitespaceLength(src, continuation_start_index);
     var index: usize = start_index;
-    _ = index;
+    
+    index += xml.whitespaceLength(src, index);
     
     switch (utility.getByte(src, start_index) orelse return ResultType.initErr(start_index, error.ImmediateEof)) {
         '/' => todo("", null),

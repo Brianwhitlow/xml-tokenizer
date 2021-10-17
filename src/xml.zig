@@ -1,16 +1,16 @@
 const std = @import("std");
 const debug = std.debug;
 const utility = @import("xml/utility.zig");
-const tokenize_strategies = @import("xml/tokenize_strategies.zig");
+const tokenization = @import("xml/tokenization.zig");
 
 comptime {
     _ = utility;
-    _ = tokenize_strategies;
+    _ = tokenization;
     _ = Token;
 }
 
 pub const Token = @import("xml/Token.zig");
-pub const DocumentSection = tokenize_strategies.DocumentSection;
+pub const DocumentSection = tokenization.DocumentSection;
 
 
 
