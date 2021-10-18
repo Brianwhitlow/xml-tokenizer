@@ -1,7 +1,6 @@
 const std = @import("std");
 const debug = std.debug;
 const utility = @import("xml/utility.zig");
-const tokenization = @import("xml/tokenization.zig");
 
 comptime {
     _ = utility;
@@ -10,25 +9,19 @@ comptime {
 }
 
 pub const Token = @import("xml/Token.zig");
-pub const DocumentSection = tokenization.DocumentSection;
 
 
 
 pub const spaces = [_]u8{ ' ', '\t', '\n', '\r' };
-pub fn isSpace(char: anytype) bool {
+pub fn isSpace(char: u8) bool {
     const T = @TypeOf(char);
-    return switch (T) {
-        u8,
-        u21,
-        => switch (char) {
-            ' ',
-            '\t',
-            '\n',
-            '\r',
-            => true,
-            else => false,
-        },
-        else => @compileError("Expected u8 or u21, got " ++ @typeName(T)),
+    return switch (char) {
+        ' ',
+        '\t',
+        '\n',
+        '\r',
+        => true,
+        else => false,
     };
 }
 
@@ -142,12 +135,10 @@ test "validUtf8NameLength" {
     }
 }
 
+
+
 pub fn whitespaceLength(src: []const u8, start_index: usize) usize {
-    return utility.matchAsciiSubsectionLength(src, start_index, struct {
-        fn func(char: u8) bool {
-            return isSpace(char);
-        }
-    }.func);
+    return utility.matchAsciiSubsectionLength(src, start_index, isSpace);
 }
 test "whitespaceLength" {
     inline for ([_]struct { src: []const u8, start: usize, expected: usize }{
