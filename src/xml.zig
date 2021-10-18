@@ -27,7 +27,7 @@ pub fn isSpace(char: u8) bool {
 
 pub const StringQuote = enum(u8) {
     single = '\'',
-    double = '"',
+    double = '\"',
 
     pub fn value(self: @This()) u8 {
         return @enumToInt(self);
