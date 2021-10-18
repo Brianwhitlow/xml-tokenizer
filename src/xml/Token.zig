@@ -16,10 +16,7 @@ pub fn slice(self: Token, src: []const u8) []const u8 {
 }
 
 pub fn name(self: Token, src: []const u8) ?[]const u8 {
-    const Offset = struct {
-        forwards: usize = 0,
-        backwards: usize = 0,
-    };
+    const Offset = struct { forwards: usize = 0, backwards: usize = 0, };
     const offset: Offset = switch (self.tag) {
         .pi_target => .{ .forwards = ("<?".len) },
         .elem_open_tag => .{ .forwards = ("<".len) },
