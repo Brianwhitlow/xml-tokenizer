@@ -4,17 +4,17 @@ const utility = @import("xml/utility.zig");
 
 comptime {
     _ = utility;
-    _ = tokenization;
     _ = Token;
+    _ = TokenStream;
 }
 
 pub const Token = @import("xml/Token.zig");
+pub const TokenStream = @import("xml/TokenStream.zig");
 
 
 
 pub const spaces = [_]u8{ ' ', '\t', '\n', '\r' };
 pub fn isSpace(char: u8) bool {
-    const T = @TypeOf(char);
     return switch (char) {
         ' ',
         '\t',
