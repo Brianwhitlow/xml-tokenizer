@@ -147,70 +147,64 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
     debug.assert(utility.getByte(ts.src, ts.index).? == '<');
     debug.assert(ts.state == state);
     
+    const start_index = ts.index;
     ts.index += 1;
-    switch (utility.getByte(ts.src, ts.index) orelse todo("", null)) {
+    return switch (utility.getByte(ts.src, ts.index) orelse todo("", null)) {
         '?' => todo("", null),
-        '!' => return ts.tokenizeAfterLeftAngleBracketBang(state),
-        '/' => todo("Invalid close tag start in prologue.", null),
-        else => todo("", null),
-    }
-    
-}
-
-fn tokenizeAfterLeftAngleBracketBang(ts: *TokenStream, comptime state: meta.Tag(State)) NextReturnType {
-    const start_index = ts.index - ("<!".len - 1);
-    debug.assert(mem.eql(u8, "<!", ts.src[start_index..start_index + "<!".len]));
-    debug.assert(ts.state == state);
-    
-    ts.index += 1;
-    return switch (utility.getByte(ts.src, ts.index) orelse todo("Eof after '<!'.", null)) {
-        '-' => dash_blk: {
+        '!' => {
             ts.index += 1;
-            break :dash_blk switch (utility.getByte(ts.src, ts.index) orelse todo("Error for eof after '<!-'.", null)) {
-                '-' => dash_dash_blk: {
+            return switch (utility.getByte(ts.src, ts.index) orelse todo("Eof after '<!'.", null)) {
+                '-' => dash_blk: {
                     ts.index += 1;
-                    while (utility.getUtf8(ts.src, ts.index)) |comment_char| : (ts.index += utility.lenOfUtf8OrNull(comment_char).?) {
-                        if (comment_char != '-') continue;
-                        
-                        ts.index += 1;
-                        if (utility.getByte(ts.src, ts.index) orelse 0 != '-') continue;
-                        
-                        ts.index += 1;
-                        if (utility.getByte(ts.src, ts.index) orelse 0 != '>') continue;
-                        
-                        ts.index += 1;
-                        break :dash_dash_blk ts.returnToken(state, .comment, .{ .beg = start_index, .end = ts.index });
-                    } else break :dash_dash_blk todo("Error for unclosed comment followed by eof or invalid UTF8.", null);
+                    break :dash_blk switch (utility.getByte(ts.src, ts.index) orelse todo("Error for eof after '<!-'.", null)) {
+                        '-' => dash_dash_blk: {
+                            ts.index += 1;
+                            while (utility.getUtf8(ts.src, ts.index)) |comment_char| : (ts.index += utility.lenOfUtf8OrNull(comment_char).?) {
+                                if (comment_char != '-') continue;
+                                
+                                ts.index += 1;
+                                if (utility.getByte(ts.src, ts.index) orelse 0 != '-') continue;
+                                
+                                ts.index += 1;
+                                if (utility.getByte(ts.src, ts.index) orelse 0 != '>') continue;
+                                
+                                ts.index += 1;
+                                break :dash_dash_blk ts.returnToken(state, .comment, .{ .beg = start_index, .end = ts.index });
+                            } else break :dash_dash_blk todo("Error for unclosed comment followed by eof or invalid UTF8.", null);
+                        },
+                        else => todo("Error for '<!-{c}'", .{ utility.getByte(ts.src, ts.index) }),
+                    };
                 },
-                else => todo("Error for '<!-{c}'", .{ utility.getByte(ts.src, ts.index) }),
+                
+                '[' => switch (state) {
+                    .prologue => todo("Error for '<![' in prologue.", null),
+                    .root => todo("", null),
+                    .trailing => todo("Error for '<![' in trailing section.", null),
+                },
+                
+                'D' => {
+                    ts.index += 1;
+                    if (mem.startsWith(u8, ts.src[ts.index..], "OCTYPE")) {
+                        switch (state) {
+                            .prologue => {
+                                ts.index += "OCTYPE".len;
+                                todo("Error for unsupported '<!DOCTYPE'.", null);
+                            },
+                            .root => todo("Error for '<!DOCTYPE' in root.", null),
+                            .trailing => todo("Error for '<!DOCTYPE' in trailing section.", null),
+                        }
+                    } else {
+                        const invalid_start = ts.index - 1;
+                        ts.index = math.clamp(ts.index + "OCTYPE".len, 0, ts.src.len);
+                        todo("Error for invalid '<!{s}'.", .{ ts.src[invalid_start..ts.index] });
+                    }
+                },
+                
+                else => todo("Error for '<!{c}'.", .{ utility.getByte(ts.src, ts.index).? }),
             };
         },
-        
-        '[' => switch (state) {
-            .prologue => todo("Error for '<![' in prologue.", null),
-            .root => todo("", null),
-            .trailing => todo("Error for '<![' in trailing section.", null),
-        },
-        
-        'D' => {
-            ts.index += 1;
-            if (mem.startsWith(u8, ts.src[ts.index..], "OCTYPE")) {
-                switch (state) {
-                    .prologue => {
-                        ts.index += "OCTYPE".len;
-                        todo("Error for unsupported '<!DOCTYPE'.", null);
-                    },
-                    .root => todo("Error for '<!DOCTYPE' in root.", null),
-                    .trailing => todo("Error for '<!DOCTYPE' in trailing section.", null),
-                }
-            } else {
-                const invalid_start = ts.index - 1;
-                ts.index = math.clamp(ts.index + "OCTYPE".len, 0, ts.src.len);
-                todo("Error for invalid '<!{s}'.", .{ ts.src[invalid_start..ts.index] });
-            }
-        },
-        
-        else => todo("Error for '<!{c}'.", .{ utility.getByte(ts.src, ts.index).? }),
+        '/' => todo("Invalid close tag start in prologue.", null),
+        else => todo("", null),
     };
 }
 
