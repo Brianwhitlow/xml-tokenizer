@@ -98,6 +98,9 @@ pub fn next(ts: *TokenStream) NextReturnType {
                         else => todo("Invalid in prologue.", null),
                     };
                 },
+                .pi_target => {
+                    todo("", null);
+                },
                 .comment => {
                     debug.assert(ts.src[ts.index - 1] == '>');
                     return switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
@@ -149,8 +152,16 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
     
     const start_index = ts.index;
     ts.index += 1;
-    return switch (utility.getByte(ts.src, ts.index) orelse todo("", null)) {
-        '?' => todo("", null),
+    switch (utility.getByte(ts.src, ts.index) orelse todo("", null)) {
+        '?' => {
+            ts.index += 1;
+            const name_len = xml.validUtf8NameLength(ts.src, ts.index);
+            if (name_len == 0) {
+                todo("Error for lack of pi target name", null);
+            }
+            ts.index += name_len;
+            return ts.returnToken(state, .pi_target, .{ .beg = start_index, .end = ts.index });
+        },
         '!' => {
             ts.index += 1;
             return switch (utility.getByte(ts.src, ts.index) orelse todo("Eof after '<!'.", null)) {
@@ -205,7 +216,7 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
         },
         '/' => todo("Invalid close tag start in prologue.", null),
         else => todo("", null),
-    };
+    }
 }
 
 fn returnNullSetTrailingEnd(self: *TokenStream) NextReturnType {
@@ -220,7 +231,7 @@ fn returnToken(self: *TokenStream, comptime set_state: meta.Tag(State), tag: Tok
         meta.stringToEnum(
             meta.TagPayload(State, set_state),
             @tagName(tag),
-        ) orelse debug.panic("'{s}' has no field '{s}'.", .{@typeName(State), @tagName(tag)}),
+        ) orelse debug.panic("'{s}' has no field '{s}'.", .{@typeName(meta.TagPayload(State, set_state)), @tagName(tag)}),
     );
     return Result.initToken(tag, loc);
 }
@@ -245,6 +256,7 @@ const State = union(enum) {
     const Prologue = enum {
         start,
         whitespace,
+        pi_target,
         comment,
         
         comptime {
