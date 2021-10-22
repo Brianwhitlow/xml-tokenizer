@@ -279,18 +279,24 @@ pub const tests = struct {
         return try unwrapped.getToken();
     }
     
+    pub const ExpectedPiTok = union(enum) {
+        string: StringInfo,
+        other: OtherInfo,
+        
+        pub const StringInfo = struct {
+            data: []const u8,
+            quote: xml.StringQuote,
+        };
+        
+        pub const OtherInfo = struct {
+            slice: []const u8,
+        };
+    };
+    
     pub fn expectProcessingInstructions(
         ts: *TokenStream,
         expected_name: []const u8,
-        pi_tokens: []const union(enum) {
-            string: struct {
-                data: []const u8,
-                quote: xml.StringQuote,
-            },
-            other: struct {
-                slice: []const u8,
-            },
-        },
+        pi_tokens: []const ExpectedPiTok,
     ) !void {
         try Token.tests.expectPiTarget(ts.src, try unwrapNext(ts.next()), expected_name);
         for (pi_tokens) |pi_tok| {
@@ -418,5 +424,45 @@ test "TokenStream prologue comment" {
                 }
             }
         }
+    }
+}
+
+test "TokenStream prologue processing instructions" {
+    var ts: TokenStream = undefined;
+    _ = ts;
+    const target_samples = [_][]const u8 { ("foo"), ("A") };
+    _ = target_samples;
+    const whitespace_samples = [_][]const u8 { (""), (" "), (" \t\n\r") };
+    _ = whitespace_samples;
+    const non_name_token_samples = [_][]const u8 { ("?"), ("&;") };
+    _ = non_name_token_samples;
+    
+    inline for (target_samples) |target| {
+        inline for (whitespace_samples) |whitespace_ignored| {
+            ts.reset("<?" ++ target ++ whitespace_ignored ++ "?>");
+            try Token.tests.expectPiTarget(ts.src, try tests.unwrapNext(ts.next()), target);
+            try Token.tests.expectPiEnd(ts.src, try tests.unwrapNext(ts.next()));
+            try tests.expectNull(&ts);
+        }
+        
+        // inline for (whitespace_samples) |whitespace_a| {
+        //     inline for (whitespace_samples) |whitespace_ignored| {
+        //         inline for (whitespace_samples) |whitespace_c| {
+        //             ts.reset(whitespace_a ++ "<?" ++ target ++ whitespace_ignored ++ "?>" ++ whitespace_c);
+        //             if (whitespace_a.len != 0) try tests.expectWhitespace(&ts, whitespace_a);
+        //             try tests.expectProcessingInstructions(&ts, target, &.{});
+        //             if (whitespace_c.len != 0) try tests.expectWhitespace(&ts, whitespace_c);
+        //             try tests.expectNull(&ts);
+        //         }
+        //     }
+        // }
+        
+        // inline for (non_name_token_samples) |non_name_token| {
+        //     inline for (whitespace_samples) |whitespace_obligatory| {
+        //         ts.reset("<?" ++ target ++ whitespace_obligatory ++ non_name_token ++ "?>");
+        //         try tests.expectProcessingInstructions(&ts, target, &.{ .{ .other = .{ .slice = non_name_token } } });
+        //         try tests.expectNull(&ts);
+        //     }
+        // }
     }
 }
