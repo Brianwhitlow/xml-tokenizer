@@ -85,25 +85,6 @@ fn FieldNamesDiffResultType(comptime A: type, comptime B: type) type {
     };
 }
 
-pub fn comptimeJoin(comptime separator: []const u8, comptime slices: []const []const u8) []const u8 {
-    comptime {
-        var buffer = [_]u8{0} ** (separator.len * slices.len + 1 + accum: {
-            var accum_result = 0;
-            for (slices) |slice| accum_result += slice.len;
-            break :accum accum_result;
-        });
-        
-        var idx: usize = 0;
-        for (slices[0..]) |slice| {
-            const to_append: []const u8 = " " ++ slice;
-            mem.copy(u8, buffer[idx..], to_append);
-            idx += to_append.len;
-        }
-        
-        return buffer[1..];
-    }
-}
-
 pub fn fieldNamesDiff(comptime A: type, comptime B: type) FieldNamesDiffResultType(A, B) {
     const common_fields = comptime fieldNamesCommon(A, B);
     const a_fields = comptime meta.fieldNames(A);
@@ -150,3 +131,21 @@ pub fn fieldNamesDiff(comptime A: type, comptime B: type) FieldNamesDiffResultTy
     };
 }
 
+pub fn comptimeJoin(comptime separator: []const u8, comptime slices: []const []const u8) []const u8 {
+    comptime {
+        var buffer = [_]u8{0} ** (separator.len * slices.len + 1 + accum: {
+            var accum_result = 0;
+            for (slices) |slice| accum_result += slice.len;
+            break :accum accum_result;
+        });
+        
+        var idx: usize = 0;
+        for (slices[0..]) |slice| {
+            const to_append: []const u8 = " " ++ slice;
+            mem.copy(u8, buffer[idx..], to_append);
+            idx += to_append.len;
+        }
+        
+        return buffer[1..];
+    }
+}
