@@ -49,15 +49,14 @@ pub const Result = union(enum) {
     }
 };
 
-pub fn next(self: *TokenStream) NextReturnType {
-    const src = self.src;
-    return switch (self.state) {
-        .prologue => |prologue| prologue_blk: {
-            debug.assert(self.depth == 0);
+pub fn next(ts: *TokenStream) NextReturnType {
+    return switch (ts.state) {
+        .prologue => |prologue| {
+            debug.assert(ts.depth == 0);
             defer {
-                const depth_is_0 = (self.depth == 0);
+                const depth_is_0 = (ts.depth == 0);
                 const depth_is_not_0 = (!depth_is_0);
-                switch (self.state) {
+                switch (ts.state) {
                     .prologue,
                     .trailing,
                     => debug.assert(depth_is_0),
@@ -65,91 +64,78 @@ pub fn next(self: *TokenStream) NextReturnType {
                 }
             }
             
-            break :prologue_blk switch (prologue) {
-                .start => start_blk: {
-                    // defer if (!switch (self.state) {
-                    //     .prologue => |end_prologue_state| end_prologue_state != .start,
-                    //     else => true,
-                    // }) todo("FUCK", null);
-                    debug.assert(self.index == 0);
-                    const start_index = self.index;
+            switch (prologue) {
+                .start => {
+                    //defer {
+                    //    //const bad_State = !switch (ts.state) {
+                    //    //    .prologue => |end_prologue_state| end_prologue_state != .start,
+                    //    //    else => true,
+                    //    //};
+                    //    //_ = bad_State;
+                    //    //if (bad_State) debug.panic("fuck", .{});
+                    //}
+                    debug.assert(ts.index == 0);
+                    const start_index = ts.index;
                     
-                    self.index += xml.whitespaceLength(src, self.index);
-                    if (self.index != 0) {
-                        const loc = Token.Loc { .beg = start_index, .end = self.index };
-                        break :start_blk self.returnToken(.prologue, .whitespace, loc);
+                    ts.index += xml.whitespaceLength(ts.src, ts.index);
+                    if (ts.index != 0) {
+                        const loc = Token.Loc { .beg = start_index, .end = ts.index };
+                        return ts.returnToken(.prologue, .whitespace, loc);
                     }
                     
-                    switch (utility.getByte(src, self.index) orelse break :start_blk self.returnNullSetTrailingEnd()) {
-                        '<' => {
-                            self.index += 1;
-                            switch (utility.getByte(src, self.index) orelse todo("", null)) {
-                                '?' => todo("", null),
-                                '!' => break :start_blk self.tokenizeAfterLeftAngleBracketBang(.prologue),
-                                '/' => todo("Invalid close tag start in prologue.", null),
-                                else => todo("", null),
-                            }
-                        },
+                    return switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
+                        '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
                         else => todo("Invalid in prologue.", null),
-                    }
-                    
+                    };
                 },
-                .whitespace => whitespace_blk: {
-                    debug.assert(self.index != 0);
-                    const start_index = self.index;
+                .whitespace => {
+                    debug.assert(ts.index != 0);
+                    const start_index = ts.index;
                     _ = start_index;
                     
-                    break :whitespace_blk switch (utility.getByte(src, self.index) orelse break :whitespace_blk self.returnNullSetTrailingEnd()) {
-                        '<' => left_angle_bracket_blk: {
-                            self.index += 1;
-                            break :left_angle_bracket_blk switch (utility.getByte(src, self.index) orelse todo("", null)) {
-                                '?' => todo("", null),
-                                '!' => self.tokenizeAfterLeftAngleBracketBang(.prologue),
-                                '/' => todo("Invalid close tag start in prologue.", null),
-                                else => todo("", null),
-                            };
-                        },
+                    return switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
+                        '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
                         else => todo("Invalid in prologue.", null),
                     };
                 },
-                .comment => comment_blk: {
-                    debug.assert(self.src[self.index - 1] == '>');
-                    break :comment_blk switch (utility.getByte(self.src, self.index) orelse break :comment_blk self.returnNullSetTrailingEnd()) {
-                        '<' => todo("", .{}),
+                .comment => {
+                    debug.assert(ts.src[ts.index - 1] == '>');
+                    return switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
+                        '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
                         else => {
-                            const start_index = self.index;
-                            self.index += xml.whitespaceLength(src, self.index);
-                            if (self.index != start_index) {
-                                const loc = Token.Loc { .beg = start_index, .end = self.index };
-                                break :comment_blk self.returnToken(.prologue, .whitespace, loc);
+                            const start_index = ts.index;
+                            ts.index += xml.whitespaceLength(ts.src, ts.index);
+                            if (ts.index != start_index) {
+                                const loc = Token.Loc { .beg = start_index, .end = ts.index };
+                                return ts.returnToken(.prologue, .whitespace, loc);
                             }
                             
-                            todo("Error for invalid '{c}' in prologue.", .{utility.getByte(self.src, self.index)});
+                            todo("Error for invalid '{c}' in prologue.", .{utility.getByte(ts.src, ts.index)});
                         },
                     };
                 },
-            };
+            }
         },
         
-        .root => |root| root_blk: {
-            debug.assert(self.depth != 0);
+        .root => |root| {
+            debug.assert(ts.depth != 0);
             defer {
-                const depth_is_0 = (self.depth == 0);
-                const state_is_not_root = (self.state != .root);
+                const depth_is_0 = (ts.depth == 0);
+                const state_is_not_root = (ts.state != .root);
                 if (depth_is_0 or state_is_not_root)
                     debug.assert(depth_is_0 and state_is_not_root);
             }
             
-            break :root_blk switch (root) {
+            return switch (root) {
                 .elem_open_tag => todo("", null),
                 .elem_close_tag => todo("", null),
             };
         },
         
         .trailing => |trailing| {
-            debug.assert(self.depth == 0);
-            defer debug.assert(self.depth == 0);
-            defer debug.assert(self.depth == 0 and self.state == .trailing);
+            debug.assert(ts.depth == 0);
+            defer debug.assert(ts.depth == 0);
+            defer debug.assert(ts.depth == 0 and ts.state == .trailing);
             switch (trailing) {
                 .end => return @as(NextReturnType, null),
             }
@@ -161,7 +147,13 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
     debug.assert(utility.getByte(ts.src, ts.index).? == '<');
     debug.assert(ts.state == state);
     
-    
+    ts.index += 1;
+    switch (utility.getByte(ts.src, ts.index) orelse todo("", null)) {
+        '?' => todo("", null),
+        '!' => return ts.tokenizeAfterLeftAngleBracketBang(state),
+        '/' => todo("Invalid close tag start in prologue.", null),
+        else => todo("", null),
+    }
     
 }
 
