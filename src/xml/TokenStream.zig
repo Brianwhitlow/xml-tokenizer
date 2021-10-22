@@ -72,7 +72,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     //    //    else => true,
                     //    //};
                     //    //_ = bad_State;
-                    //    //if (bad_State) debug.panic("fuck", .{});
+                    //    //if (bad_State) `std.debug.panic("std.debug.assert(false)` should be here", .{});
                     //}
                     debug.assert(ts.index == 0);
                     const start_index = ts.index;
@@ -231,36 +231,14 @@ const State = union(enum) {
     trailing: Trailing,
     
     fn assertSimilarToTokenTag(comptime T: type, comptime exceptions: []const T) void {
-        comptime {
-            for (exceptions) |field_tag| {
-                const field_name = @tagName(field_tag);
-                if (meta.trait.hasField(field_name)(Token.Tag)) {
-                    @compileError("'exceptions' parameter contains '" ++ field_name ++ "' tag, which is present in " ++ @typeName(Token.Tag));
+        const diff = utility.fieldNamesDiff(Token.Tag, T);
+        outerloop: inline for (diff.b) |actual| {
+            inline for (exceptions) |exempted| {
+                if (mem.eql(u8, actual, @tagName(exempted))) {
+                    continue :outerloop;
                 }
             }
-            
-            const field_names = meta.fieldNames(T);
-            for (field_names) |field_name| {
-                @setEvalBranchQuota(1000 * field_names.len * field_name.len);
-                if (mem.count(T, exceptions, &.{ @field(T, field_name) }) > 1) {
-                    @compileError("'exceptions' parameter contains multiple instances of '" ++ field_name ++ "'.");
-                }
-            }
-            
-            mainloop: for (field_names) |field_name| {
-                @setEvalBranchQuota(1000 * field_names.len * field_name.len);
-                for (exceptions) |exempted_field_tag| {
-                    if (mem.eql(u8, field_name, @tagName(exempted_field_tag))) {
-                        continue :mainloop;
-                    }
-                    const TokTag = Token.Tag;
-                    const hasField = meta.trait.hasField(field_name);
-                    const tok_tag_name = @typeName(TokTag);
-                    if (!hasField(TokTag)) {
-                        @compileError("'" ++ tok_tag_name ++ "' has no field '" ++ field_name ++ "', which has also not been exempted.");
-                    }
-                }
-            }
+            @compileError(std.fmt.comptimePrint("Field '{s}' in '{s}' has not been exempted.", .{actual, @typeName(T)}));
         }
     }
     

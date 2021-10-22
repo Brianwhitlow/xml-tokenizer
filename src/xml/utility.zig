@@ -1,5 +1,10 @@
 const std = @import("std");
+const mem = std.mem;
+const math = std.math;
+const meta = std.meta;
+const debug = std.debug;
 const unicode = std.unicode;
+const testing = std.testing;
 
 pub fn getByte(src: []const u8, index: usize) ?u8 {
     if (index >= src.len) return null;
@@ -44,3 +49,85 @@ pub fn matchAsciiSubsectionLength(src: []const u8, start_index: usize, comptime 
     }
     return index - start_index;
 }
+
+pub fn fieldNamesCommon(comptime A: type, comptime B: type) []const []const u8 {
+    comptime {
+        const a_fields = meta.fieldNames(A);
+        const b_fields = meta.fieldNames(B);
+        
+        if (a_fields.len == 0 or b_fields.len == 0) {
+            return &.{};
+        }
+        
+        var buffer: [math.max(a_fields.len, b_fields.len)][]const u8 = undefined;
+        var len: usize = 0;
+        
+        for (a_fields) |a_name| {
+            for (b_fields) |b_name| {
+                if (mem.eql(u8, a_name, b_name)) {
+                    len += 1;
+                    buffer[len - 1] = a_name;
+                }
+            }
+        }
+        
+        return buffer[0..len];
+    }
+}
+
+fn FieldNamesDiffResultType(comptime A: type, comptime B: type) type {
+    const len = fieldNamesCommon(A, B).len;
+    const a_len = meta.fieldNames(A).len;
+    const b_len = meta.fieldNames(B).len;
+    return struct {
+        a: *const [a_len - len][]const u8,
+        b: *const [b_len - len][]const u8,
+    };
+}
+
+pub fn fieldNamesDiff(comptime A: type, comptime B: type) FieldNamesDiffResultType(A, B) {
+    const common_fields = comptime fieldNamesCommon(A, B);
+    const a_fields = comptime meta.fieldNames(A);
+    const b_fields = comptime meta.fieldNames(B);
+    
+    const a_max_len = (a_fields.len - common_fields.len);
+    const b_max_len = (b_fields.len - common_fields.len);
+    
+    if (common_fields.len == 0) {
+        return .{
+            .a = a_fields[0..a_max_len],
+            .b = b_fields[0..b_max_len]
+        };
+    }
+    
+    comptime var a_buffer = [_][]const u8 { undefined } ** a_max_len;
+    comptime var a_len: usize = 0;
+    
+    outerloop: inline for (a_fields) |name| {
+        inline for (common_fields) |common_name| {
+            if (comptime mem.eql(u8, name, common_name)) continue :outerloop;
+        }
+        a_len += 1;
+        a_buffer[a_len - 1] = name;
+    }
+    
+    comptime var b_buffer = [_][]const u8 { undefined } ** b_max_len;
+    comptime var b_len: usize = 0;
+    
+    outerloop: inline for (b_fields) |name| {
+        inline for (common_fields) |common_name| {
+            if (comptime mem.eql(u8, name, common_name)) continue :outerloop;
+        }
+        b_len += 1;
+        b_buffer[b_len - 1] = name;
+    }
+    
+    const a = a_buffer[0..a_len];
+    const b = b_buffer[0..b_len];
+    
+    return .{
+        .a = a,
+        .b = b,
+    };
+}
+
