@@ -184,7 +184,6 @@ pub fn next(ts: *TokenStream) NextReturnType {
                             return ts.returnToken(.root, .attr_name, .{ .beg = start_index, .end = ts.index });
                         },
                     }
-                    todo("", null);
                 },
                 .elem_close_tag => {
                     todo("", null);
