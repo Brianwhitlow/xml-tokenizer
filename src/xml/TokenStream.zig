@@ -493,7 +493,6 @@ test "TokenStream prologue comment" {
 
 test "TokenStream prologue processing instructions" {
     var ts: TokenStream = undefined;
-    _ = ts;
     const target_samples = [_][]const u8 { ("foo"), ("A") };
     const whitespace_samples = [_][]const u8 { (""), (" "), (" \t\n\r") };
     const non_name_token_samples = [_][]const u8 { ("?"), ("&;") };
