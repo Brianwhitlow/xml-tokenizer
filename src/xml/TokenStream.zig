@@ -50,7 +50,7 @@ pub const Result = union(enum) {
 };
 
 pub fn next(ts: *TokenStream) NextReturnType {
-    return switch (ts.state) {
+    switch (ts.state) {
         .prologue => |prologue| {
             debug.assert(ts.depth == 0);
             defer {
@@ -186,7 +186,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 .end => return @as(NextReturnType, null),
             }
         },
-    };
+    }
 }
 
 fn tokenizePiTok(ts: *TokenStream, comptime state: meta.Tag(State)) NextReturnType {
