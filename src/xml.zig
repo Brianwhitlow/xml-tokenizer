@@ -37,19 +37,13 @@ pub const StringQuote = enum(u8) {
         return @intToEnum(@This(), char);
     }
 };
-pub const string_quotes = [_]u8{ '"', '\'' };
-pub fn isStringQuote(char: anytype) bool {
-    const T = @TypeOf(char);
-    return switch (T) {
-        u8,
-        u21,
-        => switch (char) {
-            '"',
-            '\'',
-            => true,
-            else => false,
-        },
-        else => @compileError("Expected u8 or u21, got " ++ @typeName(T)),
+pub const string_quotes = [_]u8{ '\"', '\'' };
+pub fn isStringQuote(char: u8) bool {
+    return switch (char) {
+        '\"',
+        '\'',
+        => true,
+        else => false,
     };
 }
 

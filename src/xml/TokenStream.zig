@@ -98,9 +98,52 @@ pub fn next(ts: *TokenStream) NextReturnType {
                         else => todo("Invalid in prologue.", null),
                     };
                 },
+                
                 .pi_target => {
-                    todo("", null);
+                    switch (utility.getByte(ts.src, ts.index) orelse todo("Error for PI Target followed by eof.", null)) {
+                        '?' => {
+                            const start_index = ts.index;
+                            ts.index += 1;
+                            if (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed PI followed by eof.", null) == '>') {
+                                ts.index += 1;
+                                return ts.returnToken(.prologue, .pi_end, .{ .beg = start_index, .end = ts.index });
+                            }
+                            todo("Error for PI Target followed by non-whitespace, invalid token '?{c}'", .{utility.getByte(ts.src, ts.index).?});
+                        },
+                        else => {
+                            const whitespace_len = xml.whitespaceLength(ts.src, ts.index);
+                            if (whitespace_len == 0) {
+                                todo("Error for PI Target followed by non-whitespace, invalid character '{c}'", .{ utility.getByte(ts.src, ts.index).? });
+                            }
+                            ts.index += whitespace_len;
+                            return ts.tokenizePiTok(.prologue);
+                        },
+                    }
                 },
+                .pi_tok_string => {
+                    ts.index += xml.whitespaceLength(ts.src, ts.index);
+                    return ts.tokenizePiTok(.prologue);
+                },
+                .pi_tok_other => {
+                    ts.index += xml.whitespaceLength(ts.src, ts.index);
+                    return ts.tokenizePiTok(.prologue);
+                },
+                .pi_end => {
+                    const start_index = ts.index;
+                    const start_byte = utility.getByte(ts.src, start_index) orelse return ts.returnNullSetTrailingEnd();
+                    switch (start_byte) {
+                        '<' => return ts.tokenizeAfterLeftAngleBracket(.prologue),
+                        else => {
+                            const whitespace_len = xml.whitespaceLength(ts.src, start_index);
+                            if (whitespace_len == 0) {
+                                todo("Error for '{c}' in prologue.", .{ start_byte });
+                            }
+                            ts.index += whitespace_len;
+                            return ts.returnToken(.prologue, .whitespace, .{ .beg = start_index, .end = ts.index });
+                        },
+                    }
+                },
+                
                 .comment => {
                     debug.assert(ts.src[ts.index - 1] == '>');
                     return switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
@@ -144,6 +187,42 @@ pub fn next(ts: *TokenStream) NextReturnType {
             }
         },
     };
+}
+
+fn tokenizePiTok(ts: *TokenStream, comptime state: meta.Tag(State)) NextReturnType {
+    debug.assert(ts.state == state);
+    debug.assert(!xml.isSpace(utility.getByte(ts.src, ts.index).?));
+    
+    const start_index = ts.index;
+    const start_byte: u8 = utility.getByte(ts.src, start_index) orelse todo("Error for unclosed PI followed by eof.", null);
+    if (start_byte == '?' and (utility.getByte(ts.src, ts.index + 1) orelse 0) == '>') {
+        ts.index += 2;
+        return ts.returnToken(state, .pi_end, .{ .beg = start_index, .end = ts.index });
+    }
+    
+    if (xml.isStringQuote(start_byte)) {
+        ts.index += utility.lenOfUtf8OrNull(start_byte).?;
+        while (utility.getUtf8(ts.src, ts.index)) |str_char| : (ts.index += utility.lenOfUtf8OrNull(str_char).?) {
+            if (str_char == start_byte) {
+                ts.index += 1;
+                break;
+            }
+        } else todo("Error for unclosed unclosed PI string token followed by eof.", null);
+        return ts.returnToken(state, .pi_tok_string, .{ .beg = start_index, .end = ts.index });
+    }
+    
+    while (utility.getUtf8(ts.src, ts.index)) |pi_tok_char| : (ts.index += utility.lenOfUtf8OrNull(pi_tok_char).?) {
+        const len = utility.lenOfUtf8OrNull(pi_tok_char).?;
+        const is_byte = (len == 1);
+        
+        const is_space = is_byte and xml.isSpace(@intCast(u8, pi_tok_char));
+        const is_string_quote = is_byte and xml.isStringQuote(@intCast(u8, pi_tok_char));
+        const is_pi_end = (pi_tok_char == '?') and ((utility.getByte(ts.src, ts.index + 1) orelse 0) == '>');
+        
+        if (is_space or is_string_quote or is_pi_end) break;
+    } else todo("Error for unclosed PI other token followed by eof.", null);
+    
+    return ts.returnToken(state, .pi_tok_other, .{ .beg = start_index, .end = ts.index });
 }
 
 fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(State)) NextReturnType {
@@ -224,8 +303,8 @@ fn returnNullSetTrailingEnd(self: *TokenStream) NextReturnType {
     return null;
 }
 
-fn returnToken(self: *TokenStream, comptime set_state: meta.Tag(State), tag: Token.Tag, loc: Token.Loc) Result {
-    self.state = @unionInit(
+fn returnToken(ts: *TokenStream, comptime set_state: meta.Tag(State), tag: Token.Tag, loc: Token.Loc) Result {
+    ts.state = @unionInit(
         State,
         @tagName(set_state),
         meta.stringToEnum(
@@ -257,9 +336,13 @@ const State = union(enum) {
         start,
         whitespace,
         pi_target,
+        pi_tok_string,
+        pi_tok_other,
+        pi_end,
         comment,
         
         comptime {
+            @setEvalBranchQuota(2000);
             assertSimilarToTokenTag(@This(), &.{ .start });
         }
     };
@@ -291,33 +374,19 @@ pub const tests = struct {
         return try unwrapped.getToken();
     }
     
-    pub const ExpectedPiTok = union(enum) {
-        string: StringInfo,
-        other: OtherInfo,
-        
-        pub const StringInfo = struct {
-            data: []const u8,
-            quote: xml.StringQuote,
-        };
-        
-        pub const OtherInfo = struct {
-            slice: []const u8,
-        };
-    };
-    
-    pub fn expectProcessingInstructions(
-        ts: *TokenStream,
-        expected_name: []const u8,
-        pi_tokens: []const ExpectedPiTok,
-    ) !void {
+    pub fn expectPiTarget(ts: *TokenStream, expected_name: []const u8) !void {
         try Token.tests.expectPiTarget(ts.src, try unwrapNext(ts.next()), expected_name);
-        for (pi_tokens) |pi_tok| {
-            const actual_tok = try unwrapNext(ts.next());
-            try switch (pi_tok) {
-                .string => |string| Token.tests.expectPiTokString(ts.src, actual_tok, string.data, string.quote),
-                .other => |other| Token.tests.expectPiTokOther(ts.src, actual_tok, other.slice),
-            };
-        }
+    }
+    
+    pub fn expectPiTokOther(ts: *TokenStream, expected_slice: []const u8) !void {
+        try Token.tests.expectPiTokOther(ts.src, try unwrapNext(ts.next()), expected_slice);
+    }
+    
+    pub fn expectPiTokString(ts: *TokenStream, expected_data: []const u8, quote_type: xml.StringQuote) !void {
+        try Token.tests.expectPiTokString(ts.src, try unwrapNext(ts.next()), expected_data, quote_type);
+    }
+    
+    pub fn expectPiEnd(ts: *TokenStream) !void {
         try Token.tests.expectPiEnd(ts.src, try unwrapNext(ts.next()));
     }
     
@@ -341,48 +410,32 @@ pub const tests = struct {
         try Token.tests.expectElemCloseInline(ts.src, try unwrapNext(ts.next()));
     }
     
-    pub fn expectAttribute(
-        ts: *TokenStream,
-        expected_name: []const u8,
-        expected_value: ?[]const union(enum) {
-            text: struct { slice: []const u8 },
-            entity_ref: struct { name: []const u8 },
-        },
-    ) !void {
-        try Token.tests.expectAttrName(ts.src, try unwrapNext(ts.next()), expected_name);
-        if (expected_value) |expected_segments| {
-            for (expected_segments) |segment| {
-                const actual_tok = try unwrapNext(ts.next());
-                try switch (segment) {
-                    .text => |text| Token.tests.expectAttrValSegmentText(ts.src, actual_tok, text.slice),
-                    .entity_ref => |entity_ref| Token.tests.expectAttrValSegmentEntityRef(ts.src, actual_tok, entity_ref.name),
-                };
-            }
-        } else {
-            const actual_tok = try unwrapNext(ts.next());
-            try Token.tests.expectAttrValEmpty(ts.src, actual_tok);
-        }
+    pub fn expectAttrName(ts: *TokenStream, expected_slice: []const u8) !void {
+        try Token.tests.expectAttrName(ts.src, try unwrapNext(ts.next()), expected_slice);
     }
     
-    pub fn expectContent(
-        ts: *TokenStream,
-        expected_content: []const union(enum) {
-            whitespace: struct { slice: []const u8 },
-            text: struct { slice: []const u8 },
-            cdata: struct { data: []const u8 },
-            entity_ref: struct { name: []const u8 },
-        },
-    ) !void {
-        debug.assert(expected_content.len > 0);
-        for (expected_content) |content| {
-            const actual_tok = try unwrapNext(ts.next());
-            try switch (content) {
-                .whitespace => |whitespace| Token.tests.expectWhitespace(ts.src, actual_tok, whitespace.slice),
-                .text => |text| Token.tests.expectContentText(ts.src, actual_tok, text.slice),
-                .cdata => |cdata| Token.tests.expectContentCData(ts.src, actual_tok, cdata.data),
-                .entity_ref => |entity_ref| Token.tests.expectContentEntityRef(ts.src, actual_tok, entity_ref.name),
-            };
-        }
+    pub fn expectAttrValEmpty(ts: *TokenStream) !void {
+        try Token.tests.expectAttrValEmpty(ts.src, try unwrapNext(ts.next()));
+    }
+    
+    pub fn expectAttrValSegmentText(ts: *TokenStream, expected_slice: []const u8) !void {
+        try Token.tests.expectAttrValSegmentText(ts.src, try unwrapNext(ts.next()), expected_slice);
+    }
+    
+    pub fn expectAttrValSegmentEntityRef(ts: *TokenStream, expected_name: []const u8) !void {
+        try Token.tests.expectAttrValSegmentEntityRef(ts.src, try unwrapNext(ts.next()), expected_name);
+    }
+    
+    pub fn expectContentText(ts: *TokenStream, expected_slice: []const u8) !void {
+        try Token.tests.expectContentText(ts.src, try unwrapNext(ts.next()), expected_slice);
+    }
+    
+    pub fn expectContentCData(ts: *TokenStream, expected_data: []const u8) !void {
+        try Token.tests.expectContentCData(ts.src, try unwrapNext(ts.next()), expected_data);
+    }
+    
+    pub fn expectContentEntityRef(ts: *TokenStream, expected_name: []const u8) !void {
+        try Token.tests.expectContentEntityRef(ts.src, try unwrapNext(ts.next()), expected_name);
     }
     
     pub fn expectNull(ts: *TokenStream) !void {
@@ -443,38 +496,52 @@ test "TokenStream prologue processing instructions" {
     var ts: TokenStream = undefined;
     _ = ts;
     const target_samples = [_][]const u8 { ("foo"), ("A") };
-    _ = target_samples;
     const whitespace_samples = [_][]const u8 { (""), (" "), (" \t\n\r") };
-    _ = whitespace_samples;
     const non_name_token_samples = [_][]const u8 { ("?"), ("&;") };
-    _ = non_name_token_samples;
+    const string_quote_samples = xml.string_quotes;
+    _ = string_quote_samples;
     
     inline for (target_samples) |target| {
         inline for (whitespace_samples) |whitespace_ignored| {
             ts.reset("<?" ++ target ++ whitespace_ignored ++ "?>");
-            try Token.tests.expectPiTarget(ts.src, try tests.unwrapNext(ts.next()), target);
-            try Token.tests.expectPiEnd(ts.src, try tests.unwrapNext(ts.next()));
+            try tests.expectPiTarget(&ts, target);
+            try tests.expectPiEnd(&ts);
             try tests.expectNull(&ts);
         }
         
-        // inline for (whitespace_samples) |whitespace_a| {
-        //     inline for (whitespace_samples) |whitespace_ignored| {
-        //         inline for (whitespace_samples) |whitespace_c| {
-        //             ts.reset(whitespace_a ++ "<?" ++ target ++ whitespace_ignored ++ "?>" ++ whitespace_c);
-        //             if (whitespace_a.len != 0) try tests.expectWhitespace(&ts, whitespace_a);
-        //             try tests.expectProcessingInstructions(&ts, target, &.{});
-        //             if (whitespace_c.len != 0) try tests.expectWhitespace(&ts, whitespace_c);
-        //             try tests.expectNull(&ts);
-        //         }
-        //     }
-        // }
+        inline for (whitespace_samples) |whitespace_a| {
+            inline for (whitespace_samples) |whitespace_ignored| {
+                inline for (whitespace_samples) |whitespace_c| {
+                    ts.reset(whitespace_a ++ "<?" ++ target ++ whitespace_ignored ++ "?>" ++ whitespace_c);
+                    if (whitespace_a.len != 0) try tests.expectWhitespace(&ts, whitespace_a);
+                    try tests.expectPiTarget(&ts, target);
+                    try tests.expectPiEnd(&ts);
+                    if (whitespace_c.len != 0) try tests.expectWhitespace(&ts, whitespace_c);
+                    try tests.expectNull(&ts);
+                }
+            }
+        }
         
-        // inline for (non_name_token_samples) |non_name_token| {
-        //     inline for (whitespace_samples) |whitespace_obligatory| {
-        //         ts.reset("<?" ++ target ++ whitespace_obligatory ++ non_name_token ++ "?>");
-        //         try tests.expectProcessingInstructions(&ts, target, &.{ .{ .other = .{ .slice = non_name_token } } });
-        //         try tests.expectNull(&ts);
-        //     }
-        // }
+        inline for (whitespace_samples[1..]) |whitespace_obligatory| { // must exclude first element, which is an empty string; here, we require a whitespace always.
+            inline for (whitespace_samples) |whitespace_ignored| {
+                inline for (non_name_token_samples) |non_name_token| {
+                    ts.reset("<?" ++ target ++ whitespace_obligatory ++ non_name_token ++ whitespace_ignored ++ "?>");
+                    try tests.expectPiTarget(&ts, target);
+                    try tests.expectPiTokOther(&ts, non_name_token);
+                    try tests.expectPiEnd(&ts);
+                    try tests.expectNull(&ts);
+                    
+                    inline for (string_quote_samples) |string_quote| {
+                        const quote_type = xml.StringQuote.from(string_quote);
+                        ts.reset("<?" ++ target ++ whitespace_obligatory ++ [_]u8{ string_quote } ++ [_]u8{ string_quote } ++ whitespace_ignored ++ "?>");
+                        try tests.expectPiTarget(&ts, target);
+                        try tests.expectPiTokString(&ts, "", quote_type);
+                        try tests.expectPiEnd(&ts);
+                        try tests.expectNull(&ts);
+                    }
+                }
+            }
+        }
+        
     }
 }

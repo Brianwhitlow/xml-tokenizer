@@ -151,7 +151,7 @@ pub const tests = struct {
     }
     
     pub fn expectPiTokString(src: []const u8, tok: Token, expected_data: []const u8, quote_type: xml.StringQuote) !void {
-        const expected_slice = try mem.concat(testing.allocator, u8, &.{ &.{ quote_type.value() }, expected_data, &.{ quote_type.value() } });
+        const expected_slice = try mem.concat(testing.allocator, u8, &[_][]const u8{ &[_]u8{ quote_type.value() }, expected_data, &[_]u8{ quote_type.value() } });
         defer testing.allocator.free(expected_slice);
         try expectToken(src, tok, .{
             .tag = .pi_tok_string,
