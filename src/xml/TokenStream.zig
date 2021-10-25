@@ -169,10 +169,27 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     debug.assert(depth_is_0 and state_is_not_root);
             }
             
-            return switch (root) {
-                .elem_open_tag => todo("", null),
-                .elem_close_tag => todo("", null),
-            };
+            switch (root) {
+                .elem_open_tag => {
+                    ts.index += xml.whitespaceLength(ts.src, ts.index);
+                    const start_index = ts.index;
+                    switch (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed element open tag followed by eof.", null)) {
+                        '/' => return ts.tokenizeAfterForwardSlash(),
+                        else => {
+                            const name_len = xml.validUtf8NameLength(ts.src, start_index);
+                            ts.index += name_len;
+                            if (name_len == 0) {
+                                todo("Error for invalid character following element open tag.", null);
+                            }
+                            return ts.returnToken(.root, .attr_name, .{ .beg = start_index, .end = ts.index });
+                        },
+                    }
+                    todo("", null);
+                },
+                .elem_close_tag => {
+                    todo("", null);
+                },
+            }
         },
         
         .trailing => |trailing| {
@@ -182,6 +199,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 debug.assert(ts.state == .trailing);
             }
             switch (trailing) {
+                .elem_close_inline => todo("", null),
                 .end => return @as(NextReturnType, null),
             }
         },
@@ -222,6 +240,32 @@ fn tokenizePiTok(ts: *TokenStream, comptime state: meta.Tag(State)) NextReturnTy
     } else todo("Error for unclosed PI other token followed by eof.", null);
     
     return ts.returnToken(state, .pi_tok_other, .{ .beg = start_index, .end = ts.index });
+}
+
+fn tokenizeAfterForwardSlash(ts: *TokenStream) NextReturnType {
+    debug.assert(utility.getByte(ts.src, ts.index).? == '/');
+    debug.assert(ts.state == .root);
+    debug.assert(ts.depth != 0);
+    debug.assert(switch (ts.state.root) {
+        .elem_open_tag => true,
+        .elem_close_tag => false,
+    });
+    
+    const start_index = ts.index;
+    ts.index += 1;
+    if (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed element open tag followed by '/' and then eof.", null) != '>') {
+        todo("Error for unclosed element open tag followed by '/' and then '{c}'.", .{ utility.getByte(ts.src, ts.index).? });
+    }
+    
+    ts.index += 1;
+    const loc = Token.Loc { .beg = start_index, .end = ts.index };
+    const tag = Token.Tag.elem_close_inline;
+    
+    ts.depth -= 1;
+    return if (ts.depth == 0)
+        ts.returnToken(.trailing, tag, loc)
+    else
+        ts.returnToken(.root, tag, loc);
 }
 
 fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(State)) NextReturnType {
@@ -399,6 +443,7 @@ const State = union(enum) {
     };
     
     const Trailing = enum {
+        elem_close_inline,
         end,
         
         comptime {
