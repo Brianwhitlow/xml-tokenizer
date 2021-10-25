@@ -539,15 +539,13 @@ test "TokenStream prologue processing instructions" {
                         inline for (string_quotes) |other_string_quote| {
                             const other_quote_type = comptime xml.StringQuote.from(other_string_quote[0]);
                             comptime if (quote_type == other_quote_type) continue;
-                            inline for (
-                                non_name_token_samples ++ [_][]const u8 {
-                                    (other_string_quote ++ "bar" ++ other_string_quote),
-                                    (other_string_quote ** 2),
-                                    (other_string_quote),
-                                    ("foo"),
-                                    (""),
-                                }
-                            ) |data| {
+                            inline for ([_][]const u8 {
+                                (other_string_quote ++ "bar" ++ other_string_quote),
+                                (other_string_quote ** 2),
+                                (other_string_quote),
+                                ("foo"),
+                                (""),
+                            } ++ non_name_token_samples) |data| {
                                 @setEvalBranchQuota(2000);
                                 ts.reset("<?" ++ target ++ whitespace_obligatory ++ string_quote ++ data ++ string_quote ++ whitespace_ignored ++ "?>");
                                 try tests.expectPiTarget(&ts, target);
