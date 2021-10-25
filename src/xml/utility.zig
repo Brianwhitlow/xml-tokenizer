@@ -77,12 +77,9 @@ pub fn fieldNamesCommon(comptime A: type, comptime B: type) []const []const u8 {
     }
 }
 
-pub fn fieldNamesDiff(comptime A: type, comptime B: type) type_blk: {
-    const len = fieldNamesCommon(A, B).len;
-    break :type_blk struct {
-        a: *const [meta.fieldNames(A).len - len][]const u8,
-        b: *const [meta.fieldNames(B).len - len][]const u8,
-    };
+pub fn fieldNamesDiff(comptime A: type, comptime B: type) struct {
+    a: *const [meta.fieldNames(A).len - fieldNamesCommon(A, B).len][]const u8,
+    b: *const [meta.fieldNames(B).len - fieldNamesCommon(A, B).len][]const u8,
 } {
     const common_fields = comptime fieldNamesCommon(A, B);
     const a_fields = comptime meta.fieldNames(A);
