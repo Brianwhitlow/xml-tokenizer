@@ -88,16 +88,6 @@ pub fn next(ts: *TokenStream) NextReturnType {
                         else => todo("Invalid in prologue.", null),
                     };
                 },
-                .whitespace => {
-                    debug.assert(ts.index != 0);
-                    const start_index = ts.index;
-                    _ = start_index;
-                    
-                    return switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
-                        '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
-                        else => todo("Invalid in prologue.", null),
-                    };
-                },
                 
                 .pi_target => {
                     switch (utility.getByte(ts.src, ts.index) orelse todo("Error for PI Target followed by eof.", null)) {
@@ -144,6 +134,13 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     }
                 },
                 
+                .whitespace => {
+                    debug.assert(ts.index != 0);
+                    return switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
+                        '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
+                        else => todo("Invalid in prologue.", null),
+                    };
+                },
                 .comment => {
                     debug.assert(ts.src[ts.index - 1] == '>');
                     return switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
