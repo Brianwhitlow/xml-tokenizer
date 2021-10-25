@@ -143,8 +143,8 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 },
                 .comment => {
                     debug.assert(ts.src[ts.index - 1] == '>');
-                    return switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
-                        '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
+                    switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
+                        '<' => return ts.tokenizeAfterLeftAngleBracket(.prologue),
                         else => {
                             const start_index = ts.index;
                             ts.index += xml.whitespaceLength(ts.src, ts.index);
@@ -155,7 +155,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                             
                             todo("Error for invalid '{c}' in prologue.", .{utility.getByte(ts.src, ts.index)});
                         },
-                    };
+                    }
                 },
             }
         },
