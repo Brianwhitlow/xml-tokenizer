@@ -292,8 +292,51 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
                 else => todo("Error for '<!{c}'.", .{ utility.getByte(ts.src, ts.index).? }),
             };
         },
-        '/' => todo("Invalid close tag start in prologue.", null),
-        else => todo("", null),
+        '/' => switch (state) {
+            .prologue => todo("Error for element close tag start in prologue.", null),
+            .trailing => todo("Error for element close tag start in trailing section.", null),
+            .root => {
+                ts.index += 1;
+                const name_len = xml.validUtf8NameLength(ts.src, ts.index);
+                ts.index += name_len;
+                if (name_len == 0) {
+                    todo("Error for no name following '</'.", null);
+                }
+                const loc = Token.Loc { .beg = start_index, .end = ts.index };
+                const tag = .elem_close_tag;
+                
+                debug.assert(ts.depth > 0);
+                ts.depth -= 1;
+                return if (ts.depth == 0) ts.returnToken(.trailing, tag, loc) else ts.returnToken(.root, tag, loc);
+            },
+        },
+        else => switch (state) {
+            .trailing => todo("Error for element open tag start in trailing section.", null),
+            .prologue,
+            .root,
+            => {
+                const name_len = xml.validUtf8NameLength(ts.src, ts.index);
+                ts.index += name_len;
+                if (name_len == 0) {
+                    todo("Error for no name following '<'.", null);
+                }
+                const loc = Token.Loc { .beg = start_index, .end = ts.index };
+                const tag = .elem_open_tag;
+                switch (state) {
+                    .trailing => @compileError("unreachable"),
+                    .prologue => {
+                        ts.depth += 1;
+                        debug.assert(ts.depth == 1);
+                        return ts.returnToken(.root, tag, loc);
+                    },
+                    .root => {
+                        debug.assert(ts.depth != 0);
+                        ts.depth += 1;
+                        return ts.returnToken(.root, tag, loc);
+                    },
+                }
+            },
+        },
     }
 }
 
