@@ -559,6 +559,25 @@ test "TokenStream prologue processing instructions" {
                         }
                     }
                 }
+                
+                inline for (string_quotes) |string_quote| {
+                    const quote_type = comptime xml.StringQuote.from(string_quote[0]);
+                    ts.reset(
+                        "<?"
+                        ++ target
+                        ++ whitespace_obligatory ++ "foo"
+                        ++ whitespace_obligatory ++ "="
+                        ++ whitespace_ignored ++ string_quote ++ "bar" ++ string_quote
+                        ++ whitespace_ignored
+                        ++ "?>"
+                    );
+                    try tests.expectPiTarget(&ts, target);
+                    try tests.expectPiTokOther(&ts, "foo");
+                    try tests.expectPiTokOther(&ts, "=");
+                    try tests.expectPiTokString(&ts, "bar", quote_type);
+                    try tests.expectPiEnd(&ts);
+                    try tests.expectNull(&ts);
+                }
             }
         }
         
