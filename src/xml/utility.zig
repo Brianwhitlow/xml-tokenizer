@@ -6,6 +6,8 @@ const debug = std.debug;
 const unicode = std.unicode;
 const testing = std.testing;
 
+const utility = @This();
+
 pub fn getByte(src: []const u8, index: usize) ?u8 {
     if (index >= src.len) return null;
     return src[index];
@@ -75,17 +77,13 @@ pub fn fieldNamesCommon(comptime A: type, comptime B: type) []const []const u8 {
     }
 }
 
-fn FieldNamesDiffResultType(comptime A: type, comptime B: type) type {
+pub fn fieldNamesDiff(comptime A: type, comptime B: type) type_blk: {
     const len = fieldNamesCommon(A, B).len;
-    const a_len = meta.fieldNames(A).len;
-    const b_len = meta.fieldNames(B).len;
-    return struct {
-        a: *const [a_len - len][]const u8,
-        b: *const [b_len - len][]const u8,
+    break :type_blk struct {
+        a: *const [meta.fieldNames(A).len - len][]const u8,
+        b: *const [meta.fieldNames(B).len - len][]const u8,
     };
-}
-
-pub fn fieldNamesDiff(comptime A: type, comptime B: type) FieldNamesDiffResultType(A, B) {
+} {
     const common_fields = comptime fieldNamesCommon(A, B);
     const a_fields = comptime meta.fieldNames(A);
     const b_fields = comptime meta.fieldNames(B);
