@@ -622,3 +622,12 @@ test "TokenStream prologue processing instructions" {
         
     }
 }
+
+test "TokenStream empty element" {
+    var ts: TokenStream = undefined;
+    ts.reset("<foo/>");
+    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectElemCloseInline(&ts);
+    
+    
+}
