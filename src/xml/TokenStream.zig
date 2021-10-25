@@ -498,8 +498,12 @@ test "TokenStream prologue processing instructions" {
     const target_samples = [_][]const u8 { ("foo"), ("A") };
     const whitespace_samples = [_][]const u8 { (""), (" "), (" \t\n\r") };
     const non_name_token_samples = [_][]const u8 { ("?"), ("&;") };
-    const string_quote_samples = xml.string_quotes;
-    _ = string_quote_samples;
+    const string_quotes = comptime string_quotes: {
+        var blk_out: [xml.string_quotes.len]*const [1]u8 = undefined;
+        for (xml.string_quotes) |string_quote, idx|
+            blk_out[idx] = &[_] u8 { string_quote };
+        break :string_quotes blk_out;
+    };
     
     inline for (target_samples) |target| {
         inline for (whitespace_samples) |whitespace_ignored| {
@@ -531,13 +535,28 @@ test "TokenStream prologue processing instructions" {
                     try tests.expectPiEnd(&ts);
                     try tests.expectNull(&ts);
                     
-                    inline for (string_quote_samples) |string_quote| {
-                        const quote_type = xml.StringQuote.from(string_quote);
-                        ts.reset("<?" ++ target ++ whitespace_obligatory ++ [_]u8{ string_quote } ++ [_]u8{ string_quote } ++ whitespace_ignored ++ "?>");
-                        try tests.expectPiTarget(&ts, target);
-                        try tests.expectPiTokString(&ts, "", quote_type);
-                        try tests.expectPiEnd(&ts);
-                        try tests.expectNull(&ts);
+                    inline for (string_quotes) |string_quote| {
+                        const quote_type = comptime xml.StringQuote.from(string_quote[0]);
+                        inline for (string_quotes) |other_string_quote| {
+                            const other_quote_type = comptime xml.StringQuote.from(other_string_quote[0]);
+                            comptime if (quote_type == other_quote_type) continue;
+                            inline for (
+                                non_name_token_samples ++ [_][]const u8 {
+                                    (other_string_quote ++ "bar" ++ other_string_quote),
+                                    (other_string_quote ** 2),
+                                    (other_string_quote),
+                                    ("foo"),
+                                    (""),
+                                }
+                            ) |data| {
+                                @setEvalBranchQuota(2000);
+                                ts.reset("<?" ++ target ++ whitespace_obligatory ++ string_quote ++ data ++ string_quote ++ whitespace_ignored ++ "?>");
+                                try tests.expectPiTarget(&ts, target);
+                                try tests.expectPiTokString(&ts, data, quote_type);
+                                try tests.expectPiEnd(&ts);
+                                try tests.expectNull(&ts);
+                            }
+                        }
                     }
                 }
             }
