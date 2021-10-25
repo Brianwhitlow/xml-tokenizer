@@ -177,8 +177,10 @@ pub fn next(ts: *TokenStream) NextReturnType {
         
         .trailing => |trailing| {
             debug.assert(ts.depth == 0);
-            defer debug.assert(ts.depth == 0);
-            defer debug.assert(ts.depth == 0 and ts.state == .trailing);
+            defer {
+                debug.assert(ts.depth == 0);
+                debug.assert(ts.state == .trailing);
+            }
             switch (trailing) {
                 .end => return @as(NextReturnType, null),
             }
