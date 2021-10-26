@@ -111,7 +111,7 @@ pub const tests = struct {
     ) !void {
         try testing.expectEqual(expected.tag, tok.tag);
         
-        debug.assert(mem.containsAtLeast(u8, src, 1, expected.slice));
+        debug.assert(expected.slice.len == 0 or mem.containsAtLeast(u8, src, 1, expected.slice));
         try testing.expectEqualStrings(expected.slice, tok.slice(src));
         
         // const null_str: ?[]const u8 = null;
