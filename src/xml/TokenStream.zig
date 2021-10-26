@@ -993,6 +993,7 @@ test "TokenStream CDATA Sections" {
         try tests.expectElemOpenTag(&ts, "root");
         try tests.expectContentCData(&ts, data);
         try tests.expectElemCloseTag(&ts, "root");
+        try tests.expectNull(&ts);
         
         inline for (whitespace_samples) |ws_a| {
             inline for (whitespace_samples) |ws_b| {
@@ -1002,6 +1003,7 @@ test "TokenStream CDATA Sections" {
                 try tests.expectContentCData(&ts, data);
                 if (ws_b.len != 0) try tests.expectWhitespace(&ts, ws_b);
                 try tests.expectElemCloseTag(&ts, "root");
+                try tests.expectNull(&ts);
             }
         }
         
@@ -1013,6 +1015,7 @@ test "TokenStream CDATA Sections" {
                 try tests.expectContentCData(&ts, data);
                 if (text_data_b.len != 0) try tests.expectContentText(&ts, text_data_b);
                 try tests.expectElemCloseTag(&ts, "root");
+                try tests.expectNull(&ts);
             }
         }
     }
