@@ -165,8 +165,10 @@ pub fn next(ts: *TokenStream) NextReturnType {
             defer {
                 const depth_is_0 = (ts.depth == 0);
                 const state_is_not_root = (ts.state != .root);
-                if (depth_is_0 or state_is_not_root)
+                if (depth_is_0 or state_is_not_root) {
                     debug.assert(depth_is_0 and state_is_not_root);
+                }
+                debug.assert(ts.state != .prologue);
             }
             
             switch (root) {
