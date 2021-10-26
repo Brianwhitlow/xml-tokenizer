@@ -325,7 +325,7 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
                 } else todo("Error for encountering eof prematurely (after content, before entering trailing section).", null);
             }
         }
-    } else false;
+    } else true;
     
     const loc = Token.Loc { .beg = start_index, .end = ts.index };
     const tag = if (all_whitespace) Token.Tag.whitespace else Token.Tag.content_text;
