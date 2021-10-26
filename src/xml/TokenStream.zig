@@ -172,10 +172,45 @@ pub fn next(ts: *TokenStream) NextReturnType {
             switch (root) {
                 .elem_open_tag => {
                     ts.index += xml.whitespaceLength(ts.src, ts.index);
-                    const start_index = ts.index;
                     switch (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed element open tag followed by eof.", null)) {
                         '/' => return ts.tokenizeAfterForwardSlash(),
+                        '>' => {
+                            ts.index += 1;
+                            const start_index = ts.index;
+                            switch (utility.getByte(ts.src, start_index) orelse todo("Error for premature eof following element open tag.", null)) {
+                                '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
+                                '&' => todo("Immediately tokenize entity reference.", null),
+                                else => {},
+                            }
+                            
+                            const non_whitespace_chars = outerloop: while (utility.getUtf8(ts.src, ts.index)) |ws_char| : (ts.index += 1) {
+                                switch (ws_char) {
+                                    '<',
+                                    '&',
+                                    => break :outerloop false,
+                                    else => {
+                                        if (utility.lenOfUtf8OrNull(ws_char).? == 1 and xml.isSpace(@intCast(u8, ws_char))) continue :outerloop;
+                                        while (utility.getByte(ts.src, ts.index)) |non_ws_char| : (ts.index += utility.lenOfUtf8OrNull(non_ws_char).?) {
+                                            switch (non_ws_char) {
+                                                '<',
+                                                '&',
+                                                => break :outerloop true,
+                                                else => continue,
+                                            }
+                                        } else todo("Error for encountering eof prematurely (after content, before entering trailing section).", null);
+                                    }
+                                }
+                            } else false;
+                            
+                            const loc = Token.Loc { .beg = start_index, .end = ts.index };
+                            
+                            return if (non_whitespace_chars)
+                                ts.returnToken(.root, .content_text, loc)
+                            else
+                                ts.returnToken(.root, .whitespace, loc);
+                        },
                         else => {
+                        const start_index = ts.index;
                             const name_len = xml.validUtf8NameLength(ts.src, start_index);
                             ts.index += name_len;
                             if (name_len == 0) {
@@ -204,7 +239,26 @@ pub fn next(ts: *TokenStream) NextReturnType {
                         else => todo("Error for '{c}' in trailing section.", .{ utility.getByte(ts.src, ts.index).? }),
                     }
                 },
-                .elem_close_inline => {
+                
+                .elem_close_tag,
+                .elem_close_inline,
+                => {
+                    debug.assert(ts.depth == 0);
+                    switch (trailing) {
+                        .elem_close_tag => {
+                            ts.index += xml.whitespaceLength(ts.src, ts.index);
+                            if (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed element close tag followed by eof.", null) != '>') {
+                                todo("Error for unclosed element close tag followed by invalid character, instead of '>'.", null);
+                            }
+                            ts.index += 1;
+                        },
+                        .elem_close_inline => {
+                            debug.assert(utility.getByte(ts.src, ts.index - 1).? == '>');
+                            debug.assert(utility.getByte(ts.src, ts.index - 2).? == '/');
+                        },
+                        else => unreachable,
+                    }
+                    
                     const start_index = ts.index;
                     
                     const whitespace_len = xml.whitespaceLength(ts.src, ts.index);
@@ -218,6 +272,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                         else => todo("Error for '{c}' in trailing section.", .{ utility.getByte(ts.src, ts.index).? }),
                     }
                 },
+                
                 .end => return @as(NextReturnType, null),
             }
         },
@@ -462,6 +517,7 @@ const State = union(enum) {
     
     const Trailing = enum {
         whitespace,
+        elem_close_tag,
         elem_close_inline,
         end,
         
@@ -698,6 +754,22 @@ test "TokenStream empty element" {
             try tests.expectElemCloseInline(&ts);
             if (whitespace_b.len != 0) try tests.expectWhitespace(&ts, whitespace_b);
             try tests.expectNull(&ts);
+            
+            inline for (whitespace_samples) |whitespace_ignored_a| {
+                inline for (whitespace_samples) |whitespace_ignored_b| {
+                    @setEvalBranchQuota(16000);
+                    const ws_a = whitespace_a;
+                    const ws_b = whitespace_b;
+                    const ws_ign_a = whitespace_ignored_a;
+                    const ws_ign_b = whitespace_ignored_b;
+                    
+                    ts.reset(ws_a ++ "<foo" ++ ws_ign_a ++ "></foo" ++ ws_ign_b ++ ">" ++ ws_b);
+                    if (ws_a.len != 0) try tests.expectWhitespace(&ts, ws_a);
+                    try tests.expectElemOpenTag(&ts, "foo");
+                    try tests.expectElemCloseTag(&ts, "foo");
+                    if (ws_b.len != 0) try tests.expectWhitespace(&ts, ws_b);
+                }
+            }
         }
     }
 }
