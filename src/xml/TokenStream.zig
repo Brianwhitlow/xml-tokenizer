@@ -748,14 +748,14 @@ test "TokenStream empty element" {
     const whitespace_samples = [_][]const u8 { (""), (" "), ("\t"), ("\n"), ("\r"), (" \t\n\r") };
     inline for (whitespace_samples) |whitespace_a| {
         inline for (whitespace_samples) |whitespace_b| {
-            ts.reset(whitespace_a ++ "<foo/>" ++ whitespace_b);
-            if (whitespace_a.len != 0) try tests.expectWhitespace(&ts, whitespace_a);
-            try tests.expectElemOpenTag(&ts, "foo");
-            try tests.expectElemCloseInline(&ts);
-            if (whitespace_b.len != 0) try tests.expectWhitespace(&ts, whitespace_b);
-            try tests.expectNull(&ts);
-            
             inline for (whitespace_samples) |whitespace_ignored_a| {
+                ts.reset(whitespace_a ++ "<foo" ++ whitespace_ignored_a ++ "/>" ++ whitespace_b);
+                if (whitespace_a.len != 0) try tests.expectWhitespace(&ts, whitespace_a);
+                try tests.expectElemOpenTag(&ts, "foo");
+                try tests.expectElemCloseInline(&ts);
+                if (whitespace_b.len != 0) try tests.expectWhitespace(&ts, whitespace_b);
+                try tests.expectNull(&ts);
+            
                 inline for (whitespace_samples) |whitespace_ignored_b| {
                     @setEvalBranchQuota(16000);
                     const ws_a = whitespace_a;
