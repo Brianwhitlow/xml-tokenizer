@@ -308,6 +308,8 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
     
     const start_index = ts.index;
     
+    const disallowed_str = "]]>";
+    
     const all_whitespace = outerloop: while (utility.getUtf8(ts.src, ts.index)) |ws_char| : (ts.index += 1) {
         switch (ws_char) {
             '<',
@@ -323,6 +325,12 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
                         '<',
                         '&',
                         => break :outerloop false,
+                        disallowed_str[0] => {
+                            if (mem.startsWith(u8, ts.src[ts.index + 1..], disallowed_str[1..])) {
+                                ts.index += disallowed_str.len;
+                                todo("Error for disallowed token '{s}' in content.", .{ disallowed_str });
+                            }
+                        },
                         else => continue,
                     }
                 } else todo("Error for encountering eof prematurely (after content, before entering trailing section).", null);
