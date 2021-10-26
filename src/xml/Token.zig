@@ -114,29 +114,8 @@ pub const tests = struct {
         debug.assert(expected.slice.len == 0 or mem.containsAtLeast(u8, src, 1, expected.slice));
         try testing.expectEqualStrings(expected.slice, tok.slice(src));
         
-        // const null_str: ?[]const u8 = null;
-        
         try expectEqualOptionalSlices(u8, expected.name, tok.name(src));
         try expectEqualOptionalSlices(u8, expected.data, tok.data(src));
-        
-        // if (expected.name) |expected_name| {
-        //     try if (tok.name(src)) |actual_name|
-        //         testing.expectEqualStrings(expected_name, actual_name)
-        //     else
-        //         testing.expectEqual(null_str, tok.name(src));
-        // } else {
-        //     try testing.expectEqual(null_str, tok.name(src));
-        // }
-        
-        // if (expected.data) |expected_data| {
-        //     try if (tok.data(src)) |actual_data|
-        //         testing.expectEqualStrings(expected_data, actual_data)
-        //     else
-        //         testing.expectEqual(null_str, tok.data(src));
-        // } else {
-        //     try testing.expectEqual(null_str, tok.data(src));
-        // }
-        
     }
     
     pub fn expectPiTarget(src: []const u8, tok: Token, expected_name: []const u8) !void {
