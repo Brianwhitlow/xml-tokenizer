@@ -218,6 +218,8 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     '&' => return ts.tokenizeContentEntityRef(),
                     else => todo("Consider this invalid? invariant, encountering '{c}'.", .{utility.getByte(ts.src, ts.index).?}),
                 },
+                
+                .comment,
                 .content_cdata,
                 .content_entity_ref,
                 => switch (utility.getByte(ts.src, ts.index) orelse todo("Error for entity ref followed by premature eof.", null)) {
@@ -294,6 +296,7 @@ fn sideEffectsAfterElementCloseTagOrInline(ts: *TokenStream, comptime state: met
 fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
     debug.assert(ts.state == .root);
     debug.assert(switch (ts.state.root) {
+        .comment,
         .elem_open_tag,
         .elem_close_tag,
         .content_entity_ref,
@@ -350,6 +353,7 @@ fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
     debug.assert(ts.state == .root);
     debug.assert(switch (ts.state.root) {
         .whitespace => true,
+        .comment => true,
         
         .elem_open_tag => true,
         .elem_close_tag => true,
@@ -630,6 +634,7 @@ const State = union(enum) {
     
     const Root = enum {
         whitespace,
+        comment,
         
         elem_open_tag,
         elem_close_tag,
@@ -640,6 +645,7 @@ const State = union(enum) {
         content_entity_ref,
         
         comptime {
+            @setEvalBranchQuota(2000);
             assertSimilarToTokenTag(@This(), &.{});
         }
     };
@@ -985,6 +991,7 @@ test "TokenStream CDATA Sections" {
     
     const char_data_samples = [_][]const u8 { (""), ("["), ("[["), ("]"), ("]]"), ("]>"), ("] ]>"), ("]]]"), (" fooñbarñbaz ") };
     const whitespace_samples = [_][]const u8 { (""), (" "), ("\t"), ("\n"), ("\r"), (" \t\n\r") };
+    const name_samples = [_][]const u8 { (""), ("foo"), ("a"), ("A0"), ("SHI:FOO"), };
     
     inline for (char_data_samples) |data| {
         @setEvalBranchQuota(6000);
@@ -1014,6 +1021,77 @@ test "TokenStream CDATA Sections" {
                 if (text_data_a.len != 0) try tests.expectContentText(&ts, text_data_a);
                 try tests.expectContentCData(&ts, data);
                 if (text_data_b.len != 0) try tests.expectContentText(&ts, text_data_b);
+                try tests.expectElemCloseTag(&ts, "root");
+                try tests.expectNull(&ts);
+            }
+        }
+        
+        inline for (name_samples) |name_a| {
+            inline for (name_samples) |name_b| {
+                const entref_a: []const u8 = if (name_a.len != 0) "&" ++ name_a ++ ";" else "";
+                const entref_b: []const u8 = if (name_b.len != 0) "&" ++ name_b ++ ";" else "";
+                ts.reset("<root>" ++ entref_a ++ "<![CDATA[" ++ data ++ "]]>" ++ entref_b ++ "</root>");
+                try tests.expectElemOpenTag(&ts, "root");
+                if (name_a.len != 0) try tests.expectContentEntityRef(&ts, name_a);
+                try tests.expectContentCData(&ts, data);
+                if (name_b.len != 0) try tests.expectContentEntityRef(&ts, name_b);
+                try tests.expectElemCloseTag(&ts, "root");
+                try tests.expectNull(&ts);
+            }
+        }
+    }
+}
+
+test "TokenStream root comment" {
+    var ts: TokenStream = undefined;
+    
+    const text_samples = [_][]const u8 { (""), ("foo bar baz") };
+    const data_samples = [_][]const u8 { (""), (" "), ("- "), (" -> "), (" foo bar baz ") };
+    const whitespace_samples = [_][]const u8 { (""), (" "), ("\t"), ("\n"), ("\r"), (" \t\n\r") };
+    const name_samples = [_][]const u8 { (""), ("foo"), ("a"), ("A0"), ("SHI:FOO"), };
+    
+    inline for (data_samples) |data| {
+        @setEvalBranchQuota(6000);
+        
+        ts.reset("<root>" ++ "<!--" ++ data ++ "-->" ++ "</root>");
+        try tests.expectElemOpenTag(&ts, "root");
+        try tests.expectComment(&ts, data);
+        try tests.expectElemCloseTag(&ts, "root");
+        try tests.expectNull(&ts);
+        
+        inline for (whitespace_samples) |ws_a| {
+            inline for (whitespace_samples) |ws_b| {
+                ts.reset("<root>" ++ ws_a ++ "<!--" ++ data ++ "-->" ++ ws_b ++ "</root>");
+                try tests.expectElemOpenTag(&ts, "root");
+                if (ws_a.len != 0) try tests.expectWhitespace(&ts, ws_a);
+                try tests.expectComment(&ts, data);
+                if (ws_b.len != 0) try tests.expectWhitespace(&ts, ws_b);
+                try tests.expectElemCloseTag(&ts, "root");
+                try tests.expectNull(&ts);
+            }
+        }
+        
+        inline for (text_samples) |text_data_a| {
+            inline for (text_samples) |text_data_b| {
+                ts.reset("<root>" ++ text_data_a ++ "<!--" ++ data ++ "-->" ++ text_data_b ++ "</root>");
+                try tests.expectElemOpenTag(&ts, "root");
+                if (text_data_a.len != 0) try tests.expectContentText(&ts, text_data_a);
+                try tests.expectComment(&ts, data);
+                if (text_data_b.len != 0) try tests.expectContentText(&ts, text_data_b);
+                try tests.expectElemCloseTag(&ts, "root");
+                try tests.expectNull(&ts);
+            }
+        }
+        
+        inline for (name_samples) |name_a| {
+            inline for (name_samples) |name_b| {
+                const entref_a: []const u8 = if (name_a.len != 0) "&" ++ name_a ++ ";" else "";
+                const entref_b: []const u8 = if (name_b.len != 0) "&" ++ name_b ++ ";" else "";
+                ts.reset("<root>" ++ entref_a ++ "<!--" ++ data ++ "-->" ++ entref_b ++ "</root>");
+                try tests.expectElemOpenTag(&ts, "root");
+                if (name_a.len != 0) try tests.expectContentEntityRef(&ts, name_a);
+                try tests.expectComment(&ts, data);
+                if (name_b.len != 0) try tests.expectContentEntityRef(&ts, name_b);
                 try tests.expectElemCloseTag(&ts, "root");
                 try tests.expectNull(&ts);
             }
