@@ -198,7 +198,26 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 debug.assert(ts.state == .trailing);
             }
             switch (trailing) {
-                .elem_close_inline => todo("", null),
+                .whitespace => {
+                    switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
+                        '<' => return ts.tokenizeAfterLeftAngleBracket(.trailing),
+                        else => todo("Error for '{c}' in trailing section.", .{ utility.getByte(ts.src, ts.index).? }),
+                    }
+                },
+                .elem_close_inline => {
+                    const start_index = ts.index;
+                    
+                    const whitespace_len = xml.whitespaceLength(ts.src, ts.index);
+                    ts.index += whitespace_len;
+                    if (whitespace_len != 0) {
+                        return ts.returnToken(.trailing, .whitespace, .{ .beg = start_index, .end = ts.index });
+                    }
+                    
+                    switch (utility.getByte(ts.src, ts.index) orelse return ts.returnNullSetTrailingEnd()) {
+                        '<' => return ts.tokenizeAfterLeftAngleBracket(.trailing),
+                        else => todo("Error for '{c}' in trailing section.", .{ utility.getByte(ts.src, ts.index).? }),
+                    }
+                },
                 .end => return @as(NextReturnType, null),
             }
         },
@@ -442,6 +461,7 @@ const State = union(enum) {
     };
     
     const Trailing = enum {
+        whitespace,
         elem_close_inline,
         end,
         
@@ -669,9 +689,15 @@ test "TokenStream prologue processing instructions" {
 
 test "TokenStream empty element" {
     var ts: TokenStream = undefined;
-    ts.reset("<foo/>");
-    try tests.expectElemOpenTag(&ts, "foo");
-    try tests.expectElemCloseInline(&ts);
-    
-    
+    const whitespace_samples = [_][]const u8 { (""), (" "), ("\t"), ("\n"), ("\r"), (" \t\n\r") };
+    inline for (whitespace_samples) |whitespace_a| {
+        inline for (whitespace_samples) |whitespace_b| {
+            ts.reset(whitespace_a ++ "<foo/>" ++ whitespace_b);
+            if (whitespace_a.len != 0) try tests.expectWhitespace(&ts, whitespace_a);
+            try tests.expectElemOpenTag(&ts, "foo");
+            try tests.expectElemCloseInline(&ts);
+            if (whitespace_b.len != 0) try tests.expectWhitespace(&ts, whitespace_b);
+            try tests.expectNull(&ts);
+        }
+    }
 }
