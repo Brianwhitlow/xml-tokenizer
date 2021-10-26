@@ -184,15 +184,14 @@ pub fn next(ts: *TokenStream) NextReturnType {
                         '/' => return ts.tokenizeElementCloseInlineAfterForwardSlash(),
                         '>' => {
                             ts.index += 1;
-                            const start_index = ts.index;
-                            switch (utility.getByte(ts.src, start_index) orelse todo("Error for premature eof following element open tag.", null)) {
+                            switch (utility.getByte(ts.src, ts.index) orelse todo("Error for premature eof following element open tag.", null)) {
                                 '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
                                 '&' => return ts.tokenizeContentEntityRef(),
                                 else => return ts.tokenizeContentTextOrWhitespace(),
                             }
                         },
                         else => {
-                        const start_index = ts.index;
+                            const start_index = ts.index;
                             const name_len = xml.validUtf8NameLength(ts.src, start_index);
                             ts.index += name_len;
                             if (name_len == 0) {
@@ -202,21 +201,18 @@ pub fn next(ts: *TokenStream) NextReturnType {
                         },
                     }
                 },
-                .elem_close_tag => {
-                    ts.index += xml.whitespaceLength(ts.src, ts.index);
-                    switch (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed element close tag followed by eof.", null)) {
-                        '>' => {
-                            ts.index += 1;
-                            const start_index = ts.index;
-                            switch (utility.getByte(ts.src, start_index) orelse todo("Error premature eof in root after element close tag.", null)) {
-                                '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
-                                '&' => return ts.tokenizeContentEntityRef(),
-                                else => return ts.tokenizeContentTextOrWhitespace(),
-                            }
-                        },
-                        else => todo("Error for unclosed element close tag followed by '{c}'.", .{utility.getByte(ts.src, ts.index).?}),
+                
+                .elem_close_inline,
+                .elem_close_tag,
+                => {
+                    ts.sideEffectsAfterElementCloseTagOrInline(.root);
+                    switch (utility.getByte(ts.src, ts.index) orelse todo("Error premature eof in root after element close.", null)) {
+                        '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
+                        '&' => return ts.tokenizeContentEntityRef(),
+                        else => return ts.tokenizeContentTextOrWhitespace(),
                     }
                 },
+                
                 .content_text => switch (utility.getByte(ts.src, ts.index) orelse todo("Error for text followed by premature eof.", null)) {
                     '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
                     '&' => return ts.tokenizeContentEntityRef(),
@@ -247,21 +243,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 .elem_close_tag,
                 .elem_close_inline,
                 => {
-                    switch (trailing) {
-                        .elem_close_tag => {
-                            ts.index += xml.whitespaceLength(ts.src, ts.index);
-                            if (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed element close tag followed by eof.", null) != '>') {
-                                todo("Error for unclosed element close tag followed by invalid character, instead of '>'.", null);
-                            }
-                            ts.index += 1;
-                        },
-                        .elem_close_inline => {
-                            debug.assert(utility.getByte(ts.src, ts.index - 1).? == '>');
-                            debug.assert(utility.getByte(ts.src, ts.index - 2).? == '/');
-                        },
-                        else => unreachable,
-                    }
-                    
+                    ts.sideEffectsAfterElementCloseTagOrInline(.trailing);
                     const start_index = ts.index;
                     
                     const whitespace_len = xml.whitespaceLength(ts.src, ts.index);
@@ -279,6 +261,31 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 .end => return @as(NextReturnType, null),
             }
         },
+    }
+}
+
+fn sideEffectsAfterElementCloseTagOrInline(ts: *TokenStream, comptime state: meta.Tag(State)) void {
+    debug.assert(ts.state == state);
+    debug.assert(switch (@field(ts.state, @tagName(state))) {
+        .elem_close_tag,
+        .elem_close_inline,
+        => true,
+        else => false,
+    });
+    
+    switch (@field(ts.state, @tagName(state))) {
+        .elem_close_tag => {
+            ts.index += xml.whitespaceLength(ts.src, ts.index);
+            if (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed element close tag followed by eof.", null) != '>') {
+                todo("Error for unclosed element close tag followed by invalid character, instead of '>'.", null);
+            }
+            ts.index += 1;
+        },
+        .elem_close_inline => {
+            debug.assert(utility.getByte(ts.src, ts.index - 1).? == '>');
+            debug.assert(utility.getByte(ts.src, ts.index - 2).? == '/');
+        },
+        else => unreachable,
     }
 }
 
@@ -332,8 +339,11 @@ fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
     debug.assert(ts.state == .root);
     debug.assert(switch (ts.state.root) {
         .whitespace => true,
+        
         .elem_open_tag => true,
         .elem_close_tag => true,
+        .elem_close_inline => true,
+        
         .content_text => true,
         .content_entity_ref => true,
     });
@@ -589,6 +599,8 @@ const State = union(enum) {
         
         elem_open_tag,
         elem_close_tag,
+        elem_close_inline,
+        
         content_text,
         content_entity_ref,
         
@@ -908,3 +920,28 @@ test "TokenStream element with content" {
     try tests.expectElemCloseTag(&ts, "g");
     try tests.expectNull(&ts);
 }
+
+test "TokenStream depth awareness" {
+    var ts: TokenStream = undefined;
+    
+    ts.reset("<a><b><c/></b></a>");
+    try tests.expectElemOpenTag(&ts, "a");
+    try tests.expectElemOpenTag(&ts, "b");
+    try tests.expectElemOpenTag(&ts, "c");
+    
+    try tests.expectElemCloseInline(&ts);
+    try tests.expectElemCloseTag(&ts, "b");
+    try tests.expectElemCloseTag(&ts, "a");
+    
+    try tests.expectNull(&ts);
+    
+    // Note: not context-aware; only aware of depth.
+    ts.reset("<a><b></a></b>");
+    try tests.expectElemOpenTag(&ts, "a");
+    try tests.expectElemOpenTag(&ts, "b");
+    try tests.expectElemCloseTag(&ts, "a");
+    try tests.expectElemCloseTag(&ts, "b");
+    
+    try tests.expectNull(&ts);
+}
+
