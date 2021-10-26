@@ -172,44 +172,24 @@ pub fn next(ts: *TokenStream) NextReturnType {
             }
             
             switch (root) {
+                .whitespace => switch (utility.getByte(ts.src, ts.index) orelse todo("Error for eof following whitespace in root.", null)) {
+                    '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
+                    '&' => return ts.tokenizeContentEntityRef(),
+                    else => todo("Error for invalid following whitespace", null),
+                },
+                
                 .elem_open_tag => {
                     ts.index += xml.whitespaceLength(ts.src, ts.index);
                     switch (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed element open tag followed by eof.", null)) {
-                        '/' => return ts.tokenizeAfterForwardSlash(),
+                        '/' => return ts.tokenizeElementCloseInlineAfterForwardSlash(),
                         '>' => {
                             ts.index += 1;
                             const start_index = ts.index;
                             switch (utility.getByte(ts.src, start_index) orelse todo("Error for premature eof following element open tag.", null)) {
                                 '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
-                                '&' => todo("Immediately tokenize entity reference.", null),
-                                else => {},
+                                '&' => return ts.tokenizeContentEntityRef(),
+                                else => return ts.tokenizeContentTextOrWhitespace(),
                             }
-                            
-                            const non_whitespace_chars = outerloop: while (utility.getUtf8(ts.src, ts.index)) |ws_char| : (ts.index += 1) {
-                                switch (ws_char) {
-                                    '<',
-                                    '&',
-                                    => break :outerloop false,
-                                    else => {
-                                        if (utility.lenOfUtf8OrNull(ws_char).? == 1 and xml.isSpace(@intCast(u8, ws_char))) continue :outerloop;
-                                        while (utility.getByte(ts.src, ts.index)) |non_ws_char| : (ts.index += utility.lenOfUtf8OrNull(non_ws_char).?) {
-                                            switch (non_ws_char) {
-                                                '<',
-                                                '&',
-                                                => break :outerloop true,
-                                                else => continue,
-                                            }
-                                        } else todo("Error for encountering eof prematurely (after content, before entering trailing section).", null);
-                                    }
-                                }
-                            } else false;
-                            
-                            const loc = Token.Loc { .beg = start_index, .end = ts.index };
-                            
-                            return if (non_whitespace_chars)
-                                ts.returnToken(.root, .content_text, loc)
-                            else
-                                ts.returnToken(.root, .whitespace, loc);
                         },
                         else => {
                         const start_index = ts.index;
@@ -223,7 +203,29 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     }
                 },
                 .elem_close_tag => {
-                    todo("", null);
+                    ts.index += xml.whitespaceLength(ts.src, ts.index);
+                    switch (utility.getByte(ts.src, ts.index) orelse todo("Error for unclosed element close tag followed by eof.", null)) {
+                        '>' => {
+                            ts.index += 1;
+                            const start_index = ts.index;
+                            switch (utility.getByte(ts.src, start_index) orelse todo("Error premature eof in root after element close tag.", null)) {
+                                '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
+                                '&' => return ts.tokenizeContentEntityRef(),
+                                else => return ts.tokenizeContentTextOrWhitespace(),
+                            }
+                        },
+                        else => todo("Error for unclosed element close tag followed by '{c}'.", .{utility.getByte(ts.src, ts.index).?}),
+                    }
+                },
+                .content_text => switch (utility.getByte(ts.src, ts.index) orelse todo("Error for text followed by premature eof.", null)) {
+                    '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
+                    '&' => return ts.tokenizeContentEntityRef(),
+                    else => todo("Consider this invalid? invariant, encountering '{c}'.", .{utility.getByte(ts.src, ts.index).?}),
+                },
+                .content_entity_ref => switch (utility.getByte(ts.src, ts.index) orelse todo("Error for entity ref followed by premature eof.", null)) {
+                    '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
+                    '&' => return ts.tokenizeContentEntityRef(),
+                    else => return ts.tokenizeContentTextOrWhitespace(),
                 },
             }
         },
@@ -280,6 +282,81 @@ pub fn next(ts: *TokenStream) NextReturnType {
     }
 }
 
+fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
+    debug.assert(ts.state == .root);
+    debug.assert(switch (ts.state.root) {
+        .elem_open_tag,
+        .elem_close_tag,
+        .content_entity_ref,
+        => true,
+        else => false,
+    });
+    debug.assert(switch (utility.getByte(ts.src, ts.index).?) {
+        '&', '<' => false,
+        else => true,
+    });
+    
+    const start_index = ts.index;
+    
+    const all_whitespace = outerloop: while (utility.getUtf8(ts.src, ts.index)) |ws_char| : (ts.index += 1) {
+        switch (ws_char) {
+            '<',
+            '&',
+            => break :outerloop true,
+            else => {
+                if (utility.lenOfUtf8OrNull(ws_char).? == 1 and xml.isSpace(@intCast(u8, ws_char))) {
+                    continue :outerloop;
+                }
+                
+                while (utility.getByte(ts.src, ts.index)) |non_ws_char| : (ts.index += utility.lenOfUtf8OrNull(non_ws_char).?) {
+                    switch (non_ws_char) {
+                        '<',
+                        '&',
+                        => break :outerloop false,
+                        else => continue,
+                    }
+                } else todo("Error for encountering eof prematurely (after content, before entering trailing section).", null);
+            }
+        }
+    } else false;
+    
+    const loc = Token.Loc { .beg = start_index, .end = ts.index };
+    const tag = if (all_whitespace) Token.Tag.whitespace else Token.Tag.content_text;
+    return if (all_whitespace)
+        ts.returnToken(.root, tag, loc)
+    else
+        ts.returnToken(.root, tag, loc);
+}
+
+fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
+    debug.assert(ts.state == .root);
+    debug.assert(switch (ts.state.root) {
+        .whitespace => true,
+        .elem_open_tag => true,
+        .elem_close_tag => true,
+        .content_text => true,
+        .content_entity_ref => true,
+    });
+    
+    const start_index = ts.index;
+    ts.index += 1;
+    
+    const name_len = xml.validUtf8NameLength(ts.src, ts.index);
+    ts.index += name_len;
+    if (name_len == 0) {
+        todo("Error for lack of name where entity reference name was expected.", null);
+    }
+    
+    const sc = if (utility.getByte(ts.src, ts.index)) |char| char
+    else todo("Error for eof where entity reference name terminator ';' was expected.", null);
+    if (sc != ';') {
+        todo("Error for '{c}' where ';' was expected.", .{ sc });
+    }
+    
+    ts.index += 1;
+    return ts.returnToken(.root, .content_entity_ref, .{ .beg = start_index, .end = ts.index });
+}
+
 fn tokenizePiTok(ts: *TokenStream, comptime state: meta.Tag(State)) NextReturnType {
     debug.assert(ts.state == state);
     debug.assert(!xml.isSpace(utility.getByte(ts.src, ts.index).?));
@@ -316,13 +393,13 @@ fn tokenizePiTok(ts: *TokenStream, comptime state: meta.Tag(State)) NextReturnTy
     return ts.returnToken(state, .pi_tok_other, .{ .beg = start_index, .end = ts.index });
 }
 
-fn tokenizeAfterForwardSlash(ts: *TokenStream) NextReturnType {
+fn tokenizeElementCloseInlineAfterForwardSlash(ts: *TokenStream) NextReturnType {
     debug.assert(utility.getByte(ts.src, ts.index).? == '/');
     debug.assert(ts.state == .root);
     debug.assert(ts.depth != 0);
     debug.assert(switch (ts.state.root) {
         .elem_open_tag => true,
-        .elem_close_tag => false,
+        else => false,
     });
     
     const start_index = ts.index;
@@ -348,7 +425,7 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
     
     const start_index = ts.index;
     ts.index += 1;
-    switch (utility.getByte(ts.src, ts.index) orelse todo("", null)) {
+    switch (utility.getByte(ts.src, ts.index) orelse todo("Error for left angle bracket followed by eof.", null)) {
         '?' => {
             ts.index += 1;
             const name_len = xml.validUtf8NameLength(ts.src, ts.index);
@@ -508,8 +585,12 @@ const State = union(enum) {
     };
     
     const Root = enum {
+        whitespace,
+        
         elem_open_tag,
         elem_close_tag,
+        content_text,
+        content_entity_ref,
         
         comptime {
             assertSimilarToTokenTag(@This(), &.{});
@@ -773,4 +854,57 @@ test "TokenStream empty element" {
             }
         }
     }
+}
+
+test "TokenStream element with content" {
+    var ts: TokenStream = undefined;
+    
+    ts.reset("<a>foo</a>");
+    try tests.expectElemOpenTag(&ts, "a");
+    try tests.expectContentText(&ts, "foo");
+    try tests.expectElemCloseTag(&ts, "a");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<b> bar </b>");
+    try tests.expectElemOpenTag(&ts, "b");
+    try tests.expectContentText(&ts, " bar ");
+    try tests.expectElemCloseTag(&ts, "b");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<c>&baz;</c>");
+    try tests.expectElemOpenTag(&ts, "c");
+    try tests.expectContentEntityRef(&ts, "baz");
+    try tests.expectElemCloseTag(&ts, "c");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<d>\n&fee;\n</d>");
+    try tests.expectElemOpenTag(&ts, "d");
+    try tests.expectWhitespace(&ts, "\n");
+    try tests.expectContentEntityRef(&ts, "fee");
+    try tests.expectWhitespace(&ts, "\n");
+    try tests.expectElemCloseTag(&ts, "d");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<e> zig&phi; zag </e>");
+    try tests.expectElemOpenTag(&ts, "e");
+    try tests.expectContentText(&ts, " zig");
+    try tests.expectContentEntityRef(&ts, "phi");
+    try tests.expectContentText(&ts, " zag ");
+    try tests.expectElemCloseTag(&ts, "e");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<f>knick &fo;\t</f>");
+    try tests.expectElemOpenTag(&ts, "f");
+    try tests.expectContentText(&ts, "knick ");
+    try tests.expectContentEntityRef(&ts, "fo");
+    try tests.expectWhitespace(&ts, "\t");
+    try tests.expectElemCloseTag(&ts, "f");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<g>&fum;&knack;</g>");
+    try tests.expectElemOpenTag(&ts, "g");
+    try tests.expectContentEntityRef(&ts, "fum");
+    try tests.expectContentEntityRef(&ts, "knack");
+    try tests.expectElemCloseTag(&ts, "g");
+    try tests.expectNull(&ts);
 }
