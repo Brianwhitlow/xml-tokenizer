@@ -218,7 +218,9 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     '&' => return ts.tokenizeContentEntityRef(),
                     else => todo("Consider this invalid? invariant, encountering '{c}'.", .{utility.getByte(ts.src, ts.index).?}),
                 },
-                .content_entity_ref => switch (utility.getByte(ts.src, ts.index) orelse todo("Error for entity ref followed by premature eof.", null)) {
+                .content_cdata,
+                .content_entity_ref,
+                => switch (utility.getByte(ts.src, ts.index) orelse todo("Error for entity ref followed by premature eof.", null)) {
                     '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
                     '&' => return ts.tokenizeContentEntityRef(),
                     else => return ts.tokenizeContentTextOrWhitespace(),
@@ -295,6 +297,7 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
         .elem_open_tag,
         .elem_close_tag,
         .content_entity_ref,
+        .content_cdata,
         => true,
         else => false,
     });
@@ -345,6 +348,7 @@ fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
         .elem_close_inline => true,
         
         .content_text => true,
+        .content_cdata => true,
         .content_entity_ref => true,
     });
     
@@ -472,7 +476,29 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
                 
                 '[' => switch (state) {
                     .prologue => todo("Error for '<![' in prologue.", null),
-                    .root => todo("", null),
+                    .root => {
+                        ts.index += 1;
+                        const expected_chars = "CDATA[";
+                        if (!mem.startsWith(u8, ts.src[math.clamp(ts.index, 0, ts.src.len)..], expected_chars)) {
+                            ts.index = math.clamp(ts.index + expected_chars.len, 0, ts.src.len);
+                            todo("Error for invalid characters after '<![', when '<![CDATA[' was expected.", null);
+                        }
+                        ts.index += expected_chars.len;
+                        
+                        while (utility.getUtf8(ts.src, ts.index)) |cdata_char| : (ts.index += utility.lenOfUtf8OrNull(cdata_char).?) {
+                            if (cdata_char != ']') continue;
+                            
+                            const next_char0 = utility.getByte(ts.src, ts.index + "]".len) orelse continue;
+                            if (next_char0 != ']') continue;
+                            
+                            const next_char1 = utility.getByte(ts.src, ts.index + "]]".len) orelse continue;
+                            if (next_char1 != '>') continue;
+                            
+                            ts.index += "]]>".len;
+                            return ts.returnToken(.root, .content_cdata, .{ .beg = start_index, .end = ts.index });
+                            
+                        } else return todo("Error unclosed CDATA section followed by eof or invalid.", null);
+                    },
                     .trailing => todo("Error for '<![' in trailing section.", null),
                 },
                 
@@ -602,6 +628,7 @@ const State = union(enum) {
         elem_close_inline,
         
         content_text,
+        content_cdata,
         content_entity_ref,
         
         comptime {
@@ -945,3 +972,40 @@ test "TokenStream depth awareness" {
     try tests.expectNull(&ts);
 }
 
+test "TokenStream CDATA Sections" {
+    var ts: TokenStream = undefined;
+    
+    const char_data_samples = [_][]const u8 { (""), ("["), ("[["), ("]"), ("]]"), ("]>"), ("] ]>"), ("]]]"), (" fooñbarñbaz ") };
+    const whitespace_samples = [_][]const u8 { (""), (" "), ("\t"), ("\n"), ("\r"), (" \t\n\r") };
+    
+    inline for (char_data_samples) |data| {
+        @setEvalBranchQuota(6000);
+        
+        ts.reset("<root>" ++ "<![CDATA[" ++ data ++ "]]>" ++ "</root>");
+        try tests.expectElemOpenTag(&ts, "root");
+        try tests.expectContentCData(&ts, data);
+        try tests.expectElemCloseTag(&ts, "root");
+        
+        inline for (whitespace_samples) |ws_a| {
+            inline for (whitespace_samples) |ws_b| {
+                ts.reset("<root>" ++ ws_a ++ "<![CDATA[" ++ data ++ "]]>" ++ ws_b ++ "</root>");
+                try tests.expectElemOpenTag(&ts, "root");
+                if (ws_a.len != 0) try tests.expectWhitespace(&ts, ws_a);
+                try tests.expectContentCData(&ts, data);
+                if (ws_b.len != 0) try tests.expectWhitespace(&ts, ws_b);
+                try tests.expectElemCloseTag(&ts, "root");
+            }
+        }
+        
+        inline for (char_data_samples) |text_data_a| {
+            inline for (char_data_samples) |text_data_b| {
+                ts.reset("<root>" ++ text_data_a ++ "<![CDATA[" ++ data ++ "]]>" ++ text_data_b ++ "</root>");
+                try tests.expectElemOpenTag(&ts, "root");
+                if (text_data_a.len != 0) try tests.expectContentText(&ts, text_data_a);
+                try tests.expectContentCData(&ts, data);
+                if (text_data_b.len != 0) try tests.expectContentText(&ts, text_data_b);
+                try tests.expectElemCloseTag(&ts, "root");
+            }
+        }
+    }
+}
