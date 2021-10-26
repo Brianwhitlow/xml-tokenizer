@@ -243,7 +243,6 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 .elem_close_tag,
                 .elem_close_inline,
                 => {
-                    debug.assert(ts.depth == 0);
                     switch (trailing) {
                         .elem_close_tag => {
                             ts.index += xml.whitespaceLength(ts.src, ts.index);
