@@ -180,27 +180,28 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 },
                 
                 .elem_open_tag => {
-                    ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
-                    switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed element open tag followed by eof.", null)) {
-                        '/' => return ts.tokenizeElementCloseInlineAfterForwardSlash(),
-                        '>' => {
-                            ts.state.index += 1;
-                            switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for premature eof following element open tag.", null)) {
-                                '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
-                                '&' => return ts.tokenizeContentEntityRef(),
-                                else => return ts.tokenizeContentTextOrWhitespace(),
-                            }
-                        },
-                        else => {
-                            const start_index = ts.state.index;
-                            const name_len = xml.validUtf8NameLength(ts.src, start_index);
-                            ts.state.index += name_len;
-                            if (name_len == 0) {
-                                todo("Error for invalid character following element open tag.", null);
-                            }
-                            return ts.returnToken(.root, .attr_name, .{ .beg = start_index, .end = ts.state.index });
-                        },
-                    }
+                    return ts.tokenizeAfterElementOpenOrAttributeValueEnd();
+                    // ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
+                    // switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed element open tag followed by eof.", null)) {
+                    //     '/' => return ts.tokenizeElementCloseInlineAfterForwardSlash(),
+                    //     '>' => {
+                    //         ts.state.index += 1;
+                    //         switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for premature eof following element open tag.", null)) {
+                    //             '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
+                    //             '&' => return ts.tokenizeContentEntityRef(),
+                    //             else => return ts.tokenizeContentTextOrWhitespace(),
+                    //         }
+                    //     },
+                    //     else => {
+                    //         const start_index = ts.state.index;
+                    //         const name_len = xml.validUtf8NameLength(ts.src, start_index);
+                    //         ts.state.index += name_len;
+                    //         if (name_len == 0) {
+                    //             todo("Error for invalid character following element open tag.", null);
+                    //         }
+                    //         return ts.returnToken(.root, .attr_name, .{ .beg = start_index, .end = ts.state.index });
+                    //     },
+                    // }
                 },
                 
                 .elem_close_inline,
@@ -364,13 +365,14 @@ fn tokenizeAfterElementOpenOrAttributeValueEnd(ts: *TokenStream) NextReturnType 
         },
         else => {
             if (whitespace_len == 0) {
-                todo("Error for lack of whitespace following element open or attribute value.", null);
+                todo("Error for likely invalid bytes in place of whitespace following element open or attribute value.", null);
             }
+            
             const start_index = ts.state.index;
             const name_len = xml.validUtf8NameLength(ts.src, start_index);
             ts.state.index += name_len;
             if (name_len == 0) {
-                todo("Error for invalid character following element open tag.", null);
+                todo("Error for invalid character following element open tag: '{c}'.", .{ utility.getByte(ts.src, ts.state.index).? });
             }
             return ts.returnToken(.root, .attr_name, .{ .beg = start_index, .end = ts.state.index });
         },
@@ -1118,26 +1120,42 @@ test "TokenStream element attribute" {
         }
         break :quote_strings blk_result;
     };
-    
-    inline for (quote_strings) |quote| {
-        @setEvalBranchQuota(8_000);
-        inline for (whitespace_samples) |ws_a| {
-            inline for (whitespace_samples) |ws_b| {
-                inline for (whitespace_samples) |ws_c| {
-                    ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ quote ++ ws_c ++ "/>");
-                    try tests.expectElemOpenTag(&ts, "foo");
-                    try tests.expectAttrName(&ts, "bar");
-                    try tests.expectAttrValEmpty(&ts);
-                    try tests.expectElemCloseInline(&ts);
-                    try tests.expectNull(&ts);
-                    
-                    inline for (text_samples) |text_data| {
-                        ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ text_data ++ quote ++ ws_c ++ "/>");
+    inline for ([_]union(enum) { Inline, Tag: struct { name: []const u8 } }{
+        .Inline,
+        .{ .Tag = .{ .name = "foo" } }
+    }) |elem_close_info| {
+    @setEvalBranchQuota(32_000);
+        inline for (quote_strings) |quote| {
+            inline for (whitespace_samples) |ws_a| {
+                inline for (whitespace_samples) |ws_b| {
+                    inline for (whitespace_samples) |ws_c| {
+                        ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ quote ++ ws_c ++ switch (elem_close_info) {
+                            .Inline => ("/>"),
+                            .Tag => |tag| ("></" ++ tag.name ++ ">")
+                        });
                         try tests.expectElemOpenTag(&ts, "foo");
                         try tests.expectAttrName(&ts, "bar");
-                        try tests.expectAttrValSegmentText(&ts, text_data);
-                        try tests.expectElemCloseInline(&ts);
+                        try tests.expectAttrValEmpty(&ts);
+                        try switch (elem_close_info) {
+                            .Inline => tests.expectElemCloseInline(&ts),
+                            .Tag => |tag| tests.expectElemCloseTag(&ts, tag.name),
+                        };
                         try tests.expectNull(&ts);
+                        
+                        inline for (text_samples) |text_data| {
+                            ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ text_data ++ quote ++ ws_c ++ switch (elem_close_info) {
+                                .Inline => ("/>"),
+                                .Tag => |tag| ("></" ++ tag.name ++ ">")
+                            });
+                            try tests.expectElemOpenTag(&ts, "foo");
+                            try tests.expectAttrName(&ts, "bar");
+                            try tests.expectAttrValSegmentText(&ts, text_data);
+                            try switch (elem_close_info) {
+                                .Inline => tests.expectElemCloseInline(&ts),
+                                .Tag => |tag| tests.expectElemCloseTag(&ts, tag.name),
+                            };
+                            try tests.expectNull(&ts);
+                        }
                     }
                 }
             }
