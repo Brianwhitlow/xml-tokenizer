@@ -1125,6 +1125,13 @@ test "TokenStream element with content" {
 test "TokenStream element attribute" {
     var ts: TokenStream = undefined;
     
+    ts.reset("<foo bar='baz'/>");
+    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectAttrName(&ts, "bar");
+    try tests.expectAttrValSegmentText(&ts, "baz");
+    try tests.expectElemCloseInline(&ts);
+    try tests.expectNull(&ts);
+    
     const whitespace_samples = [_][]const u8 { "", " ", "\t", "\n", "\r", " \t\n\r" };
     const text_samples = [_][]const u8 { "foo ñ bar" } ++ whitespace_samples[1..];
     const name_samples = [_][]const u8 { ("foo"), ("a"), ("A0"), ("SHI:FOO") };
@@ -1161,7 +1168,7 @@ test "TokenStream element attribute" {
         }
     };
     
-    inline for ([_]ElemCloseInfo {
+    inline for ([meta.fields(ElemCloseInfo).len]ElemCloseInfo {
         .Inline,
         .{ .Tag = .{ .name = "foo" } },
     }) |elem_close_info| {
