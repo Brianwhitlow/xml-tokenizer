@@ -1098,26 +1098,19 @@ test "TokenStream element with content" {
     try tests.expectElemCloseTag(&ts, "d");
     try tests.expectNull(&ts);
     
-    ts.reset("<e> zig&phi; zag </e>");
+    ts.reset("<e>zig&phi; zag </e>");
     try tests.expectElemOpenTag(&ts, "e");
-    try tests.expectContentText(&ts, " zig");
+    try tests.expectContentText(&ts, "zig");
     try tests.expectContentEntityRef(&ts, "phi");
     try tests.expectContentText(&ts, " zag ");
     try tests.expectElemCloseTag(&ts, "e");
     try tests.expectNull(&ts);
     
-    ts.reset("<f>knick &fo;\t</f>");
-    try tests.expectElemOpenTag(&ts, "f");
-    try tests.expectContentText(&ts, "knick ");
-    try tests.expectContentEntityRef(&ts, "fo");
-    try tests.expectWhitespace(&ts, "\t");
-    try tests.expectElemCloseTag(&ts, "f");
-    try tests.expectNull(&ts);
-    
-    ts.reset("<g>&fum;&knack;</g>");
+    ts.reset("<g>&fo;&knack;&fum;</g>");
     try tests.expectElemOpenTag(&ts, "g");
-    try tests.expectContentEntityRef(&ts, "fum");
+    try tests.expectContentEntityRef(&ts, "fo");
     try tests.expectContentEntityRef(&ts, "knack");
+    try tests.expectContentEntityRef(&ts, "fum");
     try tests.expectElemCloseTag(&ts, "g");
     try tests.expectNull(&ts);
 }
