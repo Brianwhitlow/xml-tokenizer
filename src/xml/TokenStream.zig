@@ -9,7 +9,7 @@ const xml = @import("../xml.zig");
 const utility = @import("utility.zig");
 
 fn todo(comptime fmt: []const u8, args: anytype) noreturn {
-    debug.panic("TODO: " ++ fmt, if (@TypeOf(args) == @TypeOf(null)) .{} else args);
+    debug.panic("TODO: " ++ fmt ++ "\n", if (@TypeOf(args) == @TypeOf(null)) .{} else args);
 }
 
 const Token = xml.Token;
@@ -25,6 +25,7 @@ pub fn init(src: []const u8) TokenStream {
             .index = 0,
             .depth = 0,
             .mode = .{ .prologue = .start },
+            .last_attr_quote = null,
         }
     };
 }
@@ -214,6 +215,8 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 },
                 
                 .attr_name => {
+                    debug.assert(ts.state.last_attr_quote == null);
+                    
                     ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
                     if (utility.getByte(ts.src, ts.state.index) orelse todo("Error for premature eof immediately after attribute name.", null) != '=') {
                         todo("Error for invalid character where '=' was expected.", null);
@@ -224,24 +227,38 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     if (!xml.isStringQuote(quote)) {
                         todo("Error for non-string-quote where one was expected.", null);
                     }
-                    //const quote_type = xml.StringQuote.from(quote);
                     
-                    ts.state.index += utility.lenOfUtf8OrNull(quote).?;
+                    ts.state.index += 1;
                     const start_index = ts.state.index;
                     
-                    if (utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed attribute value followed by eof.", null) == quote) {
+                    const start_byte = utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed attribute value followed by eof.", null);
+                    if (start_byte == quote) {
                         const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
                         const tag = Token.Tag.attr_val_empty;
                         return ts.returnToken(.root, tag, loc);
                     }
                     
-                    todo("", null);
+                    ts.state.last_attr_quote = xml.StringQuote.from(quote);
+                    return ts.tokenizeAttributeValueSegment();
                 },
                 
                 .attr_val_empty => {
+                    debug.assert(ts.state.last_attr_quote == null);
                     debug.assert(xml.isStringQuote(utility.getByte(ts.src, ts.state.index).?));
                     ts.state.index += 1;
                     return ts.tokenizeAfterElementOpenOrAttributeValueEnd();
+                },
+                .attr_val_segment_text => {
+                    debug.assert(ts.state.last_attr_quote != null);
+                    
+                    const start_byte = utility.getByte(ts.src, ts.state.index).?;
+                    if (start_byte == ts.state.last_attr_quote.?.value()) {
+                        ts.state.last_attr_quote = null;
+                        ts.state.index += 1;
+                        return ts.tokenizeAfterElementOpenOrAttributeValueEnd();
+                    }
+                    
+                    return ts.tokenizeAttributeValueSegment();
                 },
                 
                 .content_text => switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for text followed by premature eof.", null)) {
@@ -330,9 +347,11 @@ fn tokenizeAfterElementOpenOrAttributeValueEnd(ts: *TokenStream) NextReturnType 
         .elem_open_tag,
         .attr_val_empty,
         => true,
+        .attr_val_segment_text => (ts.state.last_attr_quote == null),
         else => false,
     });
-    ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
+    const whitespace_len = xml.whitespaceLength(ts.src, ts.state.index);
+    ts.state.index += whitespace_len;
     switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed element open tag followed by eof.", null)) {
         '/' => return ts.tokenizeElementCloseInlineAfterForwardSlash(),
         '>' => {
@@ -344,6 +363,9 @@ fn tokenizeAfterElementOpenOrAttributeValueEnd(ts: *TokenStream) NextReturnType 
             }
         },
         else => {
+            if (whitespace_len == 0) {
+                todo("Error for lack of whitespace following element open or attribute value.", null);
+            }
             const start_index = ts.state.index;
             const name_len = xml.validUtf8NameLength(ts.src, start_index);
             ts.state.index += name_len;
@@ -351,6 +373,50 @@ fn tokenizeAfterElementOpenOrAttributeValueEnd(ts: *TokenStream) NextReturnType 
                 todo("Error for invalid character following element open tag.", null);
             }
             return ts.returnToken(.root, .attr_name, .{ .beg = start_index, .end = ts.state.index });
+        },
+    }
+}
+
+fn tokenizeAttributeValueSegment(ts: *TokenStream) NextReturnType {
+    debug.assert(ts.state.last_attr_quote != null);
+    debug.assert(utility.getByte(ts.src, ts.state.index).? != ts.state.last_attr_quote.?.value());
+    debug.assert(ts.state.mode == .root);
+    debug.assert(switch (ts.state.mode.root) {
+        .attr_name => true,
+        else => false,
+    });
+    
+    const start_index = ts.state.index;
+    switch (utility.getByte(ts.src, start_index).?) {
+        '&' => {
+            ts.state.index += 1;
+            const name_len = xml.validUtf8NameLength(ts.src, ts.state.index);
+            ts.state.index += name_len;
+            if (name_len == 0) {
+                todo("Error for lack of name where entity reference name was expected.", null);
+            }
+            
+            if (utility.getByte(ts.src, ts.state.index) orelse todo("Error entity reference name followed by eof where ';' was expected.", null) != ';') {
+                todo("Error for entity reference name followed by invalid where ';' was expected.", null);
+            }
+            
+            ts.state.index += 1;
+            const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
+            const tag = Token.Tag.attr_val_segment_entity_ref;
+            return ts.returnToken(.root, tag, loc);
+        },
+        else => {
+            while (utility.getUtf8(ts.src, ts.state.index)) |text_char| : (ts.state.index += utility.lenOfUtf8OrNull(text_char).?) {
+                if ((text_char == '&')
+                or  (text_char == ts.state.last_attr_quote.?.value())
+                ) break;
+                
+                // if ((ts.state.index - start_index) > 2) todo("", null);
+            } else todo("Error for eof following unclosed attribute comment.", null);
+            
+            const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
+            const tag = Token.Tag.attr_val_segment_text;
+            return ts.returnToken(.root, tag, loc);
         },
     }
 }
@@ -423,6 +489,7 @@ fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
         
         .attr_name => false,
         .attr_val_empty => true,
+        .attr_val_segment_text => (ts.state.last_attr_quote == null),
         
         .content_text => true,
         .content_cdata => true,
@@ -491,6 +558,7 @@ fn tokenizeElementCloseInlineAfterForwardSlash(ts: *TokenStream) NextReturnType 
     debug.assert(switch (ts.state.mode.root) {
         .elem_open_tag => true,
         .attr_val_empty => true,
+        .attr_val_segment_text => true,
         else => false,
     });
     
@@ -670,6 +738,7 @@ const State = struct {
     index: usize,
     depth: usize,
     mode: Mode = .{ .prologue = .start },
+    last_attr_quote: ?xml.StringQuote,
     
     const Mode = union(enum) {
         prologue: Prologue,
@@ -713,6 +782,7 @@ const State = struct {
             
             attr_name,
             attr_val_empty,
+            attr_val_segment_text,
             
             content_text,
             content_cdata,
@@ -1040,7 +1110,7 @@ test "TokenStream element attribute" {
     var ts: TokenStream = undefined;
     
     const whitespace_samples = [_][]const u8 { "", " ", "\t", "\n", "\r", " \t\n\r" };
-    // const text_samples = [_][]const u8 { "foo bar baz" } ++ whitespace_samples;
+    const text_samples = [_][]const u8 { "foo ñ bar" } ++ whitespace_samples[1..];
     const quote_strings = comptime quote_strings: {
         var blk_result: [xml.string_quotes.len]*const [1]u8 = undefined;
         for (blk_result) |*out, idx| {
@@ -1061,14 +1131,14 @@ test "TokenStream element attribute" {
                     try tests.expectElemCloseInline(&ts);
                     try tests.expectNull(&ts);
                     
-                    // inline for (text_samples) |text_data| {
-                    //     ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ text_data ++ quote ++ ws_c ++ "/>");
-                    //     try tests.expectElemOpenTag(&ts, "foo");
-                    //     try tests.expectAttrName(&ts, "bar");
-                    //     try tests.expectAttrValSegmentText(&ts, text_data);
-                    //     try tests.expectElemCloseInline(&ts);
-                    //     try tests.expectNull(&ts);
-                    // }
+                    inline for (text_samples) |text_data| {
+                        ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ text_data ++ quote ++ ws_c ++ "/>");
+                        try tests.expectElemOpenTag(&ts, "foo");
+                        try tests.expectAttrName(&ts, "bar");
+                        try tests.expectAttrValSegmentText(&ts, text_data);
+                        try tests.expectElemCloseInline(&ts);
+                        try tests.expectNull(&ts);
+                    }
                 }
             }
         }
