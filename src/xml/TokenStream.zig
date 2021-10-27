@@ -249,7 +249,10 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     ts.state.index += 1;
                     return ts.tokenizeAfterElementOpenOrAttributeValueEnd();
                 },
-                .attr_val_segment_text => {
+                
+                .attr_val_segment_text,
+                .attr_val_segment_entity_ref,
+                => {
                     debug.assert(ts.state.last_attr_quote != null);
                     
                     const start_byte = utility.getByte(ts.src, ts.state.index).?;
@@ -348,7 +351,11 @@ fn tokenizeAfterElementOpenOrAttributeValueEnd(ts: *TokenStream) NextReturnType 
         .elem_open_tag,
         .attr_val_empty,
         => true,
-        .attr_val_segment_text => (ts.state.last_attr_quote == null),
+        
+        .attr_val_segment_text,
+        .attr_val_segment_entity_ref,
+        => (ts.state.last_attr_quote == null),
+        
         else => false,
     });
     const whitespace_len = xml.whitespaceLength(ts.src, ts.state.index);
@@ -480,6 +487,7 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
 }
 
 fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
+    debug.assert(utility.getByte(ts.src, ts.state.index).? == '&');
     debug.assert(ts.state.mode == .root);
     debug.assert(switch (ts.state.mode.root) {
         .whitespace => true,
@@ -491,7 +499,10 @@ fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
         
         .attr_name => false,
         .attr_val_empty => true,
-        .attr_val_segment_text => (ts.state.last_attr_quote == null),
+        
+        .attr_val_segment_text,
+        .attr_val_segment_entity_ref,
+        => (ts.state.last_attr_quote == null),
         
         .content_text => true,
         .content_cdata => true,
@@ -558,9 +569,11 @@ fn tokenizeElementCloseInlineAfterForwardSlash(ts: *TokenStream) NextReturnType 
     debug.assert(ts.state.mode == .root);
     debug.assert(ts.state.depth != 0);
     debug.assert(switch (ts.state.mode.root) {
-        .elem_open_tag => true,
-        .attr_val_empty => true,
-        .attr_val_segment_text => true,
+        .elem_open_tag,
+        .attr_val_empty,
+        .attr_val_segment_text,
+        .attr_val_segment_entity_ref,
+        => true,
         else => false,
     });
     
@@ -785,6 +798,7 @@ const State = struct {
             attr_name,
             attr_val_empty,
             attr_val_segment_text,
+            attr_val_segment_entity_ref,
             
             content_text,
             content_cdata,
@@ -1113,6 +1127,7 @@ test "TokenStream element attribute" {
     
     const whitespace_samples = [_][]const u8 { "", " ", "\t", "\n", "\r", " \t\n\r" };
     const text_samples = [_][]const u8 { "foo ñ bar" } ++ whitespace_samples[1..];
+    const name_samples = [_][]const u8 { ("foo"), ("a"), ("A0"), ("SHI:FOO") };
     const quote_strings = comptime quote_strings: {
         var blk_result: [xml.string_quotes.len]*const [1]u8 = undefined;
         for (blk_result) |*out, idx| {
@@ -1150,7 +1165,7 @@ test "TokenStream element attribute" {
         .Inline,
         .{ .Tag = .{ .name = "foo" } },
     }) |elem_close_info| {
-    @setEvalBranchQuota(32_000);
+    @setEvalBranchQuota(64_000);
         inline for (quote_strings) |quote| {
             inline for (whitespace_samples) |ws_a| {
                 inline for (whitespace_samples) |ws_b| {
@@ -1167,6 +1182,15 @@ test "TokenStream element attribute" {
                             try tests.expectElemOpenTag(&ts, "foo");
                             try tests.expectAttrName(&ts, "bar");
                             try tests.expectAttrValSegmentText(&ts, text_data);
+                            try elem_close_info.expect(&ts);
+                            try tests.expectNull(&ts);
+                        }
+                        
+                        inline for (name_samples) |entref_name| {
+                            ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ "&" ++ entref_name ++ ";" ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
+                            try tests.expectElemOpenTag(&ts, "foo");
+                            try tests.expectAttrName(&ts, "bar");
+                            try tests.expectAttrValSegmentEntityRef(&ts, entref_name);
                             try elem_close_info.expect(&ts);
                             try tests.expectNull(&ts);
                         }
