@@ -1120,40 +1120,54 @@ test "TokenStream element attribute" {
         }
         break :quote_strings blk_result;
     };
-    inline for ([_]union(enum) { Inline, Tag: struct { name: []const u8 } }{
+    
+    const ElemCloseInfo = union(enum) {
+        Inline,
+        Tag: struct { name: []const u8 },
+        
+        fn string(
+            comptime elem_close_info: @This(),
+            comptime ignored_whitespace: ?[]const u8,
+            comptime inner_content: ?[]const u8,
+        ) []const u8 {
+            return switch (elem_close_info) {
+                .Inline => (ignored_whitespace orelse "") ++ "/>",
+                .Tag => |tag| ">"
+                ++ (inner_content orelse "") ++
+                "</" ++ tag.name ++ (ignored_whitespace orelse "") ++ ">",
+            };
+        }
+        
+        fn expect(elem_close_info: @This(), tkstrm: *TokenStream) !void {
+            try switch (elem_close_info) {
+                .Inline => tests.expectElemCloseInline(tkstrm),
+                .Tag => |tag| tests.expectElemCloseTag(tkstrm, tag.name),
+            };
+        }
+    };
+    
+    inline for ([_]ElemCloseInfo {
         .Inline,
-        .{ .Tag = .{ .name = "foo" } }
+        .{ .Tag = .{ .name = "foo" } },
     }) |elem_close_info| {
     @setEvalBranchQuota(32_000);
         inline for (quote_strings) |quote| {
             inline for (whitespace_samples) |ws_a| {
                 inline for (whitespace_samples) |ws_b| {
                     inline for (whitespace_samples) |ws_c| {
-                        ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ quote ++ ws_c ++ switch (elem_close_info) {
-                            .Inline => ("/>"),
-                            .Tag => |tag| ("></" ++ tag.name ++ ">")
-                        });
+                        ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
                         try tests.expectElemOpenTag(&ts, "foo");
                         try tests.expectAttrName(&ts, "bar");
                         try tests.expectAttrValEmpty(&ts);
-                        try switch (elem_close_info) {
-                            .Inline => tests.expectElemCloseInline(&ts),
-                            .Tag => |tag| tests.expectElemCloseTag(&ts, tag.name),
-                        };
+                        try elem_close_info.expect(&ts);
                         try tests.expectNull(&ts);
                         
                         inline for (text_samples) |text_data| {
-                            ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ text_data ++ quote ++ ws_c ++ switch (elem_close_info) {
-                                .Inline => ("/>"),
-                                .Tag => |tag| ("></" ++ tag.name ++ ">")
-                            });
+                            ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ text_data ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
                             try tests.expectElemOpenTag(&ts, "foo");
                             try tests.expectAttrName(&ts, "bar");
                             try tests.expectAttrValSegmentText(&ts, text_data);
-                            try switch (elem_close_info) {
-                                .Inline => tests.expectElemCloseInline(&ts),
-                                .Tag => |tag| tests.expectElemCloseTag(&ts, tag.name),
-                            };
+                            try elem_close_info.expect(&ts);
                             try tests.expectNull(&ts);
                         }
                     }
