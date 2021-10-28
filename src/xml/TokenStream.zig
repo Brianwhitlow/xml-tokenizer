@@ -322,6 +322,11 @@ pub fn next(ts: *TokenStream) NextReturnType {
 
 fn sideEffectsAfterElementCloseTagOrInline(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) void {
     debug.assert(ts.state.mode == state);
+    debug.assert(switch (state) {
+        .prologue => false,
+        .root => true,
+        .trailing => true,
+    });
     debug.assert(switch (@field(ts.state.mode, @tagName(state))) {
         .elem_close_tag,
         .elem_close_inline,
@@ -744,6 +749,11 @@ fn returnNullSetTrailingEnd(ts: *TokenStream) NextReturnType {
 }
 
 fn returnToken(ts: *TokenStream, comptime set_state: meta.Tag(State.Mode), tag: Token.Tag, loc: Token.Loc) Result {
+    debug.assert(switch (set_state) {
+        .prologue => switch (ts.state.mode) { .prologue => true, else => false },
+        .root => switch (ts.state.mode) { .prologue, .root => true, else => false },
+        .trailing => switch (ts.state.mode) { else => true },
+    });
     ts.state.mode = @unionInit(
         State.Mode,
         @tagName(set_state),
