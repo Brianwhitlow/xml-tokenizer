@@ -1128,7 +1128,7 @@ test "TokenStream element attribute" {
     const whitespace_samples = [_][]const u8 { "", " ", "\t", "\n", "\r", " \t\n\r" };
     const text_samples = [_][]const u8 { "foo ñ bar" } ++ whitespace_samples[1..];
     const name_samples = [_][]const u8 { ("foo"), ("a"), ("A0"), ("SHI:FOO") };
-    const quote_strings = comptime quote_strings: {
+    const quote_strings: [xml.string_quotes.len]*const [1]u8 = comptime quote_strings: {
         var blk_result: [xml.string_quotes.len]*const [1]u8 = undefined;
         for (blk_result) |*out, idx| {
             out.* = &[_]u8 { xml.string_quotes[idx] };
@@ -1170,29 +1170,31 @@ test "TokenStream element attribute" {
             inline for (whitespace_samples) |ws_a| {
                 inline for (whitespace_samples) |ws_b| {
                     inline for (whitespace_samples) |ws_c| {
-                        ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
-                        try tests.expectElemOpenTag(&ts, "foo");
-                        try tests.expectAttrName(&ts, "bar");
-                        try tests.expectAttrValEmpty(&ts);
-                        try elem_close_info.expect(&ts);
-                        try tests.expectNull(&ts);
-                        
-                        inline for (text_samples) |text_data| {
-                            ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ text_data ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
+                        inline for (whitespace_samples) |ws_d| {
+                            ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ quote ++ ws_c ++ elem_close_info.string(ws_d, null));
                             try tests.expectElemOpenTag(&ts, "foo");
                             try tests.expectAttrName(&ts, "bar");
-                            try tests.expectAttrValSegmentText(&ts, text_data);
+                            try tests.expectAttrValEmpty(&ts);
                             try elem_close_info.expect(&ts);
                             try tests.expectNull(&ts);
-                        }
-                        
-                        inline for (name_samples) |entref_name| {
-                            ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ "&" ++ entref_name ++ ";" ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
-                            try tests.expectElemOpenTag(&ts, "foo");
-                            try tests.expectAttrName(&ts, "bar");
-                            try tests.expectAttrValSegmentEntityRef(&ts, entref_name);
-                            try elem_close_info.expect(&ts);
-                            try tests.expectNull(&ts);
+                            
+                            inline for (text_samples) |text_data| {
+                                ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ text_data ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
+                                try tests.expectElemOpenTag(&ts, "foo");
+                                try tests.expectAttrName(&ts, "bar");
+                                try tests.expectAttrValSegmentText(&ts, text_data);
+                                try elem_close_info.expect(&ts);
+                                try tests.expectNull(&ts);
+                            }
+                            
+                            inline for (name_samples) |entref_name| {
+                                ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ "&" ++ entref_name ++ ";" ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
+                                try tests.expectElemOpenTag(&ts, "foo");
+                                try tests.expectAttrName(&ts, "bar");
+                                try tests.expectAttrValSegmentEntityRef(&ts, entref_name);
+                                try elem_close_info.expect(&ts);
+                                try tests.expectNull(&ts);
+                            }
                         }
                     }
                 }
