@@ -39,7 +39,7 @@ pub const Result = union(enum) {
     const Self = @This();
     token: Token,
     
-    fn getToken(self: Self) !Token {
+    pub fn getToken(self: Self) !Token {
         return switch (self) {
             .token => |token| token,
         };
