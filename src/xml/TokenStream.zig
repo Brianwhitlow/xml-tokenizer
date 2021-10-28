@@ -776,6 +776,8 @@ const State = struct {
         root: Root,
         trailing: Trailing,
         
+        /// Use this to ensure that a given enum field of `Mode` only has fields found within `Token.Tag`,
+        /// save for given 'exceptions'.
         fn assertSimilarToTokenTag(comptime T: type, comptime exceptions: []const T) void {
             const diff = utility.fieldNamesDiff(Token.Tag, T);
             outerloop: inline for (diff.b) |actual| {
