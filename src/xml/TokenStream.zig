@@ -1125,8 +1125,8 @@ test "TokenStream element attribute" {
     try tests.expectElemCloseInline(&ts);
     try tests.expectNull(&ts);
     
-    const whitespace_samples = [_][]const u8 { "", " ", "\t", "\n", "\r", " \t\n\r" };
-    const text_samples = [_][]const u8 { "foo ñ bar" } ++ whitespace_samples[1..];
+    const whitespace_samples = [_][]const u8 { "", " ", " \t\n\r" };
+    const text_samples = [_][]const u8 { "foo ñ bar", " " };
     const name_samples = [_][]const u8 { ("foo"), ("a"), ("A0"), ("SHI:FOO") };
     const quote_strings: [xml.string_quotes.len]*const [1]u8 = comptime quote_strings: {
         var blk_result: [xml.string_quotes.len]*const [1]u8 = undefined;
@@ -1165,7 +1165,7 @@ test "TokenStream element attribute" {
         .Inline,
         .{ .Tag = .{ .name = "foo" } },
     }) |elem_close_info| {
-    @setEvalBranchQuota(64_000);
+    @setEvalBranchQuota(10_000);
         inline for (quote_strings) |quote| {
             inline for (whitespace_samples) |ws_a| {
                 inline for (whitespace_samples) |ws_b| {
