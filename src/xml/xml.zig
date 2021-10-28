@@ -1,6 +1,6 @@
 const std = @import("std");
 const debug = std.debug;
-const utility = @import("xml/utility.zig");
+const utility = @import("utility.zig");
 
 comptime {
     _ = utility;
@@ -8,8 +8,8 @@ comptime {
     _ = TokenStream;
 }
 
-pub const Token = @import("xml/Token.zig");
-pub const TokenStream = @import("xml/TokenStream.zig");
+pub const Token = @import("Token.zig");
+pub const TokenStream = @import("TokenStream.zig");
 
 
 

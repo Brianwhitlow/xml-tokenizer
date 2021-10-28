@@ -3,7 +3,7 @@ const mem = std.mem;
 const debug = std.debug;
 const testing = std.testing;
 
-const xml = @import("../xml.zig");
+const xml = @import("xml.zig");
 
 const Token = @This();
 tag: Token.Tag,

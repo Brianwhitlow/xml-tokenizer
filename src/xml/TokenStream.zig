@@ -5,7 +5,7 @@ const meta = std.meta;
 const debug = std.debug;
 const testing = std.testing;
 
-const xml = @import("../xml.zig");
+const xml = @import("xml.zig");
 const utility = @import("utility.zig");
 
 fn todo(comptime fmt: []const u8, args: anytype) noreturn {
@@ -179,30 +179,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     else => todo("Error for invalid following whitespace", null),
                 },
                 
-                .elem_open_tag => {
-                    return ts.tokenizeAfterElementOpenOrAttributeValueEnd();
-                    // ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
-                    // switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed element open tag followed by eof.", null)) {
-                    //     '/' => return ts.tokenizeElementCloseInlineAfterForwardSlash(),
-                    //     '>' => {
-                    //         ts.state.index += 1;
-                    //         switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for premature eof following element open tag.", null)) {
-                    //             '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
-                    //             '&' => return ts.tokenizeContentEntityRef(),
-                    //             else => return ts.tokenizeContentTextOrWhitespace(),
-                    //         }
-                    //     },
-                    //     else => {
-                    //         const start_index = ts.state.index;
-                    //         const name_len = xml.validUtf8NameLength(ts.src, start_index);
-                    //         ts.state.index += name_len;
-                    //         if (name_len == 0) {
-                    //             todo("Error for invalid character following element open tag.", null);
-                    //         }
-                    //         return ts.returnToken(.root, .attr_name, .{ .beg = start_index, .end = ts.state.index });
-                    //     },
-                    // }
-                },
+                .elem_open_tag => return ts.tokenizeAfterElementOpenOrAttributeValueEnd(),
                 
                 .elem_close_inline,
                 .elem_close_tag,
@@ -423,11 +400,8 @@ fn tokenizeAttributeValueSegment(ts: *TokenStream) NextReturnType {
         },
         else => {
             while (utility.getUtf8(ts.src, ts.state.index)) |text_char| : (ts.state.index += utility.lenOfUtf8OrNull(text_char).?) {
-                if ((text_char == '&')
-                or  (text_char == ts.state.last_attr_quote.?.value())
-                ) break;
-                
-                // if ((ts.state.index - start_index) > 2) todo("", null);
+                const should_break = (text_char == '&') or (text_char == ts.state.last_attr_quote.?.value());
+                if (should_break) break;
             } else todo("Error for eof following unclosed attribute comment.", null);
             
             const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
@@ -459,30 +433,33 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
     
     const start_index = ts.state.index;
     
-    const disallowed_str = "]]>";
-    
-    const all_whitespace = outerloop: while (utility.getUtf8(ts.src, ts.state.index)) |ws_char| : (ts.state.index += 1) {
+    const all_whitespace = outerloop: while (utility.getByte(ts.src, ts.state.index)) |ws_char| : (ts.state.index += 1) {
         switch (ws_char) {
             '<',
             '&',
             => break :outerloop true,
             else => {
-                if (utility.lenOfUtf8OrNull(ws_char).? == 1 and xml.isSpace(@intCast(u8, ws_char))) {
+                if (xml.isSpace(ws_char)) {
                     continue :outerloop;
                 }
                 
-                while (utility.getByte(ts.src, ts.state.index)) |non_ws_char| : (ts.state.index += utility.lenOfUtf8OrNull(non_ws_char).?) {
+                while (utility.getUtf8(ts.src, ts.state.index)) |non_ws_char| : (ts.state.index += utility.lenOfUtf8OrNull(non_ws_char).?) {
                     switch (non_ws_char) {
                         '<',
                         '&',
                         => break :outerloop false,
-                        disallowed_str[0] => {
-                            if (mem.startsWith(u8, ts.src[ts.state.index + 1..], disallowed_str[1..])) {
-                                ts.state.index += disallowed_str.len;
-                                todo("Error for disallowed token '{s}' in content.", .{ disallowed_str });
+                        else => {
+                            const disallowed_strings = [_][]const u8 {
+                                "]]>",
+                            };
+                            
+                            inline for (disallowed_strings) |disallowed_str| {
+                                if (disallowed_str[0] == non_ws_char and mem.startsWith(u8, ts.src[ts.state.index + 1..], disallowed_str[1..])) {
+                                    ts.state.index += disallowed_str.len;
+                                    todo("Error for disallowed token '{s}' in content.", .{ disallowed_str });
+                                }
                             }
                         },
-                        else => continue,
                     }
                 } else todo("Error for encountering eof prematurely (after content, before entering trailing section).", null);
             }
@@ -551,7 +528,7 @@ fn tokenizePiTok(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) NextRet
     }
     
     if (xml.isStringQuote(start_byte)) {
-        ts.state.index += utility.lenOfUtf8OrNull(start_byte).?;
+        ts.state.index += 1;
         while (utility.getUtf8(ts.src, ts.state.index)) |str_char| : (ts.state.index += utility.lenOfUtf8OrNull(str_char).?) {
             if (str_char == start_byte) {
                 ts.state.index += 1;

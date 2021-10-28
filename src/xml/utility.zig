@@ -26,14 +26,8 @@ pub fn getUtf8(src: []const u8, index: usize) ?u21 {
     return unicode.utf8Decode(slice) catch null;
 }
 
-/// Expects `@TypeOf(char) == 'u8' or @TypeOf(char) == 'u21'`
-pub fn lenOfUtf8OrNull(char: anytype) ?u3 {
-    const T = @TypeOf(char);
-    return switch (T) {
-        u8 => unicode.utf8ByteSequenceLength(char) catch null,
-        u21 => unicode.utf8CodepointSequenceLength(char) catch null,
-        else => @compileError("Expected u8 or u21, got " ++ @typeName(T)),
-    };
+pub fn lenOfUtf8OrNull(char: u21) ?u3 {
+    return unicode.utf8CodepointSequenceLength(char) catch null;
 }
 
 pub fn matchUtf8SubsectionLength(src: []const u8, start_index: usize, comptime func: fn(u21)bool) usize {
