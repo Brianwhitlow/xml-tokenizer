@@ -392,6 +392,8 @@ fn tokenizeAttributeValueSegment(ts: *TokenStream) NextReturnType {
     debug.assert(ts.state.mode == .root);
     debug.assert(switch (ts.state.mode.root) {
         .attr_name => true,
+        .attr_val_segment_text => true,
+        .attr_val_segment_entity_ref => true,
         else => false,
     });
     
@@ -436,8 +438,12 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
         .comment,
         .elem_open_tag,
         .elem_close_tag,
+        .elem_close_inline,
         .content_entity_ref,
         .content_cdata,
+        .attr_val_segment_text,
+        .attr_val_segment_entity_ref,
+        .attr_val_empty,
         => true,
         else => false,
     });
@@ -1201,6 +1207,60 @@ test "TokenStream element attribute" {
             }
         }
     }
+}
+
+test "TokenStream element attribute followed by content" {
+    var ts: TokenStream = undefined;
+    
+    ts.reset("<foo bar = ''> fee phi fo fum </foo>");
+    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectAttrName(&ts, "bar");
+    try tests.expectAttrValEmpty(&ts);
+    try tests.expectContentText(&ts, " fee phi fo fum ");
+    try tests.expectElemCloseTag(&ts, "foo");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<foo bar = 'baz'> fee phi fo fum </foo>");
+    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectAttrName(&ts, "bar");
+    try tests.expectAttrValSegmentText(&ts, "baz");
+    try tests.expectContentText(&ts, " fee phi fo fum ");
+    try tests.expectElemCloseTag(&ts, "foo");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<foo bar = '&baz;'> fee phi fo fum </foo>");
+    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectAttrName(&ts, "bar");
+    try tests.expectAttrValSegmentEntityRef(&ts, "baz");
+    try tests.expectContentText(&ts, " fee phi fo fum ");
+    try tests.expectElemCloseTag(&ts, "foo");
+    try tests.expectNull(&ts);
+    
+    
+    
+    ts.reset("<foo bar = ''>&lorem-ipsum;</foo>");
+    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectAttrName(&ts, "bar");
+    try tests.expectAttrValEmpty(&ts);
+    try tests.expectContentEntityRef(&ts, "lorem-ipsum");
+    try tests.expectElemCloseTag(&ts, "foo");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<foo bar = 'baz'>&lorem-ipsum;</foo>");
+    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectAttrName(&ts, "bar");
+    try tests.expectAttrValSegmentText(&ts, "baz");
+    try tests.expectContentEntityRef(&ts, "lorem-ipsum");
+    try tests.expectElemCloseTag(&ts, "foo");
+    try tests.expectNull(&ts);
+    
+    ts.reset("<foo bar = '&baz;'>&lorem-ipsum;</foo>");
+    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectAttrName(&ts, "bar");
+    try tests.expectAttrValSegmentEntityRef(&ts, "baz");
+    try tests.expectContentEntityRef(&ts, "lorem-ipsum");
+    try tests.expectElemCloseTag(&ts, "foo");
+    try tests.expectNull(&ts);
 }
 
 test "TokenStream depth awareness" {
