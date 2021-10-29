@@ -38,15 +38,38 @@ pub const NextReturnType = ?Result;
 pub const Result = union(enum) {
     const Self = @This();
     token: Token,
+    invalid: Invalid,
+    premature_eof: PrematureEof,
     
-    pub fn getToken(self: Self) !Token {
+    pub const ErrorSet = Invalid;
+    
+    pub fn getToken(self: Self) ErrorSet!Token {
         return switch (self) {
             .token => |token| token,
+            .invalid => |invalid| invalid,
+            .premature_eof => |premature_eof| premature_eof,
         };
     }
     
+    pub const Invalid = error {
+        character_in_prologue,
+        markup_in_prologue,
+    };
+    
+    pub const PrematureEof = error {
+        
+    };
+    
     fn initToken(tag: Token.Tag, loc: Token.Loc) Self {
         return @unionInit(Self, "token", Token.init(tag, loc));
+    }
+    
+    fn initInvalid(tag: Invalid) Self {
+        return @unionInit(Self, "invalid", tag);
+    }
+    
+    fn initPrematureEof(tag: PrematureEof) Self {
+        return @unionInit(Self, "premature_eof", tag);
     }
 };
 
@@ -86,7 +109,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     
                     return switch (utility.getByte(ts.src, ts.state.index) orelse return ts.returnNullSetTrailingEnd()) {
                         '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
-                        else => todo("Invalid in prologue.", null),
+                        else => return ts.returnInvalid(error.character_in_prologue),
                     };
                 },
                 
@@ -126,10 +149,10 @@ pub fn next(ts: *TokenStream) NextReturnType {
                         '<' => return ts.tokenizeAfterLeftAngleBracket(.prologue),
                         else => {
                             const whitespace_len = xml.whitespaceLength(ts.src, start_index);
-                            if (whitespace_len == 0) {
-                                todo("Error for '{c}' in prologue.", .{ start_byte });
-                            }
                             ts.state.index += whitespace_len;
+                            if (whitespace_len == 0) {
+                                return ts.returnInvalid(error.character_in_prologue);
+                            }
                             return ts.returnToken(.prologue, .whitespace, .{ .beg = start_index, .end = ts.state.index });
                         },
                     }
@@ -139,7 +162,10 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     debug.assert(ts.state.index != 0);
                     return switch (utility.getByte(ts.src, ts.state.index) orelse return ts.returnNullSetTrailingEnd()) {
                         '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
-                        else => todo("Invalid in prologue.", null),
+                        else => {
+                            ts.state.mode = .{ .trailing = .end };
+                            return Result.initInvalid(error.character_in_prologue);
+                        },
                     };
                 },
                 .comment => {
@@ -148,13 +174,14 @@ pub fn next(ts: *TokenStream) NextReturnType {
                         '<' => return ts.tokenizeAfterLeftAngleBracket(.prologue),
                         else => {
                             const start_index = ts.state.index;
-                            ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
-                            if (ts.state.index != start_index) {
-                                const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
-                                return ts.returnToken(.prologue, .whitespace, loc);
+                            const whitespace_len = xml.whitespaceLength(ts.src, ts.state.index);
+                            ts.state.index += whitespace_len;
+                            if (whitespace_len == 0) {
+                                return ts.returnInvalid(error.character_in_prologue);
                             }
                             
-                            todo("Error for invalid '{c}' in prologue.", .{utility.getByte(ts.src, ts.state.index)});
+                            const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
+                            return ts.returnToken(.prologue, .whitespace, loc);
                         },
                     }
                 },
@@ -624,7 +651,7 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
                 },
                 
                 '[' => switch (state) {
-                    .prologue => todo("Error for '<![' in prologue.", null),
+                    .prologue => return ts.returnInvalid(error.markup_in_prologue),
                     .root => {
                         ts.state.index += 1;
                         const expected_chars = "CDATA[";
@@ -673,7 +700,7 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
             };
         },
         '/' => switch (state) {
-            .prologue => todo("Error for element close tag start in prologue.", null),
+            .prologue => return ts.returnInvalid(error.markup_in_prologue),
             .trailing => todo("Error for element close tag start in trailing section.", null),
             .root => {
                 ts.state.index += 1;
@@ -720,9 +747,21 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
     }
 }
 
+
+
 fn returnNullSetTrailingEnd(ts: *TokenStream) NextReturnType {
     ts.state.mode = .{ .trailing = .end };
     return null;
+}
+
+fn returnPrematureEof(ts: *TokenStream, premature_eof: Result.PrematureEof) Result {
+    ts.state.mode = .{ .trailing = .end };
+    return Result.initPrematureEof(premature_eof);
+}
+
+fn returnInvalid(ts: *TokenStream, invalid: Result.Invalid) Result {
+    ts.state.mode = .{ .trailing = .end };
+    return Result.initInvalid(invalid);
 }
 
 fn returnToken(ts: *TokenStream, comptime set_state: meta.Tag(State.Mode), tag: Token.Tag, loc: Token.Loc) Result {
@@ -821,9 +860,10 @@ const State = struct {
 
 
 pub const tests = struct {
-    fn unwrapNext(result: NextReturnType) error{ NullToken }!Token {
-        const unwrapped: Result = try (result orelse error.NullToken);
-        return try unwrapped.getToken();
+    const UnwrapNextErr = (error{ NullToken } || Result.ErrorSet);
+    fn unwrapNext(result: NextReturnType) UnwrapNextErr!Token {
+        const unwrapped = result orelse return error.NullToken;
+        return unwrapped.getToken();
     }
     
     pub fn expectPiTarget(ts: *TokenStream, expected_name: []const u8) !void {
@@ -888,6 +928,11 @@ pub const tests = struct {
     
     pub fn expectContentEntityRef(ts: *TokenStream, expected_name: []const u8) !void {
         try Token.tests.expectContentEntityRef(ts.src, try unwrapNext(ts.next()), expected_name);
+    }
+    
+    pub fn expectError(ts: *TokenStream, err: Result.ErrorSet) !void {
+        const result: Result = try (ts.next() orelse error.NullToken);
+        try testing.expectError(err, result.getToken());
     }
     
     pub fn expectNull(ts: *TokenStream) !void {
@@ -1387,4 +1432,36 @@ test "TokenStream root comment" {
             }
         }
     }
+}
+
+test "TokenStream prologue invalids" {
+    var ts: TokenStream = undefined;
+    
+    ts.reset("a");
+    try tests.expectError(&ts, error.character_in_prologue);
+    try tests.expectNull(&ts);
+    
+    ts.reset(" b");
+    try tests.expectWhitespace(&ts, " ");
+    try tests.expectError(&ts, error.character_in_prologue);
+    try tests.expectNull(&ts);
+    
+    ts.reset("<!-- -->c");
+    try tests.expectComment(&ts, " ");
+    try tests.expectError(&ts, error.character_in_prologue);
+    try tests.expectNull(&ts);
+    
+    ts.reset("<?foo?>d");
+    try tests.expectPiTarget(&ts, "foo");
+    try tests.expectPiEnd(&ts);
+    try tests.expectError(&ts, error.character_in_prologue);
+    try tests.expectNull(&ts);
+    
+    ts.reset("<![");
+    try tests.expectError(&ts, error.markup_in_prologue);
+    try tests.expectNull(&ts);
+    
+    ts.reset("</");
+    try tests.expectError(&ts, error.markup_in_prologue);
+    try tests.expectNull(&ts);
 }
