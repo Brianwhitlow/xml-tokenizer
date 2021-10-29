@@ -5,6 +5,8 @@ const meta = std.meta;
 const debug = std.debug;
 const testing = std.testing;
 
+const assert = debug.assert;
+
 const xml = @import("xml.zig");
 const utility = @import("utility.zig");
 
@@ -38,53 +40,39 @@ pub const NextReturnType = ?Result;
 pub const Result = union(enum) {
     const Self = @This();
     token: Token,
-    invalid: Invalid,
-    premature_eof: PrematureEof,
+    err: Error,
     
-    pub const ErrorSet = Invalid;
-    
-    pub fn getToken(self: Self) ErrorSet!Token {
-        return switch (self) {
-            .token => |token| token,
-            .invalid => |invalid| invalid,
-            .premature_eof => |premature_eof| premature_eof,
-        };
-    }
-    
-    pub const Invalid = error {
-        character_in_prologue,
-        markup_in_prologue,
-    };
-    
-    pub const PrematureEof = error {
+    pub const Error = error {
         
     };
+    
+    pub fn getToken(self: Self) Error!Token {
+        return switch (self) {
+            .token => |token| token,
+            .err => |err| err,
+        };
+    }
     
     fn initToken(tag: Token.Tag, loc: Token.Loc) Self {
         return @unionInit(Self, "token", Token.init(tag, loc));
     }
     
-    fn initInvalid(tag: Invalid) Self {
-        return @unionInit(Self, "invalid", tag);
-    }
-    
-    fn initPrematureEof(tag: PrematureEof) Self {
-        return @unionInit(Self, "premature_eof", tag);
+    fn initError(err: Error) Self {
+        return @unionInit(Self, "err", err);
     }
 };
 
 pub fn next(ts: *TokenStream) NextReturnType {
     switch (ts.state.mode) {
         .prologue => |prologue| {
-            debug.assert(ts.state.depth == 0);
+            assert(ts.state.depth == 0);
             defer {
                 const depth_is_0 = (ts.state.depth == 0);
-                const depth_is_not_0 = (!depth_is_0);
                 switch (ts.state.mode) {
                     .prologue,
                     .trailing,
-                    => debug.assert(depth_is_0),
-                    .root => debug.assert(depth_is_not_0),
+                    => assert(depth_is_0),
+                    .root => assert(!depth_is_0),
                 }
             }
             
@@ -96,9 +84,9 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     //    //    else => true,
                     //    //};
                     //    //_ = bad_State;
-                    //    //if (bad_State) `std.debug.panic("std.debug.assert(false)` should be here", .{});
+                    //    //if (bad_State) `std.debug.panic("std.assert(false)` should be here", .{});
                     //}
-                    debug.assert(ts.state.index == 0);
+                    assert(ts.state.index == 0);
                     const start_index = ts.state.index;
                     
                     ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
@@ -109,67 +97,24 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     
                     return switch (utility.getByte(ts.src, ts.state.index) orelse return ts.returnNullSetTrailingEnd()) {
                         '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
-                        else => return ts.returnInvalid(error.character_in_prologue),
+                        else => todo("error.prologue_start_nonwhitespace", null),
                     };
                 },
                 
-                .pi_target => {
-                    switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for PI Target followed by eof.", null)) {
-                        '?' => {
-                            const start_index = ts.state.index;
-                            ts.state.index += 1;
-                            if (utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed PI followed by eof.", null) == '>') {
-                                ts.state.index += 1;
-                                return ts.returnToken(.prologue, .pi_end, .{ .beg = start_index, .end = ts.state.index });
-                            }
-                            todo("Error for PI Target followed by non-whitespace, invalid token '?{c}'", .{utility.getByte(ts.src, ts.state.index).?});
-                        },
-                        else => {
-                            const whitespace_len = xml.whitespaceLength(ts.src, ts.state.index);
-                            if (whitespace_len == 0) {
-                                todo("Error for PI Target followed by non-whitespace, invalid character '{c}'", .{ utility.getByte(ts.src, ts.state.index).? });
-                            }
-                            ts.state.index += whitespace_len;
-                            return ts.tokenizePiTok(.prologue);
-                        },
-                    }
-                },
-                .pi_tok_string => {
-                    ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
-                    return ts.tokenizePiTok(.prologue);
-                },
-                .pi_tok_other => {
-                    ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
-                    return ts.tokenizePiTok(.prologue);
-                },
-                .pi_end => {
-                    const start_index = ts.state.index;
-                    const start_byte = utility.getByte(ts.src, start_index) orelse return ts.returnNullSetTrailingEnd();
-                    switch (start_byte) {
-                        '<' => return ts.tokenizeAfterLeftAngleBracket(.prologue),
-                        else => {
-                            const whitespace_len = xml.whitespaceLength(ts.src, start_index);
-                            ts.state.index += whitespace_len;
-                            if (whitespace_len == 0) {
-                                return ts.returnInvalid(error.character_in_prologue);
-                            }
-                            return ts.returnToken(.prologue, .whitespace, .{ .beg = start_index, .end = ts.state.index });
-                        },
-                    }
-                },
+                .pi_target => return ts.tokenizeAfterPiTarget(.prologue),
+                .pi_tok_string => return ts.tokenizeAfterPiTokString(.prologue),
+                .pi_tok_other => return ts.tokenizeAfterPiTokOther(.prologue),
+                .pi_end => return ts.tokenizeAfterPiEnd(.prologue),
                 
                 .whitespace => {
-                    debug.assert(ts.state.index != 0);
+                    assert(ts.state.index != 0);
                     return switch (utility.getByte(ts.src, ts.state.index) orelse return ts.returnNullSetTrailingEnd()) {
                         '<' => ts.tokenizeAfterLeftAngleBracket(.prologue),
-                        else => {
-                            ts.state.mode = .{ .trailing = .end };
-                            return Result.initInvalid(error.character_in_prologue);
-                        },
+                        else => todo("error.prologue_whitespace_invalid", null),
                     };
                 },
                 .comment => {
-                    debug.assert(ts.src[ts.state.index - 1] == '>');
+                    assert(ts.src[ts.state.index - 1] == '>');
                     switch (utility.getByte(ts.src, ts.state.index) orelse return ts.returnNullSetTrailingEnd()) {
                         '<' => return ts.tokenizeAfterLeftAngleBracket(.prologue),
                         else => {
@@ -177,7 +122,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                             const whitespace_len = xml.whitespaceLength(ts.src, ts.state.index);
                             ts.state.index += whitespace_len;
                             if (whitespace_len == 0) {
-                                return ts.returnInvalid(error.character_in_prologue);
+                                return todo("error.prologue_comment_invalid", null);
                             }
                             
                             const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
@@ -189,30 +134,39 @@ pub fn next(ts: *TokenStream) NextReturnType {
         },
         
         .root => |root| {
-            debug.assert(ts.state.depth != 0);
+            assert(ts.state.depth != 0);
             defer {
                 const depth_is_0 = (ts.state.depth == 0);
                 const state_is_not_root = (ts.state.mode != .root);
                 if (depth_is_0 or state_is_not_root) {
-                    debug.assert(depth_is_0 and state_is_not_root);
+                    assert(depth_is_0 and state_is_not_root);
                 }
-                debug.assert(ts.state.mode != .prologue);
+                assert(ts.state.mode != .prologue);
             }
             
             switch (root) {
-                .whitespace => switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for eof following whitespace in root.", null)) {
+                .pi_target => return ts.tokenizeAfterPiTarget(.root),
+                .pi_tok_string => return ts.tokenizeAfterPiTokString(.root),
+                .pi_tok_other => return ts.tokenizeAfterPiTokOther(.root),
+                .pi_end => return ts.tokenizeAfterPiEnd(.root),
+                
+                .whitespace => switch (utility.getByte(ts.src, ts.state.index) orelse todo("error.root_whitespace_eof", null)) {
                     '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
                     '&' => return ts.tokenizeContentEntityRef(),
-                    else => todo("Error for invalid following whitespace", null),
+                    else => todo("error.root_whitespace_invalid", null),
                 },
                 
-                .elem_open_tag => return ts.tokenizeAfterElementOpenOrAttributeValueEnd(),
+                .elem_open => return ts.tokenizeAfterElementOpenOrAttributeValueEnd(),
                 
                 .elem_close_inline,
                 .elem_close_tag,
                 => {
                     ts.sideEffectsAfterElementCloseTagOrInline(.root);
-                    switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error premature eof in root after element close.", null)) {
+                    switch (utility.getByte(ts.src, ts.state.index) orelse switch (root) {
+                        .elem_close_inline => todo("error.root_elem_close_inline_eof", null),
+                        .elem_close_tag => todo("error.root_elem_close_tag_eof", null),
+                        else => unreachable,
+                    }) {
                         '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
                         '&' => return ts.tokenizeContentEntityRef(),
                         else => return ts.tokenizeContentTextOrWhitespace(),
@@ -220,23 +174,23 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 },
                 
                 .attr_name => {
-                    debug.assert(ts.state.last_attr_quote == null);
+                    assert(ts.state.last_attr_quote == null);
                     
                     ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
-                    if (utility.getByte(ts.src, ts.state.index) orelse todo("Error for premature eof immediately after attribute name.", null) != '=') {
-                        todo("Error for invalid character where '=' was expected.", null);
+                    if (utility.getByte(ts.src, ts.state.index) orelse todo("error.root_attr_name_eof", null) != '=') {
+                        todo("error.root_attr_name_invalid", null);
                     }
                     ts.state.index += 1;
                     ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
-                    const quote = utility.getByte(ts.src, ts.state.index) orelse todo("Error for eof after attribute name equals, where value was expected.", null);
+                    const quote = utility.getByte(ts.src, ts.state.index) orelse todo("error.root_attr_name_equals_eof", null);
                     if (!xml.isStringQuote(quote)) {
-                        todo("Error for non-string-quote where one was expected.", null);
+                        todo("error.root_attr_name_equals_invalid", null);
                     }
                     
                     ts.state.index += 1;
                     const start_index = ts.state.index;
                     
-                    const start_byte = utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed attribute value followed by eof.", null);
+                    const start_byte = utility.getByte(ts.src, ts.state.index) orelse todo("error.root_attr_name_equals_quote_eof", null);
                     if (start_byte == quote) {
                         const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
                         const tag = Token.Tag.attr_val_empty;
@@ -248,8 +202,8 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 },
                 
                 .attr_val_empty => {
-                    debug.assert(ts.state.last_attr_quote == null);
-                    debug.assert(xml.isStringQuote(utility.getByte(ts.src, ts.state.index).?));
+                    assert(ts.state.last_attr_quote == null);
+                    assert(xml.isStringQuote(utility.getByte(ts.src, ts.state.index).?));
                     ts.state.index += 1;
                     return ts.tokenizeAfterElementOpenOrAttributeValueEnd();
                 },
@@ -257,7 +211,7 @@ pub fn next(ts: *TokenStream) NextReturnType {
                 .attr_val_segment_text,
                 .attr_val_segment_entity_ref,
                 => {
-                    debug.assert(ts.state.last_attr_quote != null);
+                    assert(ts.state.last_attr_quote != null);
                     
                     const start_byte = utility.getByte(ts.src, ts.state.index).?;
                     if (start_byte == ts.state.last_attr_quote.?.value()) {
@@ -269,16 +223,21 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     return ts.tokenizeAttributeValueSegment();
                 },
                 
-                .content_text => switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for text followed by premature eof.", null)) {
+                .content_text => switch (utility.getByte(ts.src, ts.state.index) orelse todo("error.root_content_text_eof", null)) {
                     '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
                     '&' => return ts.tokenizeContentEntityRef(),
-                    else => todo("Consider this invalid? invariant, encountering '{c}'.", .{utility.getByte(ts.src, ts.state.index).?}),
+                    else => todo("error.root_content_text_invalid", null),
                 },
                 
                 .comment,
                 .content_cdata,
                 .content_entity_ref,
-                => switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for entity ref followed by premature eof.", null)) {
+                => switch (utility.getByte(ts.src, ts.state.index) orelse switch (root) {
+                    .comment => todo("error.root_content_comment_eof", null),
+                    .content_cdata => todo("error.root_content_cdata_eof", null),
+                    .content_entity_ref => todo("error.root_content_entityref_eof", null),
+                    else => unreachable,
+                }) {
                     '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
                     '&' => return ts.tokenizeContentEntityRef(),
                     else => return ts.tokenizeContentTextOrWhitespace(),
@@ -287,16 +246,16 @@ pub fn next(ts: *TokenStream) NextReturnType {
         },
         
         .trailing => |trailing| {
-            debug.assert(ts.state.depth == 0);
+            assert(ts.state.depth == 0);
             defer {
-                debug.assert(ts.state.depth == 0);
-                debug.assert(ts.state.mode == .trailing);
+                assert(ts.state.depth == 0);
+                assert(ts.state.mode == .trailing);
             }
             switch (trailing) {
                 .whitespace => {
                     switch (utility.getByte(ts.src, ts.state.index) orelse return ts.returnNullSetTrailingEnd()) {
                         '<' => return ts.tokenizeAfterLeftAngleBracket(.trailing),
-                        else => todo("Error for '{c}' in trailing section.", .{ utility.getByte(ts.src, ts.state.index).? }),
+                        else => todo("error.trailing_whitespace_invalid", null),
                     }
                 },
                 
@@ -314,7 +273,11 @@ pub fn next(ts: *TokenStream) NextReturnType {
                     
                     switch (utility.getByte(ts.src, ts.state.index) orelse return ts.returnNullSetTrailingEnd()) {
                         '<' => return ts.tokenizeAfterLeftAngleBracket(.trailing),
-                        else => todo("Error for '{c}' in trailing section.", .{ utility.getByte(ts.src, ts.state.index).? }),
+                        else => switch (trailing) {
+                            .elem_close_tag =>  todo("error.trailing_elem_close_tag_invalid", null),
+                            .elem_close_inline =>  todo("error.trailing_elem_close_inline_invalid", null),
+                            else => unreachable,
+                        },
                     }
                 },
                 
@@ -325,13 +288,13 @@ pub fn next(ts: *TokenStream) NextReturnType {
 }
 
 fn sideEffectsAfterElementCloseTagOrInline(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) void {
-    debug.assert(ts.state.mode == state);
-    debug.assert(switch (state) {
+    assert(ts.state.mode == state);
+    assert(switch (state) {
         .prologue => false,
         .root => true,
         .trailing => true,
     });
-    debug.assert(switch (@field(ts.state.mode, @tagName(state))) {
+    assert(switch (@field(ts.state.mode, @tagName(state))) {
         .elem_close_tag,
         .elem_close_inline,
         => true,
@@ -341,23 +304,30 @@ fn sideEffectsAfterElementCloseTagOrInline(ts: *TokenStream, comptime state: met
     switch (@field(ts.state.mode, @tagName(state))) {
         .elem_close_tag => {
             ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
-            if (utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed element close tag followed by eof.", null) != '>') {
-                todo("Error for unclosed element close tag followed by invalid character, instead of '>'.", null);
-            }
+            const byte = utility.getByte(ts.src, ts.state.index) orelse switch (state) {
+                .prologue => unreachable,
+                .root => todo("error.root_unclosed_elem_close_tag_eof", null),
+                .trailing => todo("error.trailing_unclosed_elem_close_tag_eof", null),
+            };
+            if (byte != '>') switch (state) {
+                .prologue => unreachable,
+                .root => todo("error.root_unclosed_elem_close_tag_invalid", null),
+                .trailing => todo("error.trailing_unclosed_elem_close_tag_invalid", null),
+            };
             ts.state.index += 1;
         },
         .elem_close_inline => {
-            debug.assert(utility.getByte(ts.src, ts.state.index - 1).? == '>');
-            debug.assert(utility.getByte(ts.src, ts.state.index - 2).? == '/');
+            assert(utility.getByte(ts.src, ts.state.index - 1).? == '>');
+            assert(utility.getByte(ts.src, ts.state.index - 2).? == '/');
         },
         else => unreachable,
     }
 }
 
 fn tokenizeAfterElementOpenOrAttributeValueEnd(ts: *TokenStream) NextReturnType {
-    debug.assert(ts.state.mode == .root);
-    debug.assert(switch (ts.state.mode.root) {
-        .elem_open_tag,
+    assert(ts.state.mode == .root);
+    assert(switch (ts.state.mode.root) {
+        .elem_open,
         .attr_val_empty,
         => true,
         
@@ -369,11 +339,11 @@ fn tokenizeAfterElementOpenOrAttributeValueEnd(ts: *TokenStream) NextReturnType 
     });
     const whitespace_len = xml.whitespaceLength(ts.src, ts.state.index);
     ts.state.index += whitespace_len;
-    switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for unclosed element open tag followed by eof.", null)) {
+    switch (utility.getByte(ts.src, ts.state.index) orelse todo("error.root_unclosed_elem_open_eof", null)) {
         '/' => return ts.tokenizeElementCloseInlineAfterForwardSlash(),
         '>' => {
             ts.state.index += 1;
-            switch (utility.getByte(ts.src, ts.state.index) orelse todo("Error for premature eof following element open tag.", null)) {
+            switch (utility.getByte(ts.src, ts.state.index) orelse todo("error.root_elem_open_eof", null)) {
                 '<' => return ts.tokenizeAfterLeftAngleBracket(.root),
                 '&' => return ts.tokenizeContentEntityRef(),
                 else => return ts.tokenizeContentTextOrWhitespace(),
@@ -381,14 +351,14 @@ fn tokenizeAfterElementOpenOrAttributeValueEnd(ts: *TokenStream) NextReturnType 
         },
         else => {
             if (whitespace_len == 0) {
-                todo("Error for likely invalid bytes in place of whitespace following element open or attribute value.", null);
+                todo("error.root_unclosed_elem_open_invalid", null);
             }
             
             const start_index = ts.state.index;
             const name_len = xml.validUtf8NameLength(ts.src, start_index);
             ts.state.index += name_len;
             if (name_len == 0) {
-                todo("Error for invalid character following element open tag: '{c}'.", .{ utility.getByte(ts.src, ts.state.index).? });
+                todo("error.root_unclosed_elem_open_invalid", null);
             }
             return ts.returnToken(.root, .attr_name, .{ .beg = start_index, .end = ts.state.index });
         },
@@ -396,10 +366,10 @@ fn tokenizeAfterElementOpenOrAttributeValueEnd(ts: *TokenStream) NextReturnType 
 }
 
 fn tokenizeAttributeValueSegment(ts: *TokenStream) NextReturnType {
-    debug.assert(ts.state.last_attr_quote != null);
-    debug.assert(utility.getByte(ts.src, ts.state.index).? != ts.state.last_attr_quote.?.value());
-    debug.assert(ts.state.mode == .root);
-    debug.assert(switch (ts.state.mode.root) {
+    assert(ts.state.last_attr_quote != null);
+    assert(utility.getByte(ts.src, ts.state.index).? != ts.state.last_attr_quote.?.value());
+    assert(ts.state.mode == .root);
+    assert(switch (ts.state.mode.root) {
         .attr_name => true,
         .attr_val_segment_text => true,
         .attr_val_segment_entity_ref => true,
@@ -413,11 +383,11 @@ fn tokenizeAttributeValueSegment(ts: *TokenStream) NextReturnType {
             const name_len = xml.validUtf8NameLength(ts.src, ts.state.index);
             ts.state.index += name_len;
             if (name_len == 0) {
-                todo("Error for lack of name where entity reference name was expected.", null);
+                todo("error.root_unclosed_attr_val_ampersand_invalid", null);
             }
             
-            if (utility.getByte(ts.src, ts.state.index) orelse todo("Error entity reference name followed by eof where ';' was expected.", null) != ';') {
-                todo("Error for entity reference name followed by invalid where ';' was expected.", null);
+            if (utility.getByte(ts.src, ts.state.index) orelse todo("error.root_unclosed_attr_val_ampersand_name_eof", null) != ';') {
+                todo("error.root_unclosed_attr_val_ampersand_name_invalid", null);
             }
             
             ts.state.index += 1;
@@ -439,10 +409,10 @@ fn tokenizeAttributeValueSegment(ts: *TokenStream) NextReturnType {
 }
 
 fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
-    debug.assert(ts.state.mode == .root);
-    debug.assert(switch (ts.state.mode.root) {
+    assert(ts.state.mode == .root);
+    assert(switch (ts.state.mode.root) {
         .comment,
-        .elem_open_tag,
+        .elem_open,
         .elem_close_tag,
         .elem_close_inline,
         .content_entity_ref,
@@ -453,7 +423,7 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
         => true,
         else => false,
     });
-    debug.assert(switch (utility.getByte(ts.src, ts.state.index).?) {
+    assert(switch (utility.getByte(ts.src, ts.state.index).?) {
         '&', '<' => false,
         else => true,
     });
@@ -474,7 +444,7 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
                     switch (non_ws_char) {
                         '<',
                         '&',
-                        => break :outerloop false,
+                        => break,
                         else => {
                             const disallowed_strings = [_][]const u8 {
                                 "]]>",
@@ -488,7 +458,9 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
                             }
                         },
                     }
-                } else todo("Error for encountering eof prematurely (after content, before entering trailing section).", null);
+                }
+                
+                break :outerloop false;
             }
         }
     } else true;
@@ -502,13 +474,18 @@ fn tokenizeContentTextOrWhitespace(ts: *TokenStream) NextReturnType {
 }
 
 fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
-    debug.assert(utility.getByte(ts.src, ts.state.index).? == '&');
-    debug.assert(ts.state.mode == .root);
-    debug.assert(switch (ts.state.mode.root) {
+    assert(utility.getByte(ts.src, ts.state.index).? == '&');
+    assert(ts.state.mode == .root);
+    assert(switch (ts.state.mode.root) {
+        .pi_target => false,
+        .pi_tok_string => false,
+        .pi_tok_other => false,
+        .pi_end => true,
+        
         .whitespace => true,
         .comment => true,
         
-        .elem_open_tag => true,
+        .elem_open => true,
         .elem_close_tag => true,
         .elem_close_inline => true,
         
@@ -530,13 +507,16 @@ fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
     const name_len = xml.validUtf8NameLength(ts.src, ts.state.index);
     ts.state.index += name_len;
     if (name_len == 0) {
-        todo("Error for lack of name where entity reference name was expected.", null);
+        if (ts.state.index == ts.src.len) {
+            todo("error.root_content_ampersand_eof", null);
+        }
+        todo("error.root_content_ampersand_invalid", null);
     }
     
     const sc = if (utility.getByte(ts.src, ts.state.index)) |char| char
-    else todo("Error for eof where entity reference name terminator ';' was expected.", null);
+    else todo("error.root_content_ampersand_name_eof", null);
     if (sc != ';') {
-        todo("Error for '{c}' where ';' was expected.", .{ sc });
+        todo("error.root_content_ampersand_name_invalid", null);
     }
     
     ts.state.index += 1;
@@ -544,11 +524,25 @@ fn tokenizeContentEntityRef(ts: *TokenStream) NextReturnType {
 }
 
 fn tokenizePiTok(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) NextReturnType {
-    debug.assert(ts.state.mode == state);
-    debug.assert(!xml.isSpace(utility.getByte(ts.src, ts.state.index).?));
+    assert(!xml.isSpace(utility.getByte(ts.src, ts.state.index).?));
+    assert(ts.state.mode == state);
+    const state_tag_name = @tagName(state);
+    const active_mode = @field(ts.state.mode, state_tag_name);
+    assert(switch (active_mode) {
+        .pi_target,
+        .pi_tok_other,
+        .pi_tok_string,
+        => true,
+        else => false,
+    });
     
     const start_index = ts.state.index;
-    const start_byte: u8 = utility.getByte(ts.src, start_index) orelse todo("Error for unclosed PI followed by eof.", null);
+    const start_byte: u8 = utility.getByte(ts.src, start_index) orelse switch (active_mode) {
+        .pi_target => todo("error." ++ state_tag_name ++ "_pi_target_eof", null),
+        .pi_tok_other => todo("error." ++ state_tag_name ++ "_pi_tok_other_eof", null),
+        .pi_tok_string => todo("error." ++ state_tag_name ++ "_pi_tok_string_eof", null),
+        else => unreachable,
+    };
     if (start_byte == '?' and (utility.getByte(ts.src, ts.state.index + 1) orelse 0) == '>') {
         ts.state.index += 2;
         return ts.returnToken(state, .pi_end, .{ .beg = start_index, .end = ts.state.index });
@@ -561,7 +555,13 @@ fn tokenizePiTok(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) NextRet
                 ts.state.index += 1;
                 break;
             }
-        } else todo("Error for unclosed unclosed PI string token followed by eof.", null);
+        } else switch (active_mode) {
+            .pi_target => todo("error." ++ state_tag_name ++ "_pi_target_unclosed_tok_string_eof", null),
+            .pi_tok_other => todo("error." ++ state_tag_name ++ "_pi_tok_other_unclosed_tok_string_eof", null),
+            .pi_tok_string => todo("error." ++ state_tag_name ++ "_pi_tok_string_unclosed_tok_string_eof", null),
+            else => unreachable,
+        }
+        
         return ts.returnToken(state, .pi_tok_string, .{ .beg = start_index, .end = ts.state.index });
     }
     
@@ -579,12 +579,68 @@ fn tokenizePiTok(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) NextRet
     return ts.returnToken(state, .pi_tok_other, .{ .beg = start_index, .end = ts.state.index });
 }
 
+fn tokenizeAfterPiEnd(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) NextReturnType {
+    assert(state == ts.state.mode);
+    assert(@field(ts.state.mode, @tagName(state)) == .pi_end);
+    const start_index = ts.state.index;
+    const start_byte = utility.getByte(ts.src, start_index) orelse return ts.returnNullSetTrailingEnd();
+    switch (start_byte) {
+        '<' => return ts.tokenizeAfterLeftAngleBracket(state),
+        else => {
+            const whitespace_len = xml.whitespaceLength(ts.src, start_index);
+            ts.state.index += whitespace_len;
+            if (whitespace_len == 0) {
+                return todo("error." ++ @tagName(state) ++ "_pi_end_invalid", null);
+            }
+            return ts.returnToken(state, .whitespace, .{ .beg = start_index, .end = ts.state.index });
+        },
+    }
+}
+
+fn tokenizeAfterPiTokOther(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) NextReturnType {
+    assert(state == ts.state.mode);
+    assert(@field(ts.state.mode, @tagName(state)) == .pi_tok_other);
+    ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
+    return ts.tokenizePiTok(state);
+}
+
+fn tokenizeAfterPiTokString(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) NextReturnType {
+    assert(state == ts.state.mode);
+    assert(@field(ts.state.mode, @tagName(state)) == .pi_tok_string);
+    ts.state.index += xml.whitespaceLength(ts.src, ts.state.index);
+    return ts.tokenizePiTok(state);
+}
+
+fn tokenizeAfterPiTarget(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) NextReturnType {
+    assert(state == ts.state.mode);
+    assert(@field(ts.state.mode, @tagName(state)) == .pi_target);
+    switch (utility.getByte(ts.src, ts.state.index) orelse todo("error." ++ @tagName(state) ++ "_unclosed_pi_target_eof", null)) {
+        '?' => {
+            const start_index = ts.state.index;
+            ts.state.index += 1;
+            if (utility.getByte(ts.src, ts.state.index) orelse todo("error." ++ @tagName(state) ++ "_unclosed_pi_target_questionmark_eof", null) == '>') {
+                ts.state.index += 1;
+                return ts.returnToken(state, .pi_end, .{ .beg = start_index, .end = ts.state.index });
+            }
+            todo("error." ++ @tagName(state) ++ "_unclosed_pi_target_questionmark_invalid", null);
+        },
+        else => {
+            const whitespace_len = xml.whitespaceLength(ts.src, ts.state.index);
+            if (whitespace_len == 0) {
+                todo("error." ++ @tagName(state) ++ "_unclosed_pi_target_invalid", null);
+            }
+            ts.state.index += whitespace_len;
+            return ts.tokenizePiTok(state);
+        },
+    }
+}
+
 fn tokenizeElementCloseInlineAfterForwardSlash(ts: *TokenStream) NextReturnType {
-    debug.assert(utility.getByte(ts.src, ts.state.index).? == '/');
-    debug.assert(ts.state.mode == .root);
-    debug.assert(ts.state.depth != 0);
-    debug.assert(switch (ts.state.mode.root) {
-        .elem_open_tag,
+    assert(utility.getByte(ts.src, ts.state.index).? == '/');
+    assert(ts.state.mode == .root);
+    assert(ts.state.depth != 0);
+    assert(switch (ts.state.mode.root) {
+        .elem_open,
         .attr_val_empty,
         .attr_val_segment_text,
         .attr_val_segment_entity_ref,
@@ -610,8 +666,8 @@ fn tokenizeElementCloseInlineAfterForwardSlash(ts: *TokenStream) NextReturnType 
 }
 
 fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(State.Mode)) NextReturnType {
-    debug.assert(utility.getByte(ts.src, ts.state.index).? == '<');
-    debug.assert(ts.state.mode == state);
+    assert(utility.getByte(ts.src, ts.state.index).? == '<');
+    assert(ts.state.mode == state);
     
     const start_index = ts.state.index;
     ts.state.index += 1;
@@ -651,7 +707,7 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
                 },
                 
                 '[' => switch (state) {
-                    .prologue => return ts.returnInvalid(error.markup_in_prologue),
+                    .prologue => return todo("Error for '<![' in prologue.", null),
                     .root => {
                         ts.state.index += 1;
                         const expected_chars = "CDATA[";
@@ -700,7 +756,7 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
             };
         },
         '/' => switch (state) {
-            .prologue => return ts.returnInvalid(error.markup_in_prologue),
+            .prologue => return todo("Error for '</' in prologue.", null),
             .trailing => todo("Error for element close tag start in trailing section.", null),
             .root => {
                 ts.state.index += 1;
@@ -712,7 +768,7 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
                 const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
                 const tag = .elem_close_tag;
                 
-                debug.assert(ts.state.depth > 0);
+                assert(ts.state.depth > 0);
                 ts.state.depth -= 1;
                 return if (ts.state.depth == 0) ts.returnToken(.trailing, tag, loc) else ts.returnToken(.root, tag, loc);
             },
@@ -728,16 +784,16 @@ fn tokenizeAfterLeftAngleBracket(ts: *TokenStream, comptime state: meta.Tag(Stat
                     todo("Error for no name following '<'.", null);
                 }
                 const loc = Token.Loc { .beg = start_index, .end = ts.state.index };
-                const tag = .elem_open_tag;
+                const tag = .elem_open;
                 switch (state) {
                     .trailing => @compileError("unreachable"),
                     .prologue => {
                         ts.state.depth += 1;
-                        debug.assert(ts.state.depth == 1);
+                        assert(ts.state.depth == 1);
                         return ts.returnToken(.root, tag, loc);
                     },
                     .root => {
-                        debug.assert(ts.state.depth != 0);
+                        assert(ts.state.depth != 0);
                         ts.state.depth += 1;
                         return ts.returnToken(.root, tag, loc);
                     },
@@ -754,18 +810,10 @@ fn returnNullSetTrailingEnd(ts: *TokenStream) NextReturnType {
     return null;
 }
 
-fn returnPrematureEof(ts: *TokenStream, premature_eof: Result.PrematureEof) Result {
-    ts.state.mode = .{ .trailing = .end };
-    return Result.initPrematureEof(premature_eof);
-}
 
-fn returnInvalid(ts: *TokenStream, invalid: Result.Invalid) Result {
-    ts.state.mode = .{ .trailing = .end };
-    return Result.initInvalid(invalid);
-}
 
 fn returnToken(ts: *TokenStream, comptime set_state: meta.Tag(State.Mode), tag: Token.Tag, loc: Token.Loc) Result {
-    debug.assert(switch (set_state) {
+    assert(switch (set_state) {
         .prologue => switch (ts.state.mode) { .prologue => true, else => false },
         .root => switch (ts.state.mode) { .prologue, .root => true, else => false },
         .trailing => switch (ts.state.mode) { else => true },
@@ -780,6 +828,21 @@ fn returnToken(ts: *TokenStream, comptime set_state: meta.Tag(State.Mode), tag: 
     );
     return Result.initToken(tag, loc);
 }
+
+const constraint = struct {
+    
+    const ModesEnabledArray = std.enums.EnumArray(meta.Tag(State.Mode), bool);
+    fn modeIsOneOf(ts: *TokenStream, comptime modes: ModesEnabledArray) bool {
+        comptime var iterator = modes.iterator();
+        while (iterator.next()) |entry| {
+            if (entry.key == ts.state.mode) {
+                return entry.value;
+            }
+        }
+        unreachable;
+    }
+    
+};
 
 const State = struct {
     index: usize,
@@ -822,10 +885,15 @@ const State = struct {
         };
         
         const Root = enum {
+            pi_target,
+            pi_tok_string,
+            pi_tok_other,
+            pi_end,
+            
             whitespace,
             comment,
             
-            elem_open_tag,
+            elem_open,
             elem_close_tag,
             elem_close_inline,
             
@@ -860,7 +928,7 @@ const State = struct {
 
 
 pub const tests = struct {
-    const UnwrapNextErr = (error{ NullToken } || Result.ErrorSet);
+    const UnwrapNextErr = (error{ NullToken } || Result.Error);
     fn unwrapNext(result: NextReturnType) UnwrapNextErr!Token {
         const unwrapped = result orelse return error.NullToken;
         return unwrapped.getToken();
@@ -890,8 +958,8 @@ pub const tests = struct {
         try Token.tests.expectComment(ts.src, try unwrapNext(ts.next()), expected_data);
     }
     
-    pub fn expectElemOpenTag(ts: *TokenStream, expected_name: []const u8) !void {
-        try Token.tests.expectElemOpenTag(ts.src, try unwrapNext(ts.next()), expected_name);
+    pub fn expectElemOpen(ts: *TokenStream, expected_name: []const u8) !void {
+        try Token.tests.expectElemOpen(ts.src, try unwrapNext(ts.next()), expected_name);
     }
     
     pub fn expectElemCloseTag(ts: *TokenStream, expected_name: []const u8) !void {
@@ -930,7 +998,7 @@ pub const tests = struct {
         try Token.tests.expectContentEntityRef(ts.src, try unwrapNext(ts.next()), expected_name);
     }
     
-    pub fn expectError(ts: *TokenStream, err: Result.ErrorSet) !void {
+    pub fn expectError(ts: *TokenStream, err: Result.Error) !void {
         const result: Result = try (ts.next() orelse error.NullToken);
         try testing.expectError(err, result.getToken());
     }
@@ -1086,7 +1154,7 @@ test "TokenStream empty element" {
             inline for (whitespace_samples) |whitespace_ignored_a| {
                 ts.reset(whitespace_a ++ "<foo" ++ whitespace_ignored_a ++ "/>" ++ whitespace_b);
                 if (whitespace_a.len != 0) try tests.expectWhitespace(&ts, whitespace_a);
-                try tests.expectElemOpenTag(&ts, "foo");
+                try tests.expectElemOpen(&ts, "foo");
                 try tests.expectElemCloseInline(&ts);
                 if (whitespace_b.len != 0) try tests.expectWhitespace(&ts, whitespace_b);
                 try tests.expectNull(&ts);
@@ -1100,38 +1168,44 @@ test "TokenStream empty element" {
                     
                     ts.reset(ws_a ++ "<foo" ++ ws_ign_a ++ "></foo" ++ ws_ign_b ++ ">" ++ ws_b);
                     if (ws_a.len != 0) try tests.expectWhitespace(&ts, ws_a);
-                    try tests.expectElemOpenTag(&ts, "foo");
+                    try tests.expectElemOpen(&ts, "foo");
                     try tests.expectElemCloseTag(&ts, "foo");
                     if (ws_b.len != 0) try tests.expectWhitespace(&ts, ws_b);
                 }
             }
         }
     }
+    
+    // Note that ':' is tokenized as a name token
+    ts.reset("<:/>");
+    try tests.expectElemOpen(&ts, ":");
+    try tests.expectElemCloseInline(&ts);
+    try tests.expectNull(&ts);
 }
 
 test "TokenStream element with content" {
     var ts: TokenStream = undefined;
     
     ts.reset("<a>foo</a>");
-    try tests.expectElemOpenTag(&ts, "a");
+    try tests.expectElemOpen(&ts, "a");
     try tests.expectContentText(&ts, "foo");
     try tests.expectElemCloseTag(&ts, "a");
     try tests.expectNull(&ts);
     
     ts.reset("<b> bar </b>");
-    try tests.expectElemOpenTag(&ts, "b");
+    try tests.expectElemOpen(&ts, "b");
     try tests.expectContentText(&ts, " bar ");
     try tests.expectElemCloseTag(&ts, "b");
     try tests.expectNull(&ts);
     
     ts.reset("<c>&baz;</c>");
-    try tests.expectElemOpenTag(&ts, "c");
+    try tests.expectElemOpen(&ts, "c");
     try tests.expectContentEntityRef(&ts, "baz");
     try tests.expectElemCloseTag(&ts, "c");
     try tests.expectNull(&ts);
     
     ts.reset("<d>\n&fee;\n</d>");
-    try tests.expectElemOpenTag(&ts, "d");
+    try tests.expectElemOpen(&ts, "d");
     try tests.expectWhitespace(&ts, "\n");
     try tests.expectContentEntityRef(&ts, "fee");
     try tests.expectWhitespace(&ts, "\n");
@@ -1139,7 +1213,7 @@ test "TokenStream element with content" {
     try tests.expectNull(&ts);
     
     ts.reset("<e>zig&phi; zag </e>");
-    try tests.expectElemOpenTag(&ts, "e");
+    try tests.expectElemOpen(&ts, "e");
     try tests.expectContentText(&ts, "zig");
     try tests.expectContentEntityRef(&ts, "phi");
     try tests.expectContentText(&ts, " zag ");
@@ -1147,7 +1221,7 @@ test "TokenStream element with content" {
     try tests.expectNull(&ts);
     
     ts.reset("<g>&fo;&knack;&fum;</g>");
-    try tests.expectElemOpenTag(&ts, "g");
+    try tests.expectElemOpen(&ts, "g");
     try tests.expectContentEntityRef(&ts, "fo");
     try tests.expectContentEntityRef(&ts, "knack");
     try tests.expectContentEntityRef(&ts, "fum");
@@ -1155,11 +1229,22 @@ test "TokenStream element with content" {
     try tests.expectNull(&ts);
 }
 
+test "TokenStream root processing instructions" {
+    var ts = TokenStream.init(undefined);
+    
+    ts.reset("<A><?foo?></A>");
+    try tests.expectElemOpen(&ts, "A");
+    try tests.expectPiTarget(&ts, "foo");
+    try tests.expectPiEnd(&ts);
+    try tests.expectElemCloseTag(&ts, "A");
+    try tests.expectNull(&ts);
+}
+
 test "TokenStream element attribute" {
     var ts: TokenStream = undefined;
     
     ts.reset("<foo bar='baz'/>");
-    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectElemOpen(&ts, "foo");
     try tests.expectAttrName(&ts, "bar");
     try tests.expectAttrValSegmentText(&ts, "baz");
     try tests.expectElemCloseInline(&ts);
@@ -1212,7 +1297,7 @@ test "TokenStream element attribute" {
                     inline for (whitespace_samples) |ws_c| {
                         inline for (whitespace_samples) |ws_d| {
                             ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ quote ++ ws_c ++ elem_close_info.string(ws_d, null));
-                            try tests.expectElemOpenTag(&ts, "foo");
+                            try tests.expectElemOpen(&ts, "foo");
                             try tests.expectAttrName(&ts, "bar");
                             try tests.expectAttrValEmpty(&ts);
                             try elem_close_info.expect(&ts);
@@ -1220,7 +1305,7 @@ test "TokenStream element attribute" {
                             
                             inline for (text_samples) |text_data| {
                                 ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ text_data ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
-                                try tests.expectElemOpenTag(&ts, "foo");
+                                try tests.expectElemOpen(&ts, "foo");
                                 try tests.expectAttrName(&ts, "bar");
                                 try tests.expectAttrValSegmentText(&ts, text_data);
                                 try elem_close_info.expect(&ts);
@@ -1229,7 +1314,7 @@ test "TokenStream element attribute" {
                             
                             inline for (name_samples) |entref_name| {
                                 ts.reset("<foo bar" ++ ws_a ++ "=" ++ ws_b ++ quote ++ "&" ++ entref_name ++ ";" ++ quote ++ ws_c ++ elem_close_info.string(ws_a, null));
-                                try tests.expectElemOpenTag(&ts, "foo");
+                                try tests.expectElemOpen(&ts, "foo");
                                 try tests.expectAttrName(&ts, "bar");
                                 try tests.expectAttrValSegmentEntityRef(&ts, entref_name);
                                 try elem_close_info.expect(&ts);
@@ -1247,7 +1332,7 @@ test "TokenStream element attribute followed by content" {
     var ts: TokenStream = undefined;
     
     ts.reset("<foo bar = ''> fee phi fo fum </foo>");
-    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectElemOpen(&ts, "foo");
     try tests.expectAttrName(&ts, "bar");
     try tests.expectAttrValEmpty(&ts);
     try tests.expectContentText(&ts, " fee phi fo fum ");
@@ -1255,7 +1340,7 @@ test "TokenStream element attribute followed by content" {
     try tests.expectNull(&ts);
     
     ts.reset("<foo bar = 'baz'> fee phi fo fum </foo>");
-    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectElemOpen(&ts, "foo");
     try tests.expectAttrName(&ts, "bar");
     try tests.expectAttrValSegmentText(&ts, "baz");
     try tests.expectContentText(&ts, " fee phi fo fum ");
@@ -1263,7 +1348,7 @@ test "TokenStream element attribute followed by content" {
     try tests.expectNull(&ts);
     
     ts.reset("<foo bar = '&baz;'> fee phi fo fum </foo>");
-    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectElemOpen(&ts, "foo");
     try tests.expectAttrName(&ts, "bar");
     try tests.expectAttrValSegmentEntityRef(&ts, "baz");
     try tests.expectContentText(&ts, " fee phi fo fum ");
@@ -1273,7 +1358,7 @@ test "TokenStream element attribute followed by content" {
     
     
     ts.reset("<foo bar = ''>&lorem-ipsum;</foo>");
-    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectElemOpen(&ts, "foo");
     try tests.expectAttrName(&ts, "bar");
     try tests.expectAttrValEmpty(&ts);
     try tests.expectContentEntityRef(&ts, "lorem-ipsum");
@@ -1281,7 +1366,7 @@ test "TokenStream element attribute followed by content" {
     try tests.expectNull(&ts);
     
     ts.reset("<foo bar = 'baz'>&lorem-ipsum;</foo>");
-    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectElemOpen(&ts, "foo");
     try tests.expectAttrName(&ts, "bar");
     try tests.expectAttrValSegmentText(&ts, "baz");
     try tests.expectContentEntityRef(&ts, "lorem-ipsum");
@@ -1289,7 +1374,7 @@ test "TokenStream element attribute followed by content" {
     try tests.expectNull(&ts);
     
     ts.reset("<foo bar = '&baz;'>&lorem-ipsum;</foo>");
-    try tests.expectElemOpenTag(&ts, "foo");
+    try tests.expectElemOpen(&ts, "foo");
     try tests.expectAttrName(&ts, "bar");
     try tests.expectAttrValSegmentEntityRef(&ts, "baz");
     try tests.expectContentEntityRef(&ts, "lorem-ipsum");
@@ -1301,9 +1386,9 @@ test "TokenStream depth awareness" {
     var ts: TokenStream = undefined;
     
     ts.reset("<a><b><c/></b></a>");
-    try tests.expectElemOpenTag(&ts, "a");
-    try tests.expectElemOpenTag(&ts, "b");
-    try tests.expectElemOpenTag(&ts, "c");
+    try tests.expectElemOpen(&ts, "a");
+    try tests.expectElemOpen(&ts, "b");
+    try tests.expectElemOpen(&ts, "c");
     
     try tests.expectElemCloseInline(&ts);
     try tests.expectElemCloseTag(&ts, "b");
@@ -1313,8 +1398,8 @@ test "TokenStream depth awareness" {
     
     // Note: not context-aware; only aware of depth.
     ts.reset("<a><b></a></b>");
-    try tests.expectElemOpenTag(&ts, "a");
-    try tests.expectElemOpenTag(&ts, "b");
+    try tests.expectElemOpen(&ts, "a");
+    try tests.expectElemOpen(&ts, "b");
     try tests.expectElemCloseTag(&ts, "a");
     try tests.expectElemCloseTag(&ts, "b");
     
@@ -1332,7 +1417,7 @@ test "TokenStream CDATA Sections" {
         @setEvalBranchQuota(6000);
         
         ts.reset("<root>" ++ "<![CDATA[" ++ data ++ "]]>" ++ "</root>");
-        try tests.expectElemOpenTag(&ts, "root");
+        try tests.expectElemOpen(&ts, "root");
         try tests.expectContentCData(&ts, data);
         try tests.expectElemCloseTag(&ts, "root");
         try tests.expectNull(&ts);
@@ -1340,7 +1425,7 @@ test "TokenStream CDATA Sections" {
         inline for (whitespace_samples) |ws_a| {
             inline for (whitespace_samples) |ws_b| {
                 ts.reset("<root>" ++ ws_a ++ "<![CDATA[" ++ data ++ "]]>" ++ ws_b ++ "</root>");
-                try tests.expectElemOpenTag(&ts, "root");
+                try tests.expectElemOpen(&ts, "root");
                 if (ws_a.len != 0) try tests.expectWhitespace(&ts, ws_a);
                 try tests.expectContentCData(&ts, data);
                 if (ws_b.len != 0) try tests.expectWhitespace(&ts, ws_b);
@@ -1352,7 +1437,7 @@ test "TokenStream CDATA Sections" {
         inline for (char_data_samples) |text_data_a| {
             inline for (char_data_samples) |text_data_b| {
                 ts.reset("<root>" ++ text_data_a ++ "<![CDATA[" ++ data ++ "]]>" ++ text_data_b ++ "</root>");
-                try tests.expectElemOpenTag(&ts, "root");
+                try tests.expectElemOpen(&ts, "root");
                 if (text_data_a.len != 0) try tests.expectContentText(&ts, text_data_a);
                 try tests.expectContentCData(&ts, data);
                 if (text_data_b.len != 0) try tests.expectContentText(&ts, text_data_b);
@@ -1366,7 +1451,7 @@ test "TokenStream CDATA Sections" {
                 const entref_a: []const u8 = if (name_a.len != 0) "&" ++ name_a ++ ";" else "";
                 const entref_b: []const u8 = if (name_b.len != 0) "&" ++ name_b ++ ";" else "";
                 ts.reset("<root>" ++ entref_a ++ "<![CDATA[" ++ data ++ "]]>" ++ entref_b ++ "</root>");
-                try tests.expectElemOpenTag(&ts, "root");
+                try tests.expectElemOpen(&ts, "root");
                 if (name_a.len != 0) try tests.expectContentEntityRef(&ts, name_a);
                 try tests.expectContentCData(&ts, data);
                 if (name_b.len != 0) try tests.expectContentEntityRef(&ts, name_b);
@@ -1389,7 +1474,7 @@ test "TokenStream root comment" {
         @setEvalBranchQuota(6000);
         
         ts.reset("<root>" ++ "<!--" ++ data ++ "-->" ++ "</root>");
-        try tests.expectElemOpenTag(&ts, "root");
+        try tests.expectElemOpen(&ts, "root");
         try tests.expectComment(&ts, data);
         try tests.expectElemCloseTag(&ts, "root");
         try tests.expectNull(&ts);
@@ -1397,7 +1482,7 @@ test "TokenStream root comment" {
         inline for (whitespace_samples) |ws_a| {
             inline for (whitespace_samples) |ws_b| {
                 ts.reset("<root>" ++ ws_a ++ "<!--" ++ data ++ "-->" ++ ws_b ++ "</root>");
-                try tests.expectElemOpenTag(&ts, "root");
+                try tests.expectElemOpen(&ts, "root");
                 if (ws_a.len != 0) try tests.expectWhitespace(&ts, ws_a);
                 try tests.expectComment(&ts, data);
                 if (ws_b.len != 0) try tests.expectWhitespace(&ts, ws_b);
@@ -1409,7 +1494,7 @@ test "TokenStream root comment" {
         inline for (text_samples) |text_data_a| {
             inline for (text_samples) |text_data_b| {
                 ts.reset("<root>" ++ text_data_a ++ "<!--" ++ data ++ "-->" ++ text_data_b ++ "</root>");
-                try tests.expectElemOpenTag(&ts, "root");
+                try tests.expectElemOpen(&ts, "root");
                 if (text_data_a.len != 0) try tests.expectContentText(&ts, text_data_a);
                 try tests.expectComment(&ts, data);
                 if (text_data_b.len != 0) try tests.expectContentText(&ts, text_data_b);
@@ -1423,7 +1508,7 @@ test "TokenStream root comment" {
                 const entref_a: []const u8 = if (name_a.len != 0) "&" ++ name_a ++ ";" else "";
                 const entref_b: []const u8 = if (name_b.len != 0) "&" ++ name_b ++ ";" else "";
                 ts.reset("<root>" ++ entref_a ++ "<!--" ++ data ++ "-->" ++ entref_b ++ "</root>");
-                try tests.expectElemOpenTag(&ts, "root");
+                try tests.expectElemOpen(&ts, "root");
                 if (name_a.len != 0) try tests.expectContentEntityRef(&ts, name_a);
                 try tests.expectComment(&ts, data);
                 if (name_b.len != 0) try tests.expectContentEntityRef(&ts, name_b);
@@ -1435,33 +1520,33 @@ test "TokenStream root comment" {
 }
 
 test "TokenStream prologue invalids" {
-    var ts: TokenStream = undefined;
+    // var ts: TokenStream = undefined;
     
-    ts.reset("a");
-    try tests.expectError(&ts, error.character_in_prologue);
-    try tests.expectNull(&ts);
-    
-    ts.reset(" b");
-    try tests.expectWhitespace(&ts, " ");
-    try tests.expectError(&ts, error.character_in_prologue);
-    try tests.expectNull(&ts);
-    
-    ts.reset("<!-- -->c");
-    try tests.expectComment(&ts, " ");
-    try tests.expectError(&ts, error.character_in_prologue);
-    try tests.expectNull(&ts);
-    
-    ts.reset("<?foo?>d");
-    try tests.expectPiTarget(&ts, "foo");
-    try tests.expectPiEnd(&ts);
-    try tests.expectError(&ts, error.character_in_prologue);
-    try tests.expectNull(&ts);
-    
-    ts.reset("<![");
-    try tests.expectError(&ts, error.markup_in_prologue);
-    try tests.expectNull(&ts);
-    
-    ts.reset("</");
-    try tests.expectError(&ts, error.markup_in_prologue);
-    try tests.expectNull(&ts);
+    // ts.reset("a");
+    // try tests.expectError(&ts, error.character_in_prologue);
+    // try tests.expectNull(&ts);
+    // 
+    // ts.reset(" b");
+    // try tests.expectWhitespace(&ts, " ");
+    // try tests.expectError(&ts, error.character_in_prologue);
+    // try tests.expectNull(&ts);
+    // 
+    // ts.reset("<!-- -->c");
+    // try tests.expectComment(&ts, " ");
+    // try tests.expectError(&ts, error.character_in_prologue);
+    // try tests.expectNull(&ts);
+    // 
+    // ts.reset("<?foo?>d");
+    // try tests.expectPiTarget(&ts, "foo");
+    // try tests.expectPiEnd(&ts);
+    // try tests.expectError(&ts, error.character_in_prologue);
+    // try tests.expectNull(&ts);
+    // 
+    // ts.reset("<![");
+    // try tests.expectError(&ts, error.markup_in_prologue);
+    // try tests.expectNull(&ts);
+    // 
+    // ts.reset("</");
+    // try tests.expectError(&ts, error.markup_in_prologue);
+    // try tests.expectNull(&ts);
 }

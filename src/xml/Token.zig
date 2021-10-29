@@ -24,7 +24,7 @@ pub fn name(self: Token, src: []const u8) ?[]const u8 {
     const Offset = struct { forwards: usize = 0, backwards: usize = 0, };
     const offset: Offset = switch (self.tag) {
         .pi_target => .{ .forwards = ("<?".len) },
-        .elem_open_tag => .{ .forwards = ("<".len) },
+        .elem_open => .{ .forwards = ("<".len) },
         .elem_close_tag => .{ .forwards = ("</").len },
         .attr_val_segment_entity_ref => .{ .forwards = ("&".len), .backwards = (";".len) },
         .content_entity_ref => .{ .forwards = ("&".len), .backwards = (";".len) },
@@ -61,7 +61,7 @@ pub const Tag = enum {
     whitespace,
     comment,
 
-    elem_open_tag,
+    elem_open,
     elem_close_tag,
     elem_close_inline,
 
@@ -179,11 +179,11 @@ pub const tests = struct {
         });
     }
     
-    pub fn expectElemOpenTag(src: []const u8, tok: Token, expected_name: []const u8) !void {
+    pub fn expectElemOpen(src: []const u8, tok: Token, expected_name: []const u8) !void {
         const expected_slice = try mem.concat(testing.allocator, u8, &.{ "<", expected_name });
         defer testing.allocator.free(expected_slice);
         try expectToken(src, tok, .{
-            .tag = .elem_open_tag,
+            .tag = .elem_open,
             .slice = expected_slice,
             .name = expected_name,
             .data = null,
